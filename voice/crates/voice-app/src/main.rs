@@ -16,6 +16,8 @@ mod devhook;
 mod engine;
 mod fake;
 mod logging;
+#[cfg(target_os = "macos")]
+mod notify_mac;
 mod pill;
 mod selftest;
 mod settings_window;
@@ -132,6 +134,15 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             system::fail(&format!("Rukoo Voice couldn't open its windows: {error}"));
             return 1;
         }
+    };
+    // A menu bar app: no Dock icon and no entry in Cmd+Tab, only the tray. Tauri starts as a regular app, and
+    // an installed build's `LSUIElement` doesn't reach a binary that runs outside a bundle. Set before the
+    // event loop runs, so no window can show as a regular app first.
+    #[cfg(target_os = "macos")]
+    let app = {
+        let mut app = app;
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        app
     };
     let code = app.run_return(|app, event| match event {
         // A tray app outlives its windows; only Quit (an exit with a code) ends it.
