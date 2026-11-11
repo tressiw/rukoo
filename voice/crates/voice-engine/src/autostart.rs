@@ -50,6 +50,8 @@ mod run_value {
             }
         }
 
+        /// The Run value as written; `set` uses the field directly, so only the test reads this.
+        #[cfg(test)]
         pub fn command(&self) -> &str {
             &self.command
         }
