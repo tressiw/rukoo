@@ -3,10 +3,10 @@
 //! name first, then renames it), Voice removes it, does what it asks and answers in
 //! `<folder>/reply-<id>.json` the same way. `voice/scripts/live-meeting.mjs` uses it.
 //!
-//! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window and the whole Settings
-//! state), `start_meeting` and `stop_meeting` (what the tray's items call), `pill_screen_click` (what
-//! a click on the pill's screen button does: opens its menu), `pill_screen_set` with meeting, mode
-//! and optional monitor (the selected menu action), and
+//! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window, whether Settings'
+//! window is open and the whole Settings state), `start_meeting` and `stop_meeting` (what the tray's
+//! items call), `pill_screen_click` (what a click on the pill's screen button does: opens its menu),
+//! `pill_screen_set` with meeting, mode and optional monitor (the selected menu action), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
 //! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from
 //! WebView2. Nothing here sends input or reads the screen.
@@ -80,6 +80,8 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
                 "pid": std::process::id(),
                 "pill": engine.pill_snapshot(),
                 "pillWindow": shared.pill.status(),
+                // Whether Settings is open, which a second launch has to ask for.
+                "settingsWindow": app.get_webview_window(settings_window::LABEL).is_some(),
                 "tray": { "meeting": tray.meeting, "meetingAtMs": tray.meeting_at_ms },
                 "settings": engine.settings_state(),
             }))
