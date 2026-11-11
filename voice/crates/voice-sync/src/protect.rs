@@ -1,7 +1,9 @@
-//! Bytes only this Windows user can read: the master key and the bucket secret (spec 2.3, D4).
+//! Bytes only this user can read: the master key and the bucket secret (spec 2.3, D4).
 //!
 //! A protected file is the 4-byte magic, a version byte `1`, then the protector's blob. Files are
-//! written to a temporary name and renamed.
+//! written to a temporary name and renamed. Windows protects the blob with DPAPI, macOS with a
+//! wrapping key in the login keychain (`keychain.rs`), and the file's magic and version are the
+//! same on both.
 
 use std::fs;
 use std::io::{self, Write};
@@ -16,6 +18,10 @@ use zeroize::Zeroizing;
 use crate::keys::local;
 use crate::{SyncError, SyncErrorKind};
 
+/// macOS: the login keychain's wrapping key per label and data folder.
+#[cfg(target_os = "macos")]
+pub mod keychain;
+
 /// Magic of `master-key.bin`.
 pub const MASTER_KEY_MAGIC: &[u8; 4] = b"RKVK";
 /// Magic of `bucket-secret.bin`.
@@ -28,10 +34,12 @@ pub const SECRET_LABEL: &str = "rukoo-voice/bucket-secret/v1";
 /// The version byte after the magic.
 const FILE_VERSION: u8 = 1;
 
-/// Keeps bytes readable only by this Windows user (DPAPI), or a stand-in in tests.
+/// Keeps bytes readable only by this user: DPAPI on Windows, the login keychain on macOS, or a
+/// stand-in in tests.
 ///
 /// `protect` fails with `Local`; `unprotect` fails with `Key` when the blob isn't one this user
-/// and label can open.
+/// and label can open. The keychain protector reports a missing item and denied access as `Key`
+/// too, so Settings say the key is the problem and Voice keeps running.
 pub trait Protector: Send + Sync {
     fn protect(&self, plain: &[u8], label: &str) -> Result<Vec<u8>, SyncError>;
     fn unprotect(&self, blob: &[u8], label: &str) -> Result<Zeroizing<Vec<u8>>, SyncError>;
@@ -220,42 +228,52 @@ impl Protector for TestProtector {
     }
 }
 
-/// Refuses everything: bucket sync uses DPAPI and runs only on Windows.
-#[cfg(not(windows))]
+/// Refuses everything: bucket sync needs DPAPI or the login keychain.
+#[cfg(not(any(windows, target_os = "macos")))]
 struct Unsupported;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl Protector for Unsupported {
     fn protect(&self, _plain: &[u8], _label: &str) -> Result<Vec<u8>, SyncError> {
         Err(SyncError::new(
             SyncErrorKind::Local,
-            "Bucket sync needs Windows.",
+            "Bucket sync needs Windows or macOS.",
         ))
     }
 
     fn unprotect(&self, _blob: &[u8], _label: &str) -> Result<Zeroizing<Vec<u8>>, SyncError> {
         Err(SyncError::new(
             SyncErrorKind::Key,
-            "Bucket sync needs Windows.",
+            "Bucket sync needs Windows or macOS.",
         ))
     }
 }
 
-/// Whether this platform has a protector that keeps sync's keys from other users: DPAPI on Windows,
-/// and nothing yet on macOS (its Keychain protector comes with the port) or on Linux.
+/// Whether this platform has a protector that keeps sync's keys from other users: DPAPI on
+/// Windows, the login keychain on macOS, and nothing on Linux.
 ///
 /// Settings read this to decide whether to offer bucket sync at all (`features.sync` and
 /// `sync.available` in voice/ui/API.md), so it changes in the same place as the protector does.
-pub const SUPPORTED: bool = cfg!(windows);
+pub const SUPPORTED: bool = cfg!(any(windows, target_os = "macos"));
 
-/// Dpapi on Windows; elsewhere a protector that refuses ("Bucket sync needs Windows.").
-pub fn system() -> Arc<dyn Protector> {
+/// Dpapi on Windows, the login keychain on macOS, and elsewhere a protector that refuses
+/// ("Bucket sync needs Windows or macOS.").
+///
+/// `data_dir` names the data folder whose keys this protector keeps; macOS's keychain item is
+/// tied to it, so a development copy and the real Voice never share a wrapping key.
+pub fn system(data_dir: &Path) -> Arc<dyn Protector> {
     #[cfg(windows)]
     {
+        let _ = data_dir;
         Arc::new(Dpapi)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
+        keychain::system(data_dir)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = data_dir;
         Arc::new(Unsupported)
     }
 }

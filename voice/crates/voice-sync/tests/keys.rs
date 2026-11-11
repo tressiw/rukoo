@@ -327,13 +327,18 @@ fn damaged_files_are_refused() -> Result<(), SyncError> {
 
 #[test]
 fn the_system_protector_matches_the_platform() {
-    let p = protect::system();
-    let result = p.protect(b"x", SECRET_LABEL);
-    if cfg!(windows) {
-        assert!(result.is_ok());
-    } else {
-        assert_eq!(result.unwrap_err().message, "Bucket sync needs Windows.");
+    let supported = voice_sync::protect::SUPPORTED;
+    let keeps_keys = cfg!(any(windows, target_os = "macos"));
+    assert_eq!(supported, keeps_keys);
+    if !supported {
+        let p = protect::system(Path::new("unused"));
+        assert_eq!(
+            p.protect(b"x", SECRET_LABEL).unwrap_err().message,
+            "Bucket sync needs Windows or macOS."
+        );
     }
+    // On Windows and macOS the protector is the real one, with real credentials behind it: DPAPI
+    // is the `dpapi` module below and the login keychain is `login` below.
 }
 
 #[cfg(windows)]
@@ -396,5 +401,341 @@ mod dpapi {
         assert_eq!(other.load().unwrap_err().kind, SyncErrorKind::Key);
         assert_eq!(other.secret().unwrap_err().kind, SyncErrorKind::NoSecret);
         Ok(())
+    }
+}
+
+/// The macOS protector on the login keychain's generic passwords: a fake store here, and one
+/// ignored test against the real login keychain.
+#[cfg(target_os = "macos")]
+mod login {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use voice_sync::protect::keychain::{
+        ItemStore, Keychain, LoginKeychain, StoreError, BLOB_MARKER, SERVICE,
+    };
+
+    /// The login keychain's items in memory, shared with the keychains a test makes.
+    #[derive(Clone, Default)]
+    struct FakeStore {
+        inner: Arc<Mutex<Inner>>,
+    }
+
+    #[derive(Default)]
+    struct Inner {
+        items: BTreeMap<String, Vec<u8>>,
+        /// What every call answers instead, as a keychain does after Deny.
+        denied: Option<StoreError>,
+    }
+
+    impl FakeStore {
+        fn accounts(&self) -> Vec<String> {
+            self.inner.lock().unwrap().items.keys().cloned().collect()
+        }
+
+        fn item(&self, account: &str) -> Option<Vec<u8>> {
+            self.inner.lock().unwrap().items.get(account).cloned()
+        }
+
+        fn deny(&self, error: StoreError) {
+            self.inner.lock().unwrap().denied = Some(error);
+        }
+
+        fn allow(&self) {
+            self.inner.lock().unwrap().denied = None;
+        }
+    }
+
+    impl ItemStore for FakeStore {
+        fn get(&self, account: &str) -> Result<Vec<u8>, StoreError> {
+            let inner = self.inner.lock().unwrap();
+            if let Some(error) = inner.denied {
+                return Err(error);
+            }
+            inner.items.get(account).cloned().ok_or(StoreError::Missing)
+        }
+
+        fn set(&self, account: &str, secret: &[u8]) -> Result<(), StoreError> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(error) = inner.denied {
+                return Err(error);
+            }
+            inner.items.insert(account.to_owned(), secret.to_vec());
+            Ok(())
+        }
+
+        fn delete(&self, account: &str) -> Result<(), StoreError> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(error) = inner.denied {
+                return Err(error);
+            }
+            inner
+                .items
+                .remove(account)
+                .map(|_| ())
+                .ok_or(StoreError::Missing)
+        }
+    }
+
+    fn keychain(dir: &Path, store: &FakeStore) -> Keychain<FakeStore> {
+        Keychain::with_store(dir, store.clone())
+    }
+
+    /// The account of `label`, for a folder these tests made.
+    fn account(p: &Keychain<FakeStore>, label: &str) -> String {
+        p.account(label).expect("the folder exists")
+    }
+
+    #[test]
+    fn the_login_keychain_round_trips_and_hides_the_secret() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-round");
+        let store = FakeStore::default();
+        let p = keychain(dir.path(), &store);
+        let blob = p.protect(b"the bucket secret", SECRET_LABEL)?;
+        assert!(blob.starts_with(BLOB_MARKER));
+        assert!(!contains(&blob, b"the bucket secret"));
+        let plain: Zeroizing<Vec<u8>> = p.unprotect(&blob, SECRET_LABEL)?;
+        assert_eq!(&plain[..], b"the bucket secret");
+        // A fresh nonce every time, so two protects of one secret differ.
+        assert_ne!(blob, p.protect(b"the bucket secret", SECRET_LABEL)?);
+        // The wrapping key is random and 32 bytes, in one item named for the label and the folder.
+        let secret_account = account(&p, SECRET_LABEL);
+        assert!(secret_account.starts_with("rukoo-voice/bucket-secret/v1:"));
+        assert_eq!(
+            secret_account.len(),
+            "rukoo-voice/bucket-secret/v1:".len() + 16
+        );
+        assert!(secret_account["rukoo-voice/bucket-secret/v1:".len()..]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(store.accounts(), vec![secret_account.clone()]);
+        let key = store.item(&secret_account).unwrap();
+        assert_eq!(key.len(), 32);
+        // Two labels get two items, as the master key and the secret do.
+        p.protect(b"a key", MASTER_KEY_LABEL)?;
+        assert_eq!(store.accounts().len(), 2);
+        let master = account(&p, MASTER_KEY_LABEL);
+        assert!(store.accounts().contains(&master));
+        Ok(())
+    }
+
+    #[test]
+    fn a_folder_that_appears_later_gets_the_same_account() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-later");
+        let missing = dir.path().join("data");
+        let store = FakeStore::default();
+        // Made before the data folder exists, as a protector built early would be.
+        let early = keychain(&missing, &store);
+        let error = early
+            .protect(b"the bucket secret", SECRET_LABEL)
+            .unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert!(
+            error.message.contains(&missing.display().to_string()),
+            "{}",
+            error.message
+        );
+        // Nothing was made under a path that isn't the folder's canonical one.
+        assert!(store.accounts().is_empty());
+        // The folder appears, and the protector made before it names the same items as one
+        // made after it: the account is the canonical folder's hash, not the raw path's.
+        std::fs::create_dir_all(&missing).unwrap();
+        let late = keychain(&missing, &store);
+        assert_eq!(account(&early, SECRET_LABEL), account(&late, SECRET_LABEL));
+        let blob = early.protect(b"the bucket secret", SECRET_LABEL)?;
+        assert_eq!(
+            late.unprotect(&blob, SECRET_LABEL)?[..],
+            b"the bucket secret"[..]
+        );
+        assert_eq!(store.accounts(), [account(&late, SECRET_LABEL)]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_login_keychain_refuses_the_wrong_label_and_a_changed_blob() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-refuse");
+        let store = FakeStore::default();
+        let p = keychain(dir.path(), &store);
+        let blob = p.protect(b"the bucket secret", SECRET_LABEL)?;
+        let error = p.unprotect(&blob, MASTER_KEY_LABEL).unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        for at in [0, BLOB_MARKER.len(), BLOB_MARKER.len() + 12, blob.len() - 1] {
+            let mut changed = blob.clone();
+            changed[at] ^= 1;
+            assert_eq!(
+                p.unprotect(&changed, SECRET_LABEL).unwrap_err().kind,
+                SyncErrorKind::Key,
+                "byte {at}"
+            );
+        }
+        // Not a keychain blob, or too short to hold a nonce and a tag.
+        assert!(p.unprotect(b"whatever", SECRET_LABEL).is_err());
+        assert!(p
+            .unprotect(&blob[..BLOB_MARKER.len() + 24 + 8], SECRET_LABEL)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_deleted_item_is_a_key_error() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-deleted");
+        let store = FakeStore::default();
+        let p = keychain(dir.path(), &store);
+        let blob = p.protect(b"the bucket secret", SECRET_LABEL)?;
+        store.delete(&account(&p, SECRET_LABEL)).unwrap();
+        let error = p.unprotect(&blob, SECRET_LABEL).unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert!(
+            error.message.contains("login keychain"),
+            "{}",
+            error.message
+        );
+        // Protecting again makes a new key, so the old file is unreadable but the new one works.
+        let fresh = p.protect(b"another secret", SECRET_LABEL)?;
+        assert_eq!(
+            p.unprotect(&fresh, SECRET_LABEL)?[..],
+            b"another secret"[..]
+        );
+        assert_eq!(
+            p.unprotect(&blob, SECRET_LABEL).unwrap_err().kind,
+            SyncErrorKind::Key
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn another_data_folder_gets_its_own_items() -> Result<(), SyncError> {
+        let one = Scratch::new("kc-folder-one");
+        let two = Scratch::new("kc-folder-two");
+        let store = FakeStore::default();
+        let a = keychain(one.path(), &store);
+        let b = keychain(two.path(), &store);
+        assert_ne!(account(&a, SECRET_LABEL), account(&b, SECRET_LABEL));
+        let blob = a.protect(b"the bucket secret", SECRET_LABEL)?;
+        assert_eq!(store.accounts(), [account(&a, SECRET_LABEL)]);
+        // The second folder has no item yet, so it reads nothing from the first.
+        assert_eq!(
+            b.unprotect(&blob, SECRET_LABEL).unwrap_err().kind,
+            SyncErrorKind::Key
+        );
+        b.protect(b"another secret", SECRET_LABEL)?;
+        assert_eq!(store.accounts().len(), 2);
+        assert_eq!(
+            a.unprotect(&blob, SECRET_LABEL)?[..],
+            b"the bucket secret"[..]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn denied_access_is_a_key_error() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-denied");
+        let store = FakeStore::default();
+        let p = keychain(dir.path(), &store);
+        let blob = p.protect(b"the bucket secret", SECRET_LABEL)?;
+        // errSecAuthFailed, as Deny in the access dialog leaves it.
+        store.deny(StoreError::Denied(-25293));
+        let error = p.unprotect(&blob, SECRET_LABEL).unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert!(error.message.contains("-25293"), "{}", error.message);
+        assert!(error.message.contains("didn't allow"), "{}", error.message);
+        // A keychain that may not be asked at all fails a save the same way.
+        let other = Scratch::new("kc-denied-new");
+        let q = keychain(other.path(), &store);
+        let error = q.protect(b"a key", MASTER_KEY_LABEL).unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert!(store.item(&account(&q, MASTER_KEY_LABEL)).is_none());
+        // Allowing it again leaves what was there.
+        store.allow();
+        assert_eq!(
+            p.unprotect(&blob, SECRET_LABEL)?[..],
+            b"the bucket secret"[..]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_damaged_item_is_a_key_error() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-damaged");
+        let store = FakeStore::default();
+        let p = keychain(dir.path(), &store);
+        let blob = p.protect(b"the bucket secret", SECRET_LABEL)?;
+        store
+            .set(&account(&p, SECRET_LABEL), b"not a 32-byte key")
+            .unwrap();
+        let error = p.unprotect(&blob, SECRET_LABEL).unwrap_err();
+        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert!(error.message.contains("damaged"), "{}", error.message);
+        // A damaged item isn't replaced: that would orphan what it protected.
+        assert_eq!(
+            p.protect(b"a key", SECRET_LABEL).unwrap_err().kind,
+            SyncErrorKind::Key
+        );
+        assert_eq!(
+            store.item(&account(&p, SECRET_LABEL)).unwrap(),
+            b"not a 32-byte key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_key_store_works_with_the_login_keychain() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-store");
+        let store = FakeStore::default();
+        let keys = Arc::new(keychain(dir.path(), &store));
+        let key_store = KeyStore::new(dir.path(), keys.clone());
+        let key = key_store.create(9)?;
+        assert_eq!(key_store.load()?.unwrap().kid(), key.kid());
+        key_store.save_secret("keychain-secret")?;
+        assert_eq!(
+            key_store.secret()?.as_deref().map(String::as_str),
+            Some("keychain-secret")
+        );
+        // RKVK and RKVS with their version byte, and neither file holds what it protects.
+        let master = std::fs::read(dir.path().join(MASTER_KEY_FILE)).unwrap();
+        let secret = std::fs::read(dir.path().join(SECRET_FILE)).unwrap();
+        assert!(master.starts_with(b"RKVK\x01"));
+        assert!(secret.starts_with(b"RKVS\x01"));
+        assert!(!contains(&secret, b"keychain-secret"));
+        assert_eq!(master[5..].len(), BLOB_MARKER.len() + 24 + 32 + 16);
+        // A store that lost the items reports the key as unreadable, and a secret to save again.
+        for account in store.accounts() {
+            store.delete(&account).unwrap();
+        }
+        let next = KeyStore::new(dir.path(), keys);
+        assert_eq!(next.load().unwrap_err().kind, SyncErrorKind::Key);
+        assert_eq!(next.secret().unwrap_err().kind, SyncErrorKind::NoSecret);
+        Ok(())
+    }
+
+    #[test]
+    fn the_service_is_voices_own() {
+        assert_eq!(SERVICE, "nl.bvdm.rukoo.voice");
+    }
+
+    /// The real login keychain, with a service of its own so it never reads or deletes Voice's
+    /// items. Run with `cargo test -p voice-sync --test keys -- --ignored`.
+    #[test]
+    #[ignore = "reads and writes the real login keychain; run with -- --ignored"]
+    fn the_real_login_keychain_round_trips() {
+        const TEST_SERVICE: &str = "nl.bvdm.rukoo.voice.test";
+        let dir = Scratch::new("kc-login");
+        let store = LoginKeychain::new(TEST_SERVICE);
+        let p = Keychain::with_store(dir.path(), LoginKeychain::new(TEST_SERVICE));
+        let account = p.account(SECRET_LABEL).expect("the scratch folder exists");
+        // A failed earlier run may have left the item; it is this test's own account.
+        let _ = store.delete(&account);
+        let blob = match p.protect(b"a secret in the login keychain", SECRET_LABEL) {
+            Ok(blob) => blob,
+            Err(error) => panic!("the login keychain refused a new item: {}", error.message),
+        };
+        let plain = p
+            .unprotect(&blob, SECRET_LABEL)
+            .expect("the item it just made opens");
+        assert_eq!(&plain[..], b"a secret in the login keychain");
+        let bytes = store.get(&account).expect("the item is there");
+        assert_eq!(bytes.len(), 32);
+        store.delete(&account).expect("its own item is deleted");
+        assert_eq!(store.get(&account).unwrap_err(), StoreError::Missing);
     }
 }

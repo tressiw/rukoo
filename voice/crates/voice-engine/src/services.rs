@@ -171,7 +171,8 @@ pub struct Services {
     pub screen_files: Arc<dyn ScreenFiles>,
     /// The same, for media links: frames and video clips.
     pub screen_media: Arc<dyn ScreenMedia>,
-    /// Keeps the bucket secret and the encryption key readable only by this Windows user.
+    /// Keeps the bucket secret and the encryption key readable only by this user: DPAPI on
+    /// Windows, the login keychain on macOS.
     pub protector: Arc<dyn Protector>,
     /// Bucket sync's clocks and sizes; tests shorten them.
     pub sync_timing: SyncTiming,
@@ -216,7 +217,7 @@ impl Services {
             // The screen folder for both, sharing one frame index cache.
             screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
             screen_media: screen,
-            protector: voice_sync::protect::system(),
+            protector: voice_sync::protect::system(&options.data_dir),
             sync_timing: SyncTiming::default(),
         }
     }
