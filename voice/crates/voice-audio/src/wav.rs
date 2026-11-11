@@ -44,12 +44,14 @@ pub struct SegmentWriter {
 
 impl SegmentWriter {
     /// Creates a new segment. Fails if the file already exists, so a resumed recording can never
-    /// overwrite audio from an earlier session.
+    /// overwrite audio from an earlier session. Takes the one writer's lock, so a second recorder
+    /// can't write into a live segment.
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         exclusive_writer(&mut options);
         let file = options.open(path)?;
+        lock_writer(&file)?;
         write_all_at(&file, &segment_header(0), 0)?;
         Ok(Self {
             file,
@@ -250,8 +252,12 @@ fn decode(data: &[u8], format: &Format) -> Wav {
 /// Recovers the samples of a last append the writer didn't count before it died, drops a
 /// trailing odd byte, and gives a file cut off inside its header a fresh empty header. Refuses
 /// files that aren't segments in the stored format, so it never rewrites someone else's WAV.
+///
+/// It is a writer, so it takes the same lock as [`SegmentWriter`]: while a recorder writes a
+/// segment, its repair fails with [`io::ErrorKind::WouldBlock`] rather than fighting over it.
 pub fn repair_segment(path: &Path) -> io::Result<u64> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    lock_writer(&file)?;
     let len = file.metadata()?.len();
     let mut head = Vec::with_capacity(HEADER_LEN as usize);
     (&mut file).take(HEADER_LEN).read_to_end(&mut head)?;
@@ -295,6 +301,32 @@ fn exclusive_writer(options: &mut OpenOptions) {
 
 #[cfg(not(windows))]
 fn exclusive_writer(_options: &mut OpenOptions) {}
+
+/// Keeps a second writer off a segment. Windows refused it at open through the share mode;
+/// elsewhere an exclusive `flock` on the open file does it. It belongs to the file, so a hard kill
+/// releases it, and readers never take it.
+///
+/// `WouldBlock`, what EWOULDBLOCK reads as, means another writer holds the segment.
+#[cfg(unix)]
+fn lock_writer(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: `flock` only reads the descriptor; the lock belongs to the file, not to memory.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // A signal in the call changes nothing, so try again.
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_writer(_file: &File) -> io::Result<()> {
+    Ok(())
+}
 
 /// Positional writes, so the header patch and the next append never depend on a file cursor.
 #[cfg(unix)]
@@ -392,6 +424,28 @@ mod tests {
         SegmentWriter::create(&path).unwrap();
         let err = SegmentWriter::create(&path).err().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    /// Windows reports its share mode as a sharing violation and Unix as a lock it can't take;
+    /// both stop the second writer before it changes a byte. The lock of a killed recorder is in
+    /// `tests/lock.rs`, which needs a process of its own.
+    #[cfg(unix)]
+    #[test]
+    fn a_locked_segment_refuses_a_second_writer_but_opens_for_readers() {
+        let dir = TempDir::new("lock");
+        let path = dir.file("000001.wav");
+        let mut writer = SegmentWriter::create(&path).unwrap();
+        writer.append(&ramp(100)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let err = repair_segment(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // A reader takes no lock, so a live segment still opens: live transcription reads it and
+        // `finalize` prepares for the next session from a closed one.
+        assert_eq!(read_wav_i16(&path).unwrap().0, ramp(100));
+        drop(writer);
+        // The writer closed the file, so the next one gets the lock.
+        assert_eq!(repair_segment(&path).unwrap(), 100);
     }
 
     #[test]
