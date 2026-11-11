@@ -1,5 +1,5 @@
-//! What the app reads from Windows before the engine answers: the theme and language to start in, and a
-//! way to say why it can't start.
+//! What the app reads from the system before the engine answers: the theme and language to start
+//! in, and a way to say why it can't start.
 
 use voice_engine::Locale;
 
@@ -25,7 +25,14 @@ pub fn prefers_light_theme() -> bool {
     result.is_err() || value != 0
 }
 
-#[cfg(not(windows))]
+/// macOS' appearance as the app shows it, Dark Aqua included when the user chose an automatic
+/// appearance that is dark now.
+#[cfg(target_os = "macos")]
+pub fn prefers_light_theme() -> bool {
+    mac::appearance_name().is_none_or(|name| !is_dark_appearance(&name))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn prefers_light_theme() -> bool {
     true
 }
@@ -42,13 +49,32 @@ pub fn locale() -> Locale {
     }
 }
 
-#[cfg(not(windows))]
+/// The first of the user's preferred languages, as System Settings > General > Language & Region
+/// lists them. An app started from Finder or at login has no `LANG` to read.
+#[cfg(target_os = "macos")]
 pub fn locale() -> Locale {
-    let lang = std::env::var("LANG").unwrap_or_default();
-    if lang.starts_with("nl") {
-        Locale::Nl
-    } else {
-        Locale::En
+    locale_from_language(mac::preferred_language().as_deref())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn locale() -> Locale {
+    locale_from_language(std::env::var("LANG").ok().as_deref())
+}
+
+/// The appearance names that mean dark mode: `NSAppearanceNameDarkAqua`, and the high-contrast
+/// variant System Settings' Increase contrast turns on.
+#[cfg(any(target_os = "macos", test))]
+fn is_dark_appearance(name: &str) -> bool {
+    name.contains("Dark")
+}
+
+/// The language Voice speaks, from a language tag such as `nl-NL` or `nl_NL.UTF-8`: Dutch for
+/// anything that starts with `nl`, else English.
+#[cfg(any(not(windows), test))]
+fn locale_from_language(language: Option<&str>) -> Locale {
+    match language {
+        Some(language) if language.to_ascii_lowercase().starts_with("nl") => Locale::Nl,
+        _ => Locale::En,
     }
 }
 
@@ -72,5 +98,79 @@ pub fn fail(text: &str) {
             &HSTRING::from("Rukoo Voice"),
             MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
         );
+    }
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
+    mac::show_alert(text);
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSLocale;
+
+    /// NSApp's effective appearance: the system's, since Voice sets none of its own. AppKit only
+    /// answers this on the main thread.
+    pub fn appearance_name() -> Option<String> {
+        let mtm = MainThreadMarker::new()?;
+        let app = NSApplication::sharedApplication(mtm);
+        Some(app.effectiveAppearance().name().to_string())
+    }
+
+    /// System Settings' first preferred language, such as `nl-NL`.
+    pub fn preferred_language() -> Option<String> {
+        NSLocale::preferredLanguages()
+            .firstObject()
+            .map(|language| language.to_string())
+    }
+
+    /// The release build's dialog: the same text as Windows' message box, and a process that
+    /// waits for OK, because without its data folder Voice has nothing to show.
+    #[cfg(not(debug_assertions))]
+    pub fn show_alert(text: &str) {
+        use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplicationActivationPolicy};
+        use objc2_foundation::NSString;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            log::error!("can't show a start error outside the main thread");
+            return;
+        };
+        // Before Tauri builds its windows there may be no application object; AppKit makes one,
+        // and an accessory never takes the Dock icon on the way out.
+        let app = NSApplication::sharedApplication(mtm);
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        app.activate();
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str("Rukoo Voice"));
+        alert.setInformativeText(&NSString::from_str(text));
+        alert.setAlertStyle(NSAlertStyle::Critical);
+        alert.addButtonWithTitle(&NSString::from_str("OK"));
+        alert.runModal();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dark_appearance_names_are_dark() {
+        assert!(is_dark_appearance("NSAppearanceNameDarkAqua"));
+        assert!(is_dark_appearance(
+            "NSAppearanceNameAccessibilityHighContrastDarkAqua"
+        ));
+        assert!(!is_dark_appearance("NSAppearanceNameAqua"));
+        assert!(!is_dark_appearance(
+            "NSAppearanceNameAccessibilityHighContrastAqua"
+        ));
+    }
+
+    #[test]
+    fn only_dutch_preferences_are_dutch() {
+        assert_eq!(locale_from_language(Some("nl-NL")), Locale::Nl);
+        assert_eq!(locale_from_language(Some("nl")), Locale::Nl);
+        assert_eq!(locale_from_language(Some("en-NL")), Locale::En);
+        assert_eq!(locale_from_language(Some("en-US")), Locale::En);
+        assert_eq!(locale_from_language(None), Locale::En);
     }
 }

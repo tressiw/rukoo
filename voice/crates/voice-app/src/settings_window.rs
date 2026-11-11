@@ -74,7 +74,7 @@ pub fn open(
     app: &AppHandle,
     engine: &dyn EngineApi,
     catalog: &Catalog,
-    webview_dir: PathBuf,
+    webview_dir: Option<PathBuf>,
     focus: bool,
     page: Option<String>,
 ) -> tauri::Result<WebviewWindow> {
@@ -87,7 +87,7 @@ pub fn open(
         return Ok(window);
     }
     let ui = engine.ui();
-    let window =
+    let mut builder =
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(url(page.as_deref()).into()))
             .title(catalog.text(ui.locale, keys::SETTINGS_TITLE))
             .inner_size(WIDTH, HEIGHT)
@@ -97,9 +97,11 @@ pub fn open(
             .theme(Some(native_theme(ui.theme)))
             .focused(focus)
             .visible(false)
-            .disable_drag_drop_handler()
-            .data_directory(webview_dir)
-            .build()?;
+            .disable_drag_drop_handler();
+    if let Some(dir) = webview_dir {
+        builder = builder.data_directory(dir);
+    }
+    let window = builder.build()?;
     place_under_cursor(&window);
     window.show()?;
     if focus {

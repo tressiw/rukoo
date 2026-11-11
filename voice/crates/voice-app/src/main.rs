@@ -153,6 +153,17 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
     }
 }
 
+/// The webview's profile in the data folder, so a development copy never shares the installed
+/// one's. WKWebView keeps its own store and ignores this, so macOS passes none and a fresh data
+/// folder there has no empty `WebView2/` folder.
+fn webview_profile(data_dir: &std::path::Path) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(data_dir.join("WebView2"))
+    }
+}
+
 fn setup(
     app: &AppHandle,
     data_dir: PathBuf,
@@ -162,9 +173,9 @@ fn setup(
     exit_code: &AtomicI32,
 ) {
     let catalog = Arc::new(Catalog::embedded());
-    let webview_dir = data_dir.join("WebView2");
+    let webview_dir = webview_profile(&data_dir);
     let slot = EngineSlot::default();
-    // Until the engine answers: Windows' theme and language.
+    // Until the engine answers: the system's theme and language.
     let ui = UiOptions {
         theme: if system::prefers_light_theme() {
             Theme::Light
@@ -364,5 +375,18 @@ mod tests {
         };
         assert!(check_dev_flags(&hooks, false).is_err());
         assert!(check_dev_flags(&hooks, true).is_ok());
+    }
+
+    #[test]
+    fn macos_keeps_no_webview2_folder_in_the_data_folder() {
+        let data = std::path::Path::new("/tmp/voice-data");
+        let profile = webview_profile(data);
+        if cfg!(target_os = "macos") {
+            // WKWebView ignores a profile folder, so asking for one under the data folder only left
+            // an empty `WebView2/` there.
+            assert_eq!(profile, None);
+        } else {
+            assert_eq!(profile, Some(data.join("WebView2")));
+        }
     }
 }

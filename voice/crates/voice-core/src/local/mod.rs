@@ -12,6 +12,8 @@ mod job;
 pub mod parent;
 mod registry;
 
+pub use disk::free_space;
+
 pub use download::{extract, Progress, Stage};
 pub use engine::{
     hotword_terms, hotwords_string, LocalEngine, LocalOptions, LocalState, LocalStatus, Timed,
