@@ -1,9 +1,11 @@
 //! Where the NeMo-Speech.cpp runtime is: Voice's own copy next to the exe, checked against the
 //! committed manifest, or Ownkey's copy when its files match Ownkey's known hashes.
 //!
-//! The order is fixed: a development copy's `RUKOO_VOICE_NEMO_DIR`, then `nemo_speech\` next to
-//! the exe, then the installed Ownkey's folder, read only. Voice never writes in any of them.
+//! The order is fixed: a development copy's `RUKOO_VOICE_NEMO_DIR`, then Voice's own `nemo_speech/`
+//! (in a macOS bundle under `Contents/Resources/`), then the installed Ownkey's folder, read only.
+//! Voice never writes in any of them.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -19,6 +21,7 @@ use crate::paths;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeLocation {
+    /// Next to Voice, or in its bundle's `Contents/Resources` on macOS.
     Voice,
     Ownkey,
     Dev,
@@ -55,7 +58,21 @@ impl RuntimeInfo {
 /// build.rs copies it, or the manifest a test package names (`package.ps1 -RuntimeManifest`).
 pub(crate) const MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/nemo-runtime.json"));
 
-/// The five DLLs of every runtime folder. The worker loads the first; it loads the others.
+/// The manifest entry for the platform this build runs on. Every platform has its own runtime:
+/// Windows on x86-64 the DLLs, macOS on Apple Silicon the dylibs. A build for another platform
+/// has no runtime at all, so it looks for an entry no manifest has.
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub(crate) const TARGET: &str = "windows-x86_64";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) const TARGET: &str = "macos-aarch64";
+#[cfg(not(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+pub(crate) const TARGET: &str = "unsupported";
+
+/// The five DLLs of every Windows runtime folder. The worker loads the first; it loads the others.
+#[cfg(windows)]
 pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "nemo_speech_asr_c.dll",
     "nemo_speech_asr.dll",
@@ -64,9 +81,22 @@ pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "ggml-cpu.dll",
 ];
 
+/// The six dylibs of every macOS runtime folder, the C ABI first. There is no C runtime: libc++
+/// and libSystem come with macOS, and Accelerate is imported by the two ggml backends that use it.
+#[cfg(not(windows))]
+pub(crate) const RUNTIME_DLLS: [&str; 6] = [
+    "libnemo_speech_asr_c.dylib",
+    "libnemo_speech_asr.dylib",
+    "libggml.dylib",
+    "libggml-base.dylib",
+    "libggml-cpu.dylib",
+    "libggml-blas.dylib",
+];
+
 /// The Visual C++ runtime the five DLLs import. Voice's own folder holds it, pinned by the
 /// manifest; Ownkey's sits one folder up, in Ownkey's `_internal\`, pinned by [`OWNKEY_CRT`].
-#[cfg(test)]
+/// Ownkey's fallback is a Windows one, so this is Windows-only, and only the tests name it.
+#[cfg(all(windows, test))]
 const CRT_DLLS: [&str; 3] = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /// The NeMo-Speech.cpp commit of Ownkey's runtime: the same one Voice builds.
@@ -125,14 +155,32 @@ const OWNKEY_CRT: [(&str, u64, &str); 3] = [
     ),
 ];
 
-/// The parts of the manifest the lookup reads. Until the runtime is published `archive` is null
-/// and `files` empty, and then Voice's own copy never verifies.
+/// The parts of `voice/nemo-runtime/manifest.json` the lookup reads.
+///
+/// Format 2 holds one entry per target under `targets`, so a Windows build and a macOS build pin
+/// their own files and archive while the commit stays shared. Format 1, which the Windows build
+/// used before macOS existed, is a single Windows entry; it is still read so that an older
+/// `pack.ps1` artifact keeps verifying on Windows.
+///
+/// Until a target's runtime is published its `archive` is null and its `files` empty, and then
+/// Voice's own copy never verifies for that target.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub(crate) struct Manifest {
     #[serde(default)]
     pub format: u64,
     #[serde(default)]
     pub commit: String,
+    /// Format 2: the entry per target.
+    #[serde(default)]
+    pub targets: BTreeMap<String, Target>,
+    /// Format 1: the Windows files.
+    #[serde(default)]
+    pub files: Option<Vec<ManifestFile>>,
+}
+
+/// One target's files in a format 2 manifest.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub(crate) struct Target {
     #[serde(default)]
     pub files: Option<Vec<ManifestFile>>,
 }
@@ -150,8 +198,18 @@ impl Manifest {
         serde_json::from_str(text).ok()
     }
 
+    /// The files this platform's runtime must hold. Empty when the manifest pins no runtime for
+    /// it, which verifies nothing.
     fn files(&self) -> &[ManifestFile] {
-        self.files.as_deref().unwrap_or_default()
+        let files = match self.format {
+            1 if TARGET == "windows-x86_64" => self.files.as_deref(),
+            2 => self
+                .targets
+                .get(TARGET)
+                .and_then(|target| target.files.as_deref()),
+            _ => None,
+        };
+        files.unwrap_or_default()
     }
 }
 
@@ -161,8 +219,9 @@ pub(crate) fn manifest() -> &'static Manifest {
     PARSED.get_or_init(|| Manifest::parse(MANIFEST).unwrap_or_default())
 }
 
-/// Finds a runtime folder that verifies: the development override, then the folder next to the
-/// exe, then Ownkey's. Hashes are cached by path, size and modification time.
+/// Finds a runtime folder that verifies: the development override, then Voice's own folder (next to
+/// the exe, or in its bundle's Resources on macOS), then Ownkey's. Hashes are cached by path, size
+/// and modification time.
 pub fn locate_runtime(exe_dir: &Path, dev_mode: bool) -> Option<RuntimeInfo> {
     let dev = dev_dir_in(dev_mode, &paths::env_var);
     let ownkey = paths::ownkey_nemo_runtime();
@@ -194,13 +253,14 @@ pub(crate) fn locate_in(
             commit: dev_commit(dir),
         });
     }
-    let own = exe_dir.join(RUNTIME_FOLDER);
-    if verify_voice(&own, manifest) {
-        return Some(RuntimeInfo {
-            dir: own,
-            location: RuntimeLocation::Voice,
-            commit: short_commit(&manifest.commit),
-        });
+    for dir in runtime_candidates(exe_dir) {
+        if verify_voice(&dir, manifest) {
+            return Some(RuntimeInfo {
+                dir,
+                location: RuntimeLocation::Voice,
+                commit: short_commit(&manifest.commit),
+            });
+        }
     }
     if let Some(dir) = ownkey.filter(|dir| verify_ownkey(dir)) {
         return Some(RuntimeInfo {
@@ -220,11 +280,31 @@ fn is_link(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-/// A development folder needs the five DLLs; its hashes aren't checked.
+/// Where Voice keeps its own runtime, in the order it is tried: a bundle keeps it in
+/// `Contents/Resources`, where codesign reads the licences and `runtime.json` as plain files
+/// instead of unsigned nested code; an unbundled build keeps it next to the exe.
+#[cfg(target_os = "macos")]
+fn runtime_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(contents) = exe_dir.parent() {
+        candidates.push(contents.join("Resources").join(RUNTIME_FOLDER));
+    }
+    candidates.push(exe_dir.join(RUNTIME_FOLDER));
+    candidates
+}
+
+/// Where Voice keeps its own runtime: `nemo_speech/` next to the exe.
+#[cfg(not(target_os = "macos"))]
+fn runtime_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![exe_dir.join(RUNTIME_FOLDER)]
+}
+
+/// A development folder needs this platform's runtime files; its hashes aren't checked.
 fn dev_runtime_present(dir: &Path) -> bool {
-    RUNTIME_DLLS
-        .iter()
-        .all(|name| fs::metadata(dir.join(name)).is_ok_and(|meta| meta.is_file()))
+    !RUNTIME_DLLS.is_empty()
+        && RUNTIME_DLLS
+            .iter()
+            .all(|name| fs::metadata(dir.join(name)).is_ok_and(|meta| meta.is_file()))
 }
 
 /// The commit a development folder's `runtime.json` names, if any.
@@ -236,11 +316,11 @@ fn dev_commit(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Voice's own copy: every file of the manifest, at its size and hash. An empty manifest, one of
-/// another format, or a folder that is a link never verifies.
+/// Voice's own copy: every file of this platform's manifest entry, at its size and hash. An empty
+/// entry, a manifest of another format, or a folder that is a link never verifies.
 pub(crate) fn verify_voice(dir: &Path, manifest: &Manifest) -> bool {
     let files = manifest.files();
-    manifest.format == 1
+    matches!(manifest.format, 1 | 2)
         && !files.is_empty()
         && !is_link(dir)
         && files.iter().all(|file| {
@@ -340,7 +420,8 @@ mod tests {
         sha256_file(path, &AtomicBool::new(false)).unwrap()
     }
 
-    /// A runtime folder with the five DLLs and a licence, plus the manifest that pins it.
+    /// A runtime folder with this platform's runtime files and a licence, plus the format 2
+    /// manifest that pins it.
     fn runtime_folder(dir: &Path) -> Manifest {
         fs::create_dir_all(dir.join("licenses")).unwrap();
         let mut files = Vec::new();
@@ -353,44 +434,67 @@ mod tests {
                 sha256: sha(&path).to_uppercase(),
             });
         }
+        manifest_with(files)
+    }
+
+    /// A format 2 manifest whose entry for this build's target pins `files`.
+    fn manifest_with(files: Vec<ManifestFile>) -> Manifest {
         Manifest {
-            format: 1,
+            format: 2,
             commit: OWNKEY_COMMIT.into(),
-            files: Some(files),
+            targets: BTreeMap::from([(TARGET.to_string(), Target { files: Some(files) })]),
+            files: None,
         }
     }
 
     #[test]
-    fn the_committed_manifest_parses_before_and_after_publishing() {
+    fn the_committed_manifest_pins_every_target() {
         let committed = Manifest::parse(MANIFEST).expect("voice/nemo-runtime/manifest.json");
-        assert_eq!(committed.format, 1);
+        assert_eq!(committed.format, 2);
         assert_eq!(committed.commit, OWNKEY_COMMIT);
         assert_eq!(manifest(), &committed);
-        // The unpublished shape: null archive, no files, null toolset entries.
+        assert!(committed.targets.contains_key("windows-x86_64"));
+        assert!(committed.targets.contains_key("macos-aarch64"));
+        if TARGET == "windows-x86_64" || TARGET == "macos-aarch64" {
+            let pinned = committed.targets[TARGET].files.clone().unwrap_or_default();
+            assert_eq!(manifest().files(), pinned.as_slice());
+        }
+        // A target whose runtime isn't published pins no files, or null: nothing verifies.
         let unpublished = Manifest::parse(
-            r#"{"format": 1, "commit": "97a15afa", "archive": null, "files": [], "toolset": {"msvc": null}}"#,
+            r#"{"format": 2, "commit": "97a15afa", "targets": {"macos-aarch64": {"archive": null, "files": []}}}"#,
         )
         .unwrap();
         assert!(unpublished.files().is_empty());
-        let null_files = Manifest::parse(r#"{"format": 1, "files": null}"#).unwrap();
-        assert!(null_files.files().is_empty());
-        // The published shape, with CRT versions and an archive.
-        let published = Manifest::parse(
-            r#"{"format": 1, "commit": "97a15afa", "archive": {"url": "https://x/y.zip", "size": 1, "sha256": "ab"},
-                "files": [{"path": "msvcp140.dll", "size": 3, "sha256": "cd", "version": "14.44"}]}"#,
+        let null_files = Manifest::parse(
+            r#"{"format": 2, "commit": "97a15afa", "targets": {"macos-aarch64": {"files": null}}}"#,
         )
         .unwrap();
-        assert_eq!(published.files()[0].path, "msvcp140.dll");
+        assert!(null_files.files().is_empty());
+        // Format 1, what the Windows build wrote before the manifest had targets, is still read
+        // there, and only there.
+        let legacy = Manifest::parse(
+            r#"{"format": 1, "commit": "97a15afa", "files": [{"path": "msvcp140.dll", "size": 3, "sha256": "cd", "version": "14.44"}]}"#,
+        )
+        .unwrap();
+        if TARGET == "windows-x86_64" {
+            assert_eq!(legacy.files()[0].path, "msvcp140.dll");
+        } else {
+            assert!(
+                legacy.files().is_empty(),
+                "a format 1 manifest is the Windows entry"
+            );
+        }
     }
 
     #[test]
-    fn an_unpublished_manifest_never_verifies() {
+    fn a_target_without_pinned_files_never_verifies() {
         let temp = TempDir::new("runtime-unpublished");
         let dir = temp.join(RUNTIME_FOLDER);
-        runtime_folder(&dir);
-        if manifest().files().is_empty() {
-            assert!(!verify_voice(&dir, manifest()));
-        }
+        let pinned = runtime_folder(&dir);
+        assert!(verify_voice(&dir, &pinned));
+        let mut unpublished = pinned;
+        unpublished.targets.get_mut(TARGET).unwrap().files = Some(Vec::new());
+        assert!(!verify_voice(&dir, &unpublished));
         assert!(!verify_voice(&dir, &Manifest::default()));
     }
 
@@ -412,14 +516,49 @@ mod tests {
         );
         // Another format isn't read as this one.
         let other = Manifest {
-            format: 2,
+            format: 3,
             ..pinned.clone()
         };
         assert!(!verify_voice(&dir, &other));
         // A path that leaves the folder never verifies.
         let mut escaping = pinned.clone();
-        escaping.files.as_mut().unwrap()[5].path = "../LICENSE".into();
+        escaping
+            .targets
+            .get_mut(TARGET)
+            .unwrap()
+            .files
+            .as_mut()
+            .unwrap()[5]
+            .path = "../LICENSE".into();
         assert!(!verify_voice(&dir, &escaping));
+    }
+
+    /// A macOS bundle keeps the runtime in Contents/Resources; the exe lives in Contents/MacOS.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_finds_the_runtime_in_its_resources() {
+        let temp = TempDir::new("runtime-bundle");
+        let contents = temp.join("Rukoo Voice.app").join("Contents");
+        let exe_dir = contents.join("MacOS");
+        fs::create_dir_all(&exe_dir).unwrap();
+        let dir = contents.join("Resources").join(RUNTIME_FOLDER);
+        let pinned = runtime_folder(&dir);
+        assert_eq!(
+            locate_in(&exe_dir, None, None, &pinned).unwrap(),
+            RuntimeInfo {
+                dir,
+                location: RuntimeLocation::Voice,
+                commit: "97a15af".into(),
+            }
+        );
+        // An unbundled build still finds the folder next to its exe.
+        let unbundled = temp.join("unbundled");
+        fs::create_dir_all(&unbundled).unwrap();
+        let pinned = runtime_folder(&unbundled.join(RUNTIME_FOLDER));
+        assert_eq!(
+            locate_in(&unbundled, None, None, &pinned).unwrap().location,
+            RuntimeLocation::Voice
+        );
     }
 
     #[test]
@@ -428,7 +567,12 @@ mod tests {
         let dir = temp.join(RUNTIME_FOLDER);
         let pinned = runtime_folder(&dir);
         assert!(verify_voice(&dir, &pinned));
-        let dll = dir.join("ggml-cpu.dll");
+        let dll = dir.join(
+            *RUNTIME_DLLS
+                .iter()
+                .find(|name| name.contains("ggml-cpu"))
+                .unwrap(),
+        );
         let mut bytes = fs::read(&dll).unwrap();
         bytes[0] ^= 0x01;
         fs::write(&dll, &bytes).unwrap();
@@ -446,6 +590,8 @@ mod tests {
         assert!(!verify_voice(&dir, &pinned));
     }
 
+    /// Ownkey's runtime is a Windows install: these pins and the fallback only exist there.
+    #[cfg(windows)]
     #[test]
     fn ownkeys_folder_with_other_hashes_is_skipped() {
         let temp = TempDir::new("runtime-ownkey");
@@ -472,6 +618,8 @@ mod tests {
         assert!(verify_known(&ownkey, &known));
     }
 
+    /// Ownkey's runtime is a Windows install: these pins and the fallback only exist there.
+    #[cfg(windows)]
     #[test]
     fn ownkeys_folder_counts_only_with_its_c_runtime_one_folder_up() {
         let temp = TempDir::new("runtime-ownkey-crt");
@@ -595,6 +743,8 @@ mod tests {
         assert_eq!(dev_dir_in(true, &blank), None);
     }
 
+    /// Ownkey's runtime is a Windows install: these pins and the fallback only exist there.
+    #[cfg(windows)]
     #[test]
     fn ownkeys_pins_are_lower_case_sha256() {
         for (name, size, sha) in OWNKEY_RUNTIME.into_iter().chain(OWNKEY_CRT) {

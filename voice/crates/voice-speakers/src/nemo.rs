@@ -5,22 +5,35 @@
 //! with `nemo_speech_asr_last_error()` holding the reason for the last failure on this thread.
 //! The model must outlive its streams, and a stream is used from one thread.
 //!
-//! `nemo_speech_asr_c.dll` is loaded by absolute path with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, so
-//! the ggml DLLs and the Visual C++ runtime next to it are found there before anywhere else. The
-//! system DLLs it imports are loaded from System32 before it, so a file of the same name in the
-//! runtime folder or a `dll_dirs` folder never loads. The application folder isn't searched. None
-//! of these DLLs is ever unloaded.
+//! On Windows `nemo_speech_asr_c.dll` is loaded by absolute path with
+//! `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, so the ggml DLLs and the Visual C++ runtime next to it are
+//! found there before anywhere else. The system DLLs it imports are loaded from System32 before
+//! it, so a file of the same name in the runtime folder or a `dll_dirs` folder never loads. The
+//! application folder isn't searched.
+//!
+//! On macOS `libnemo_speech_asr_c.dylib` is loaded by absolute path with `dlopen(RTLD_NOW |
+//! RTLD_LOCAL)`; its `@loader_path` install names make dyld find the five ggml and C ABI dylibs in
+//! the same folder. A hardened process refuses a relative path before it looks at any signature,
+//! which [`std::path::absolute`] prevents, and it refuses dylibs signed by another team, which is
+//! why the speaker worker carries `com.apple.security.cs.disable-library-validation`.
+//!
+//! None of these libraries is ever unloaded.
 
 use std::ffi::{c_char, c_void, CStr, CString};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
 
+#[cfg(windows)]
 use windows::core::{PCSTR, PCWSTR};
+#[cfg(windows)]
 use windows::Win32::Foundation::HMODULE;
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::{
     SetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX, THREAD_ERROR_MODE,
 };
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{
     AddDllDirectory, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_FLAGS,
     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS,
@@ -30,14 +43,25 @@ use crate::backend::{check_cpu, Frames, SAMPLE_RATE};
 use crate::cpu;
 use crate::protocol::{ErrorKind, Failure};
 
-/// The DLL with the C ABI; it imports the other four.
+/// The loaded library's handle: a Windows module or a `dlopen` handle.
+#[cfg(windows)]
+type Module = HMODULE;
+#[cfg(not(windows))]
+type Module = *mut c_void;
+
+/// The library with the C ABI: it imports the other four DLLs on Windows, the other five dylibs on
+/// macOS.
+#[cfg(windows)]
 pub const LIBRARY: &str = "nemo_speech_asr_c.dll";
+#[cfg(not(windows))]
+pub const LIBRARY: &str = "libnemo_speech_asr_c.dylib";
 
 /// The system DLLs the runtime imports, as `build.ps1` allows them. Its `api-ms-win-crt-*` API sets
 /// resolve to `ucrtbase.dll`. kernel32 and advapi32 are KnownDLLs, which the loader never searches
 /// for; dbghelp and ucrtbase it finds by search, starting in the runtime folder.
 /// `tests/runtime.rs` plants a copy of every system DLL a real runtime imports in its folder and
 /// checks that the System32 copy loads, so a new import missing here fails there.
+#[cfg(windows)]
 const SYSTEM_IMPORTS: [&str; 4] = [
     "kernel32.dll",
     "advapi32.dll",
@@ -140,12 +164,14 @@ pub struct Runtime {
 }
 
 /// A path as the NUL-terminated UTF-16 Windows takes.
+#[cfg(windows)]
 fn wide(path: &std::ffi::OsStr) -> Vec<u16> {
     path.encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Lets the loader search `dir` for the runtime's imports, as `LOAD_LIBRARY_SEARCH_USER_DIRS`
 /// includes the folders added this way. For the rest of the process, which loads one runtime.
+#[cfg(windows)]
 fn add_dll_directory(dir: &Path) -> Result<(), Failure> {
     // AddDllDirectory takes only an absolute path.
     let absolute = std::path::absolute(dir).map_err(|error| {
@@ -169,6 +195,7 @@ fn add_dll_directory(dir: &Path) -> Result<(), Failure> {
 /// Loads each of [`SYSTEM_IMPORTS`] from System32. An import whose name matches a loaded module
 /// binds to that module without a search, so the runtime gets these copies even when its folder
 /// has a DLL of the same name. The handles are never freed, so the modules stay for the process.
+#[cfg(windows)]
 fn pin_system_imports() -> Result<(), Failure> {
     for name in SYSTEM_IMPORTS {
         let wide = wide(name.as_ref());
@@ -185,6 +212,7 @@ fn pin_system_imports() -> Result<(), Failure> {
 
 /// Where the loader looks for the runtime's imports: the runtime folder, the `dll_dirs` folders
 /// when there are any, then System32. Not the application folder, which holds none of them.
+#[cfg(windows)]
 fn search_flags(has_dll_dirs: bool) -> LOAD_LIBRARY_FLAGS {
     let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
     if has_dll_dirs {
@@ -202,14 +230,29 @@ fn runtime_failure(message: impl Into<String>) -> Failure {
 ///
 /// # Safety
 /// `T` must be the function pointer type the export has in the header.
-unsafe fn symbol<T: Copy>(module: HMODULE, name: &'static str) -> Option<T> {
+#[cfg(windows)]
+unsafe fn symbol<T: Copy>(module: Module, name: &'static str) -> Option<T> {
     debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<usize>());
     let c_name = CString::new(name).expect("export names have no NUL");
     let address = unsafe { GetProcAddress(module, PCSTR(c_name.as_ptr().cast())) }?;
     Some(unsafe { std::mem::transmute_copy(&address) })
 }
 
-unsafe fn require<T: Copy>(module: HMODULE, name: &'static str) -> Result<T, Failure> {
+/// Looks an export up and casts it to its declared type.
+///
+/// # Safety
+/// `T` must be the function pointer type the export has in the header.
+#[cfg(not(windows))]
+unsafe fn symbol<T: Copy>(module: Module, name: &'static str) -> Option<T> {
+    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<usize>());
+    let c_name = CString::new(name).expect("export names have no NUL");
+    // dlsym answers null both for a missing export and for one whose value is null; the C ABI
+    // exports here are functions, so a null answer is the missing case.
+    let address = unsafe { libc::dlsym(module, c_name.as_ptr()) };
+    (!address.is_null()).then(|| unsafe { std::mem::transmute_copy(&address) })
+}
+
+unsafe fn require<T: Copy>(module: Module, name: &'static str) -> Result<T, Failure> {
     unsafe { symbol(module, name) }.ok_or_else(|| {
         runtime_failure(format!(
             "The speaker label runtime lacks the export {name}; it isn't the pinned NeMo-Speech.cpp build."
@@ -217,15 +260,86 @@ unsafe fn require<T: Copy>(module: HMODULE, name: &'static str) -> Result<T, Fai
     })
 }
 
+/// Loads the C ABI DLL from `library` with the search rules described on [`Runtime::load`].
+#[cfg(windows)]
+fn load_windows(dir: &Path, library: &Path, dll_dirs: &[PathBuf]) -> Result<Module, Failure> {
+    for extra in dll_dirs {
+        add_dll_directory(extra)?;
+    }
+    pin_system_imports()?;
+    let wide = wide(library.as_os_str());
+    // A damaged or foreign DLL must fail the load instead of opening an error box in a process
+    // nobody sees.
+    let mut previous = THREAD_ERROR_MODE(0);
+    let quiet = unsafe {
+        SetThreadErrorMode(
+            SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
+            Some(&mut previous),
+        )
+    }
+    .is_ok();
+    let module = unsafe {
+        LoadLibraryExW(
+            PCWSTR(wide.as_ptr()),
+            None,
+            search_flags(!dll_dirs.is_empty()),
+        )
+    };
+    if quiet {
+        let _ = unsafe { SetThreadErrorMode(previous, None) };
+    }
+    module.map_err(|error| {
+        runtime_failure(format!(
+            "The speaker label runtime could not load from {}: {}",
+            dir.display(),
+            error.message()
+        ))
+    })
+}
+
+/// Loads the C ABI dylib by absolute path. Its `@loader_path` install names make dyld find the
+/// five dylibs it imports in the same folder, so no `DYLD_LIBRARY_PATH` or rpath is involved.
+#[cfg(not(windows))]
+fn load_unix(dir: &Path, library: &Path) -> Result<Module, Failure> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(library.as_os_str().as_bytes()).map_err(|_| {
+        runtime_failure(format!(
+            "The speaker label runtime path {} contains a NUL.",
+            library.display()
+        ))
+    })?;
+    let module = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+    if module.is_null() {
+        let reason = unsafe {
+            let error = libc::dlerror();
+            if error.is_null() {
+                "no reason given".to_owned()
+            } else {
+                CStr::from_ptr(error).to_string_lossy().into_owned()
+            }
+        };
+        return Err(runtime_failure(format!(
+            "The speaker label runtime could not load from {}: {reason}",
+            dir.display()
+        )));
+    }
+    Ok(module)
+}
+
 impl Runtime {
-    /// Checks the processor, then loads `nemo_speech_asr_c.dll` from `dir` and resolves its
-    /// diarization exports. The system DLLs it imports come from System32; the others from `dir`,
-    /// then from `dll_dirs`, such as Ownkey's C runtime one folder up, then from System32. The DLL
-    /// stays loaded until the process ends.
+    /// Checks the processor, then loads the C ABI library from `dir` and resolves its diarization
+    /// exports.
+    ///
+    /// On Windows the system DLLs it imports come from System32 and the others from `dir`, then
+    /// from `dll_dirs` (such as Ownkey's C runtime one folder up), then from System32. On macOS
+    /// the `dir` holds every dylib the C ABI imports, which come with the folder itself; there is
+    /// no C runtime to find. The library stays loaded until the process ends.
     pub fn load(dir: &Path, dll_dirs: &[PathBuf]) -> Result<&'static Runtime, Failure> {
         check_cpu(cpu::detect())?;
-        // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path, and a verbatim \\?\ path would
-        // keep the loader from searching the DLL's folder, so no canonicalize.
+        // Both loaders need an absolute path: LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR on Windows, and a
+        // hardened process refuses a relative dlopen before any signature check. A verbatim \\?\
+        // path would keep the Windows loader from searching the DLL's folder, so no canonicalize.
         let dir = std::path::absolute(dir).map_err(|error| {
             runtime_failure(format!(
                 "The speaker label runtime folder {} is not usable: {error}",
@@ -239,38 +353,14 @@ impl Runtime {
                 library.display()
             )));
         }
-        for extra in dll_dirs {
-            add_dll_directory(extra)?;
-        }
-        pin_system_imports()?;
-        let wide = wide(library.as_os_str());
-        // A damaged or foreign DLL must fail the load instead of opening an error box in a process
-        // nobody sees.
-        let mut previous = THREAD_ERROR_MODE(0);
-        let quiet = unsafe {
-            SetThreadErrorMode(
-                SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
-                Some(&mut previous),
-            )
-        }
-        .is_ok();
-        let module = unsafe {
-            LoadLibraryExW(
-                PCWSTR(wide.as_ptr()),
-                None,
-                search_flags(!dll_dirs.is_empty()),
-            )
+        #[cfg(windows)]
+        let module = load_windows(&dir, &library, dll_dirs)?;
+        #[cfg(not(windows))]
+        let module = {
+            // Only Ownkey's Windows runtime has imports from a folder of its own.
+            let _ = dll_dirs;
+            load_unix(&dir, &library)?
         };
-        if quiet {
-            let _ = unsafe { SetThreadErrorMode(previous, None) };
-        }
-        let module = module.map_err(|error| {
-            runtime_failure(format!(
-                "The speaker label runtime could not load from {}: {}",
-                dir.display(),
-                error.message()
-            ))
-        })?;
 
         let f = unsafe {
             // Present in the pinned build but unused: checked so a different build fails here.
@@ -625,16 +715,12 @@ mod tests {
 
     #[test]
     fn a_processor_without_the_baseline_is_refused_before_loading() {
-        let failure = check_cpu(cpu::CpuFeatures {
-            avx2: true,
-            fma: true,
-            f16c: true,
-            bmi2: false,
-        })
-        .unwrap_err();
-        assert_eq!(
-            failure,
-            Failure::new(ErrorKind::Cpu, "This processor lacks bmi2.")
+        let failure = check_cpu(cpu::CpuFeatures::default()).unwrap_err();
+        assert_eq!(failure.kind, ErrorKind::Cpu);
+        assert!(
+            failure.message.starts_with("This processor lacks "),
+            "{}",
+            failure.message
         );
     }
 
@@ -653,6 +739,7 @@ mod tests {
         assert!(failure.message.contains(LIBRARY), "{}", failure.message);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_for_imports_is_added_and_a_missing_one_refused() {
         let dir =
@@ -667,6 +754,7 @@ mod tests {
         assert!(failure.message.contains("missing"), "{}", failure.message);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_system_imports_load_from_system32() {
         use std::os::windows::ffi::OsStringExt;
@@ -699,6 +787,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn imports_are_searched_for_outside_the_application_folder() {
         let own = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;

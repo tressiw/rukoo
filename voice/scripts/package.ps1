@@ -273,6 +273,15 @@ function Assert-NemoRuntime {
 function Read-RuntimeManifest {
   param([string]$Path)
   $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  # Format 2 holds one entry per platform. This package ships the Windows runtime, and the rest of
+  # the script reads name, commit, archive and files from the top of the object.
+  if ($manifest.format -eq 2) {
+    $target = $manifest.targets.'windows-x86_64'
+    if (-not $target) { throw "The runtime manifest $Path pins no windows-x86_64 runtime" }
+    foreach ($property in $target.PSObject.Properties) {
+      $manifest = $manifest | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force -PassThru
+    }
+  }
   if (-not $manifest.archive -or @($manifest.files).Count -eq 0) {
     throw 'Publish the NeMo runtime first (voice/nemo-runtime/README.md). voice/nemo-runtime/manifest.json has no archive yet.'
   }
