@@ -1,6 +1,6 @@
 [package]
 name = "voice-screen-files"
-description = "The screen folder of a Rukoo Voice meeting: journal, clock mapping, frame and drop rules, MP4 boxes, clips and the screen process's control port"
+description = "The screen folder of a Rukoo Voice meeting: journal, clock mapping, frame and drop rules, the MP4 box walker and fragmented MP4 writer, clips and the screen process's control port"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
