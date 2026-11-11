@@ -1,12 +1,14 @@
 //! The screen process next to the real recorder: crash safety, the drop order, pause, monitor
 //! switching, stopping and the frame text. Every test runs both as real processes, the screen
-//! process on the synthetic screen, so nothing of the desktop is captured. Video uses
-//! Microsoft's software encoder through the system-memory path (`software-encoder`), which is
-//! what a CI runner has; `hard_kill_with_hardware_encoder` covers NVENC on a PC that has it.
+//! process on the synthetic screen, so nothing of the desktop is captured. Video uses the
+//! platform's software encoder (`software-encoder`): Microsoft's on Windows, Apple's on macOS,
+//! which is what a CI runner has. `hard_kill_with_hardware_encoder` covers NVENC or VideoToolbox's
+//! hardware encoder on a machine that has one. The real-capture spike and the Windows sink
+//! writer's scaling spike run on Windows only.
 
 mod common;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod tests {
     use std::fs;
     use std::time::Duration;
@@ -122,7 +124,8 @@ mod tests {
         }
     }
 
-    /// The file is cut on a fragment boundary and Media Foundation reads every sample in it.
+    /// The file ends on a fragment boundary and the platform's reader finds every sample in it:
+    /// Media Foundation on Windows, the shared box walker on macOS.
     fn assert_video_reads(path: &std::path::Path) -> Value {
         let index = mp4::index_path(path).unwrap();
         assert_eq!(
@@ -135,7 +138,7 @@ mod tests {
         assert_eq!(report["reader"]["error"], Value::Null, "{report}");
         assert_eq!(
             report["reader"]["samples"], report["samples"],
-            "Media Foundation reads fewer samples than the file holds: {report}"
+            "the platform's reader finds fewer samples than the file holds: {report}"
         );
         report
     }
@@ -144,9 +147,14 @@ mod tests {
         hard_kill(&spec(""), false);
     }
 
-    /// NVENC through the GPU path, on a PC that has it. `VOICE_SCREEN_TEST_SIZE=1440x2560` runs it
-    /// at the size of a portrait monitor, still on the synthetic screen.
+    /// The hardware encoder, where the machine has one: NVENC through the GPU path on Windows,
+    /// VideoToolbox's hardware encoder on macOS. `VOICE_SCREEN_TEST_SIZE=1440x2560` runs it at the
+    /// size of a portrait monitor, still on the synthetic screen.
     pub fn hard_kill_with_hardware_encoder() {
+        if voice_screen::probe::probe().hardware_encoder.is_none() {
+            println!("    skipped: this computer has no hardware H.264 encoder");
+            return;
+        }
         let size = std::env::var("VOICE_SCREEN_TEST_SIZE").unwrap_or_else(|_| "1920x1080".into());
         // A screen that changes every second, and one that stays still after its first slide, as
         // a slide deck mostly does: then only the re-submits make the samples, and the fragments
@@ -166,8 +174,8 @@ mod tests {
         let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
         let capture_t = t(first(&lines, "capture").unwrap());
 
-        // Spike 1: the file the sink writer is still writing opens for reading with full sharing,
-        // and clip.get can cut its finished fragments.
+        // Spike 1: the file the video writer is still writing opens for reading, and clip.get can
+        // cut its finished fragments.
         let growing = video_path(&m, first(&lines, "video").unwrap());
         let index = wait_until(WAIT_TIMEOUT, || {
             mp4::index_path(&growing)
@@ -1125,8 +1133,8 @@ mod tests {
     }
 
     pub fn ocr_reads_demo_text() {
-        if voice_screen::frames::ocr::languages().is_empty() {
-            println!("    skipped: this Windows has no OCR language");
+        if voice_screen::frames::languages().is_empty() {
+            println!("    skipped: this computer has no OCR language");
             return;
         }
         let m = TempMeeting::new("ocr", "frames");
@@ -1171,7 +1179,7 @@ mod tests {
         assert_frames_open(&m, &lines);
     }
 
-    /// A still screen that Windows keeps handing over at 15 frames a second, with a keystroke
+    /// A still screen that the platform keeps handing over at 15 frames a second, with a keystroke
     /// every second, once with dirty regions and once without. Before, every frame went to the
     /// encoder: 15 samples a second while nothing changed. Now frames that changed next to nothing
     /// are held, so the file holds about the four a second of the quarter-second re-submit, and the
@@ -1194,29 +1202,36 @@ mod tests {
             let samples = report["samples"].as_u64().unwrap();
             let ms = report["durationMs"].as_u64().unwrap().max(1);
             let rate = samples as f64 * 1000.0 / ms as f64;
-            let marks = marks_in_video(&path, 1280, 720);
-            println!(
-                "    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second; marks {:?}",
-                marks.iter().map(|m| m.1).collect::<Vec<_>>()
-            );
+            println!("    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second");
             assert!(rate <= 6.0, "{rate:.1} samples a second on a still screen");
-            assert_eq!(marks.first().map(|m| m.1), Some(0), "{marks:?}");
-            let typed = marks.last().unwrap().1;
-            assert!(
-                typed >= 5,
-                "the video ends with {typed} typed marks: {marks:?}"
-            );
-            assert!(marks.windows(2).all(|w| w[0].1 <= w[1].1), "{marks:?}");
-            // Samples are never more than a re-submit and a tick apart, so each mark shows
-            // within about half a second of its keystroke.
-            let gaps = marks.windows(2).map(|w| w[1].0 - w[0].0);
-            assert!(gaps.clone().all(|g| g <= 600), "{marks:?}");
+            // The typed marks are counted by decoding the file, which only the Windows spike
+            // has a decoder for; macOS checks the sample rate alone.
+            #[cfg(windows)]
+            {
+                let marks = marks_in_video(&path, 1280, 720);
+                println!(
+                    "    marks {:?}",
+                    marks.iter().map(|m| m.1).collect::<Vec<_>>()
+                );
+                assert_eq!(marks.first().map(|m| m.1), Some(0), "{marks:?}");
+                let typed = marks.last().unwrap().1;
+                assert!(
+                    typed >= 5,
+                    "the video ends with {typed} typed marks: {marks:?}"
+                );
+                assert!(marks.windows(2).all(|w| w[0].1 <= w[1].1), "{marks:?}");
+                // Samples are never more than a re-submit and a tick apart, so each mark shows
+                // within about half a second of its keystroke.
+                let gaps = marks.windows(2).map(|w| w[1].0 - w[0].0);
+                assert!(gaps.clone().all(|g| g <= 600), "{marks:?}");
+            }
         }
     }
 
     /// Decodes a video file through Media Foundation and counts in each sample the synthetic
     /// screen's typed marks, the dark squares `type-every` draws in a row under the text. Returns
     /// each sample's media time in ms with the marks shown.
+    #[cfg(windows)]
     fn marks_in_video(path: &std::path::Path, width: u32, height: u32) -> Vec<(u64, u32)> {
         use windows::core::{Interface, HSTRING};
         use windows::Win32::Media::MediaFoundation::*;
@@ -1284,6 +1299,7 @@ mod tests {
     /// Spike 2 (spec 4.2), on a PC with a hardware encoder: a monitor over 4096 per side or
     /// 36,864 macroblocks is scaled by the sink writer's video processor, and one at 3840 x 2160
     /// keeps its size. The synthetic screen, so nothing real is captured.
+    #[cfg(windows)]
     pub fn spike_hardware_encoder_scales_large_monitors() {
         for (size, expected) in [
             ("5120x1440", (4096, 1152)),
@@ -1326,6 +1342,7 @@ mod tests {
     /// screen, so it runs only with `VOICE_SCREEN_TEST_REAL_SCREEN=1`, demo windows covering
     /// every display and `VOICE_SCREEN_TEST_REAL_DIR` naming a scratch folder; the captures are
     /// deleted at the end, also when it fails.
+    #[cfg(windows)]
     pub fn spike_real_capture_cadence() {
         if std::env::var("VOICE_SCREEN_TEST_REAL_SCREEN").as_deref() != Ok("1") {
             println!("    skipped: needs VOICE_SCREEN_TEST_REAL_SCREEN=1 and demo windows on every display");
@@ -1376,11 +1393,12 @@ mod tests {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() {
     common::play_role();
     use common::Test;
-    common::run_tests(&[
+    #[allow(unused_mut)]
+    let mut tests = vec![
         Test {
             name: "screen_modes_can_stop_and_restart_without_interrupting_audio",
             ignored: false,
@@ -1492,16 +1510,6 @@ fn main() {
             run: tests::stops_when_the_recorder_is_gone,
         },
         Test {
-            name: "spike_hardware_encoder_scales_large_monitors",
-            ignored: true,
-            run: tests::spike_hardware_encoder_scales_large_monitors,
-        },
-        Test {
-            name: "spike_real_capture_cadence",
-            ignored: true,
-            run: tests::spike_real_capture_cadence,
-        },
-        Test {
             name: "ocr_reads_demo_text",
             ignored: false,
             run: tests::ocr_reads_demo_text,
@@ -1516,11 +1524,26 @@ fn main() {
             ignored: false,
             run: tests::a_still_screen_records_few_frames,
         },
-    ]);
+    ];
+    // The Windows sink writer's scaling and the real screen capture are Windows spikes.
+    #[cfg(windows)]
+    {
+        tests.push(Test {
+            name: "spike_hardware_encoder_scales_large_monitors",
+            ignored: true,
+            run: tests::spike_hardware_encoder_scales_large_monitors,
+        });
+        tests.push(Test {
+            name: "spike_real_capture_cadence",
+            ignored: true,
+            run: tests::spike_real_capture_cadence,
+        });
+    }
+    common::run_tests(&tests);
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     common::play_role();
-    println!("the screen process's tests need Windows; skipped");
+    println!("the screen process's tests need Windows or macOS; skipped");
 }

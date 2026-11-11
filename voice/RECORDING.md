@@ -245,11 +245,11 @@ The screen process writes it after its `session` line, to a temporary name that 
 | `kind` | Fields | When |
 |---|---|---|
 | `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on Linux |
-| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the Windows device name, such as `\\.\DISPLAY1` |
+| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the platform's monitor id: the Windows device name such as `\\.\DISPLAY1`, or the display id on macOS |
 | `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
 | `video_end` | `t`, `seq`, `reason`, `bytes` | A video file ended; `t` is the end of its last sample. `reason` is `pause`, `lock`, `monitor`, `resize`, `clock`, `stop`, `error`, `disk` or `crash` |
-| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what Windows read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
+| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what the platform's text reader read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
 | `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder` or `device` |
 | `lock`, `unlock` | `t` | The session locked or disconnected, and came back. Nothing is captured in between |
 | `device_lost` | `t` | The graphics device was removed or reset. The next `capture` line ends the gap |
@@ -287,7 +287,7 @@ A frames meeting with one slide change, locked for a minute, the heartbeats left
 - Video is H.264 at up to 15 frames per second, from a hardware encoder. A fragment ends at the first keyframe once it holds a second of video, and the sample after that second is always a keyframe. A frame goes to the encoder while the screen changes. One that changed next to nothing since the last frame sent waits, as Windows can hand over unchanged frames at 15 a second: after a quarter second without a sample the newest waiting frame goes in at its capture time, or else the last picture again. So a still screen records about four frames a second, a small change such as typed text shows within half a second, and fragments are 1 to 2 s long. The cursor isn't recorded.
 - A video file has the monitor's own size when each side is at most 4096 and the picture at most 36,864 macroblocks of 16 x 16, else it is scaled by one factor to fit both. Both sides are then rounded down to even, so a portrait 1440 x 2560 monitor keeps its size and 5120 x 1440 becomes 4096 x 1152.
 - A frame is saved when at least 1% of a 1/8-scale picture changed noticeably since the last saved frame, once the screen is still for 0.7 s or 3 s after the change began, at most one every 2 s, and one every 10 s after 10 saves in a row at that pace. One is always saved at the start of a capture, after a monitor switch, an unlock and a resume.
-- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by Windows' own OCR, in the user's language when Windows has a recognizer for it.
+- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by the platform's text reader, Windows' OCR on Windows and Vision on macOS, in the user's language when it reads that language.
 
 ### Readers
 
@@ -337,9 +337,9 @@ rukoo-voice-screen inspect <file.mp4>
 { "version": 1, "capture": true, "encoders": [{ "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }], "hardwareEncoder": { "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }, "ocr": ["nl-NL"], "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL S3220DGF", "x": 0, "y": 0, "width": 2560, "height": 1440, "primary": true }] }
 ```
 
-`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads.
+`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads, and on macOS the shared box walker reads them.
 
-`record`, `finalize` and `probe` need Windows; elsewhere they exit with code 2. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
+`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. Until ScreenCaptureKit lands, macOS records the synthetic screen of `--test` and refuses a real one. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
 
 `--test` is honoured only in a development copy, with `RUKOO_VOICE_DATA_DIR` set. It replaces the screen with a synthetic source and adds faults, as `synthetic:<w>x<h>` followed by options separated by commas:
 

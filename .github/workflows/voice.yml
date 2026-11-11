@@ -204,6 +204,8 @@ jobs:
             fi
             echo "::warning::Speaker label assets missing: ${missing[*]}. The AMI label cases and the runtime tests skip, and the test output reports them as passed."
           fi
+      # The screen process's crash and clock tests run here on the synthetic screen with VideoToolbox's software
+      # encoder and Vision; its real-screen and Windows sink writer spikes stay on Windows.
       - run: cargo test --workspace --no-fail-fast
       # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
       - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen
