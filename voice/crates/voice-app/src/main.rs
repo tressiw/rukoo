@@ -231,7 +231,7 @@ fn setup(
         pill: pill.clone(),
         tray: tray.clone(),
         sink: sink.clone(),
-        shell: Arc::new(SystemShell),
+        shell: Arc::new(SystemShell::new(app)),
         catalog,
         webview_dir,
         settings_loads: AtomicU64::new(0),

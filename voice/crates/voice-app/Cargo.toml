@@ -45,3 +45,22 @@ windows = { version = "=0.62.2", features = [
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The same versions tauri 2.12.5, wry and tao use, so the Settings window's NSWindow is one type.
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "NSApplication",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSResponder",
+  "NSSavePanel",
+  "NSWindow",
+  "block2",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "NSString",
+  "NSURL",
+  "std",
+] }
+block2 = "=0.6.2"
