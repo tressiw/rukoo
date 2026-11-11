@@ -304,8 +304,9 @@ function stageHelpers(release, out) {
   return externalBin;
 }
 
-// APP's platform config is merged over tauri.conf.json on macOS. The patch adds the staged helper paths for this
-// target folder, as package.ps1 does on Windows.
+// APP's platform config is merged over tauri.conf.json on macOS. The helper list goes only in this package-time patch,
+// as package.ps1 does on Windows: tauri-build checks bundle.externalBin at compile time, so a committed list would
+// make every ordinary `cargo build` of voice-app fail until package-macos.mjs has staged the copies.
 function writePatch(out, externalBin) {
   const patch = { bundle: { targets: ['app'], externalBin } };
   const file = path.join(out, 'tauri.package.json');

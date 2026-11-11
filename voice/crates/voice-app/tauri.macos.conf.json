@@ -2,12 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "targets": ["app"],
-    "externalBin": [
-      "../../target/package/sidecars/rukoo-voice-recorder",
-      "../../target/package/sidecars/rukoo-voice-local",
-      "../../target/package/sidecars/rukoo-voice-speakers",
-      "../../target/package/sidecars/rukoo-voice-screen"
-    ],
     "macOS": {
       "minimumSystemVersion": "15.0",
       "entitlements": "macos/entitlements-audio.plist",
