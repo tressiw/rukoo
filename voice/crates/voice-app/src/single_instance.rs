@@ -16,10 +16,9 @@
 //! after its wait, as it does when binding fails. Both copies work the path out from
 //! `RUKOO_VOICE_DATA_DIR` alone, and neither depends on the current directory.
 
-#[cfg(any(windows, test))]
-use std::path::Path;
-
-/// The FNV-1a hash of some bytes: stable across builds and platforms, unlike std's hasher.
+/// The FNV-1a hash of some bytes: stable across builds and platforms, unlike std's hasher. Used by
+/// `names` and by the Unix fallback's folder; a platform with neither has no use for it.
+#[cfg(any(windows, unix, test))]
 fn hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
@@ -30,7 +29,7 @@ fn hash(bytes: &[u8]) -> u64 {
 ///
 /// Windows only, plus the test that pins the names on every platform.
 #[cfg(any(windows, test))]
-pub fn names(data_dir: &Path) -> (String, String) {
+pub fn names(data_dir: &std::path::Path) -> (String, String) {
     let path = data_dir.to_string_lossy().replace('/', "\\").to_lowercase();
     let path = path.trim_end_matches('\\');
     let hash = hash(path.as_bytes());
@@ -63,6 +62,7 @@ pub struct Guard {
 
 #[cfg(windows)]
 mod imp {
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use windows::core::HSTRING;
@@ -407,6 +407,8 @@ mod imp {
 
 #[cfg(not(any(windows, unix)))]
 mod imp {
+    use std::path::Path;
+
     use super::*;
 
     pub fn acquire(_data_dir: &Path) -> Instance {
@@ -426,11 +428,14 @@ pub use imp::{acquire, signal};
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    #[cfg(any(windows, unix))]
     use std::path::PathBuf;
 
     use super::*;
 
     /// A scratch data folder of this test's own, so the tests don't find each other's lock.
+    #[cfg(any(windows, unix))]
     fn temp(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("voice-app-single-{}-{name}", std::process::id()));
@@ -441,6 +446,7 @@ mod tests {
 
     /// A data folder deep enough that `<data folder>/instance.sock` is too long for `sun_path`, as a
     /// data folder under a worktree's `tmp/` can be. Such a folder gets the short fallback socket.
+    #[cfg(unix)]
     fn long_data_folder(name: &str) -> PathBuf {
         let mut dir = temp(name);
         for _ in 0..3 {
