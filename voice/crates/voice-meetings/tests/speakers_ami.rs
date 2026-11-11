@@ -3,7 +3,8 @@
 //! at least 90 % of transcript time to the right speaker, and the same ids after the worker is
 //! killed.
 //!
-//! Windows only. It skips unless these are set (`voice/scripts/speaker-assets.ps1` fetches them):
+//! Windows and macOS. It skips unless these are set (`speaker-assets.ps1` fetches them on Windows,
+//! `node voice/scripts/speaker-assets.mjs` on macOS):
 //!
 //! - `RUKOO_VOICE_TEST_NEMO_DIR`: the NeMo-Speech.cpp runtime folder.
 //! - `RUKOO_VOICE_TEST_NEMOTRON`: the Nemotron 3 Diarization GGUF, or the folder that holds it.
@@ -14,7 +15,7 @@
 //! returns the reference transcript's words spread over each utterance, so the score measures
 //! the labels alone. A test that needs only `RUKOO_VOICE_TEST_AMI` checks that the oracle hears
 //! every word through the real recorder, so a low score is about the labels, not the harness.
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "macos"))]
 
 mod common;
 
@@ -564,12 +565,18 @@ fn ami_ids_survive_a_killed_worker() {
         .labels()
         .worker_pid
         .expect("a worker runs for the meeting");
+    #[cfg(windows)]
     let status = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])
         .stdout(Stdio::null())
         .status()
         .unwrap();
-    assert!(status.success(), "taskkill {pid}");
+    #[cfg(not(windows))]
+    let status = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success(), "killing worker {pid}");
     wait_until("labels to listen again", WAIT, || {
         let s = run.pipeline.labels();
         (s.worker_pid.is_some_and(|p| p != pid) && s.state == LabelState::Listening).then_some(())
