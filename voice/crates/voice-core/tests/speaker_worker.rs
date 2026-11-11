@@ -240,6 +240,9 @@ fn setup_at(dir: &Path, tweak: impl FnOnce(&mut SpeakerOptions)) -> Setup {
         fma: true,
         f16c: true,
         bmi2: true,
+        neon: true,
+        dotprod: true,
+        fp16: true,
     };
     opts.ownkey_runtime = None;
     opts.nemo_dir = None;
@@ -537,7 +540,10 @@ fn a_runtime_refusal_while_loading_is_remembered() {
     assert_eq!(again, error);
     assert_eq!(s.loads().len(), 1);
     // Settings says so too, where the runtime can run at all.
-    let expected = if cfg!(all(windows, target_arch = "x86_64")) {
+    let expected = if cfg!(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )) {
         failed
     } else {
         Unavailable::Platform
@@ -657,17 +663,14 @@ fn a_missing_worker_is_a_runtime_problem() {
 }
 
 fn an_old_processor_never_starts_a_worker() {
-    let s = setup("old-cpu", |opts| {
-        opts.cpu = CpuFeatures {
-            avx2: false,
-            fma: true,
-            f16c: true,
-            bmi2: false,
-        }
-    });
+    let s = setup("old-cpu", |opts| opts.cpu = CpuFeatures::default());
     let error = s.open_err();
     assert_eq!(error.kind, DiarErrorKind::Cpu);
-    assert_eq!(error.message, "This processor lacks avx2, bmi2.");
+    let missing = CpuFeatures::default().missing();
+    assert_eq!(
+        error.message,
+        format!("This processor lacks {}.", missing.join(", "))
+    );
     assert!(s.loads().is_empty());
 }
 
