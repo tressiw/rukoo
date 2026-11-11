@@ -74,6 +74,7 @@ jobs:
           }
           $missing = @('RUKOO_VOICE_TEST_NEMO_DIR', 'RUKOO_VOICE_TEST_NEMOTRON', 'RUKOO_VOICE_TEST_AMI') | Where-Object { -not $found.Contains($_) }
           if ($missing) {
+            # The manifest's pins are per platform since format 2; this job packages and tests the Windows one.
             $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).targets.'windows-x86_64'.archive
             if ($published) {
               Write-Host "::error::Speaker label assets missing: $($missing -join ', '). The runtime is published, so the AMI and runtime tests must run; rerun the job."
@@ -123,6 +124,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup component add rustfmt clippy
+      # Before the speaker label assets: speaker-assets.mjs and the "assets missing" check are Node scripts.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
       # The local speech worker links sherpa-onnx statically. sherpa-onnx-sys' build script downloads the pinned
       # archive into target/sherpa-onnx-prebuilt and unpacks it there, once per target folder; a restored cache
       # already holds the unpacked lib/ folder, which is what makes it skip both the download and the unpacking.
@@ -134,14 +139,74 @@ jobs:
           key: sherpa-onnx-${{ runner.arch }}-${{ hashFiles('voice/crates/voice-local/Cargo.toml') }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # Unlike Windows, this job fetches no speaker label assets: the NeMo runtime those tests need is a Windows
-      # build until the arm64 one is published, so they skip. The screen process's tests wait for its macOS port.
+      # The speaker label tests need the NeMo runtime, the Nemotron model and the AMI excerpt. The runtime is built here
+      # from the pinned commit, because its source path ends up in the dylibs: the path is fixed and the cache key is
+      # what pins a build. The model and the excerpt are fetched once per pin and checked against their hashes; nothing
+      # of them is committed.
+      - name: Cache the speaker label assets
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/speaker-assets
+          key: speaker-assets-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest.json', 'voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.mjs') }}
+      # A failed download (a rate limit, say) doesn't fail this step. The tests whose assets are missing return early and
+      # libtest reports them as passed, so the next step warns about the skip, and once the macOS runtime is published
+      # (voice/nemo-runtime/README.md) it fails the job instead: a green run then means the AMI and runtime tests ran.
+      - name: Fetch the speaker label assets
+        id: speaker-assets
+        continue-on-error: true
+        run: node scripts/speaker-assets.mjs --out "$RUNNER_TEMP/speaker-assets" --model --ami
+      - name: Cache the macOS NeMo runtime
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/nemo-runtime
+          key: nemo-runtime-macos-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest.json', 'voice/nemo-runtime/build-macos.sh', 'voice/nemo-runtime/macos.patch') }}
+      - name: Build the macOS NeMo runtime
+        run: |
+          runtime="$RUNNER_TEMP/nemo-runtime/nemo_speech"
+          if [ -f "$runtime/runtime.json" ]; then
+            echo "the cached runtime is there: $runtime"
+          else
+            ./nemo-runtime/build-macos.sh \
+              --source "$RUNNER_TEMP/nemo/NeMo-Speech.cpp" \
+              --out "$runtime" \
+              --runner macos-latest
+          fi
+      - name: Point the speaker label tests at the assets
+        run: |
+          root="$RUNNER_TEMP/speaker-assets"
+          missing=()
+          add() { echo "$1=$2"; echo "$1=$2" >> "$GITHUB_ENV"; }
+          if [ -f "$RUNNER_TEMP/nemo-runtime/nemo_speech/runtime.json" ]; then
+            add RUKOO_VOICE_TEST_NEMO_DIR "$RUNNER_TEMP/nemo-runtime/nemo_speech"
+          else
+            missing+=("RUKOO_VOICE_TEST_NEMO_DIR")
+          fi
+          if [ -f "$root/nemotron/Nemotron-3-Diarization.q8_0.gguf" ]; then
+            add RUKOO_VOICE_TEST_NEMOTRON "$root/nemotron/Nemotron-3-Diarization.q8_0.gguf"
+          else
+            missing+=("RUKOO_VOICE_TEST_NEMOTRON")
+          fi
+          ami=1
+          for name in json rttm wav; do
+            [ -f "$root/ami/ami_en2002d_2132.$name" ] || ami=0
+          done
+          if [ "$ami" = 1 ]; then
+            add RUKOO_VOICE_TEST_AMI "$root/ami"
+          else
+            missing+=("RUKOO_VOICE_TEST_AMI")
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            # The manifest's pins are per platform since format 2; this job tests the macOS one.
+            published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.targets && m.targets["macos-aarch64"] && m.targets["macos-aarch64"].archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest.json")
+            if [ "$published" = true ]; then
+              echo "::error::Speaker label assets missing: ${missing[*]}. The macOS runtime is published, so the AMI and runtime tests must run; rerun the job."
+              exit 1
+            fi
+            echo "::warning::Speaker label assets missing: ${missing[*]}. The AMI label cases and the runtime tests skip, and the test output reports them as passed."
+          fi
       - run: cargo test --workspace --no-fail-fast
       # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
       - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
       # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
       # It needs Node's global WebSocket (Node 22 or later) and no npm packages.
       - name: Bridge interop between Rukoo and Voice
