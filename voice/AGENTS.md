@@ -71,6 +71,18 @@ The runtime has to be published first: until `voice/nemo-runtime/manifest.json` 
 
 Releases: bump the workspace version in `voice/Cargo.toml`, merge, then push a `voice-v<version>` tag from main. `.github/workflows/voice-release.yml` attaches the installer, the zip and the checksums to a draft release that is never marked Latest. 0.1 is unsigned, so SmartScreen warns about the installer.
 
+### macOS
+
+`node voice/scripts/package-macos.mjs --nemo-dir <folder>` is the counterpart of `package.ps1`. It builds the five release programs, has Tauri's bundler make `Rukoo Voice.app` with the four helpers next to the app in `Contents/MacOS`, adds the NeMo runtime as `Contents/Resources/nemo_speech` and writes `voice/target/package/Rukoo-Voice-<version>-arm64.dmg`, `Rukoo-Voice-<version>-arm64.zip` and `SHA256SUMS.txt`. The DMG is made with `hdiutil` from a folder with the app and an `/Applications` link, not with Tauri's Finder-driven DMG step, so it needs no desktop. The runtime lives in `Contents/Resources/nemo_speech` rather than `Frameworks`, where codesign reads its `runtime.json` and licences as unsigned nested code.
+
+The script signs inside out, ad-hoc, with hardened runtime and `--timestamp=none`: the six dylibs, then each helper with its entitlements, then the app, and never `--deep`. `rukoo-voice` and `rukoo-voice-recorder` get `com.apple.security.device.audio-input`, `rukoo-voice-speakers` alone gets `com.apple.security.cs.disable-library-validation`, and nothing gets App Sandbox or JIT. It then checks the Info.plist keys and the English and Dutch `InfoPlist.strings`, the helpers' placement, every program's and dylib's entitlements, every Mach-O's imports with `otool -L` (the system, and for the NeMo dylibs each other), `minos 15.0` and arm64 with `vtool` and `lipo`, and that `rukoo-voice-screen` links no UI framework or third-party media library. `codesign --verify --deep --strict` runs on the app, on the app from the zip and on the app inside the mounted DMG.
+
+The package is ad-hoc signed, not notarized, as Rukoo Mail's Mac packages are: a first launch needs Open Anyway in Privacy & Security, and each update needs the permissions added again. `--developer-id` signs with `APPLE_SIGNING_IDENTITY` and notarizes with `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` instead, once those credentials exist.
+
+The NeMo runtime has no macOS download yet: another change adds manifest format 2 and `voice/nemo-runtime/build-macos.sh`. Until then `--nemo-dir` names a local runtime (the six dylibs, `runtime.json` and the licences), and without it the script stops the way `package.ps1` stops with "Publish the NeMo runtime first". `--no-speakers` makes a test package without the runtime and says so loudly.
+
+`.github/workflows/voice-release.yml` has a macOS job on `macos-15` next to the Windows one. It builds the runtime on the tagged commit and stops when `build-macos.sh` is missing, runs the package script, and attaches the DMG, the zip and `SHA256SUMS-macos-arm64.txt` to the same draft release, never Latest; its step summary says "ad-hoc signed, not notarized". The Windows checksums keep `SHA256SUMS.txt`, so the two don't replace each other.
+
 ## What makes this project special?
 
 - **A meeting can't be repeated.** Losing a recording is the worst failure Voice can have. The crash safety rules in README.md are hard requirements. The recorder never depends on transcription, the UI or Rukoo. A hard kill at any moment leaves files that open. Two CI tests prove it: one hard-kills the recorder halfway through a meeting, the other removes the microphone during one, and both check that the timeline is complete up to that point. Add them with the first recorder code, and don't merge recorder changes without them.

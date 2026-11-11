@@ -90,6 +90,12 @@ An agent never reads the bucket. It asks Rukoo for a link, and the link points a
 
 On its first start, Voice imports Ownkey's settings and uses the speech models Ownkey already downloaded, so you don't download them again. Ownkey for Windows has no update check, so Voice has an opt-in update check from its first release. Ownkey Keyboard for Android keeps its name and works on its own.
 
+## Installing a Mac build
+
+The Mac build is ad-hoc signed and not notarized, as Rukoo Mail's Mac builds are. The first time you open it, macOS says it can't check the app for malicious software. Open System Settings › Privacy & Security, find Rukoo Voice and choose Open Anyway, then open it again.
+
+macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on.
+
 ## How it's built
 
 Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens. Bucket sync runs inside the app and only reads finished files.
