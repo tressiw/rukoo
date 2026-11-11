@@ -1,8 +1,9 @@
 //! The worker with the real NeMo-Speech.cpp runtime and Nemotron 3 Diarization, on the AMI
 //! meeting excerpt. Skips unless all three variables are set, as `voice/scripts/speaker-assets.ps1`
-//! prints them:
+//! on Windows and `voice/scripts/speaker-assets.mjs` on macOS print them:
 //!
-//! - `RUKOO_VOICE_TEST_NEMO_DIR`: the runtime folder, holding `nemo_speech_asr_c.dll`.
+//! - `RUKOO_VOICE_TEST_NEMO_DIR`: the runtime folder, holding the C ABI library
+//!   (`nemo_speech_asr_c.dll` on Windows, `libnemo_speech_asr_c.dylib` on macOS).
 //! - `RUKOO_VOICE_TEST_NEMOTRON`: `Nemotron-3-Diarization.q8_0.gguf`, or the folder holding it.
 //! - `RUKOO_VOICE_TEST_AMI`: the folder holding `ami_en2002d_2132.wav`, or the WAV itself.
 
@@ -57,7 +58,7 @@ fn assets() -> Option<Assets> {
     })();
     if found.is_none() {
         eprintln!(
-            "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and RUKOO_VOICE_TEST_AMI (voice/scripts/speaker-assets.ps1)"
+            "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and RUKOO_VOICE_TEST_AMI (voice/scripts/speaker-assets.ps1, or speaker-assets.mjs on macOS)"
         );
     }
     found
