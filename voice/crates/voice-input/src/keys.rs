@@ -6,12 +6,14 @@ use std::str::FromStr;
 /// A key that can start dictation or a rewrite.
 ///
 /// The names are Ownkey's config strings (`"right alt"`, `"f13"`, ...), so an
-/// imported Ownkey config keeps its keys. Only the left/right-specific virtual
-/// keys tell the right-hand modifiers apart from the left ones.
+/// imported Ownkey config keeps its keys. Only the left/right-specific keys
+/// tell the right-hand modifiers apart from the left ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
-    /// Also AltGr on international layouts.
+    /// Also AltGr on international layouts, and Right Option on a Mac.
     RightAlt,
+    /// A Mac keyboard's right Command key; not offered on Windows.
+    RightCommand,
     RightCtrl,
     RightShift,
     F13,
@@ -22,9 +24,23 @@ pub enum Key {
 }
 
 impl Key {
-    /// Every offered key, in Ownkey's order. Poll all of them: which mode a key
-    /// means is decided per event, so a Settings change never needs a new poller.
-    pub const ALL: [Key; 8] = [
+    /// Every key Voice knows, on every platform. Poll all of them: which mode
+    /// a key means is decided per event, so a Settings change never needs a
+    /// new poller. A config copied from another platform keeps working too.
+    pub const ALL: [Key; 9] = [
+        Key::RightAlt,
+        Key::RightCommand,
+        Key::RightCtrl,
+        Key::RightShift,
+        Key::F13,
+        Key::F14,
+        Key::F15,
+        Key::Pause,
+        Key::ScrollLock,
+    ];
+
+    /// The keys a Windows keyboard has, in Ownkey's order.
+    pub const WINDOWS: [Key; 8] = [
         Key::RightAlt,
         Key::RightCtrl,
         Key::RightShift,
@@ -35,10 +51,33 @@ impl Key {
         Key::ScrollLock,
     ];
 
+    /// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there;
+    /// Right Command is the one Mac key Voice adds.
+    pub const MACOS: [Key; 7] = [
+        Key::RightAlt,
+        Key::RightCommand,
+        Key::RightCtrl,
+        Key::RightShift,
+        Key::F13,
+        Key::F14,
+        Key::F15,
+    ];
+
+    /// The keys this platform can offer, so a key a keyboard lacks can't be
+    /// chosen. `ALL` still parses every name, for a config from elsewhere.
+    pub fn offered() -> &'static [Key] {
+        if cfg!(target_os = "macos") {
+            &Key::MACOS
+        } else {
+            &Key::WINDOWS
+        }
+    }
+
     /// The config and display name, for example `"right alt"`.
     pub fn name(self) -> &'static str {
         match self {
             Key::RightAlt => "right alt",
+            Key::RightCommand => "right command",
             Key::RightCtrl => "right ctrl",
             Key::RightShift => "right shift",
             Key::F13 => "f13",
@@ -56,17 +95,33 @@ impl Key {
         Key::ALL.into_iter().find(|key| key.name() == name)
     }
 
-    /// The Windows virtual-key code.
-    pub fn vk(self) -> u16 {
+    /// The Windows virtual-key code, where Windows has the key.
+    pub fn vk(self) -> Option<u16> {
         match self {
-            Key::RightAlt => 0xA5,   // VK_RMENU
-            Key::RightCtrl => 0xA3,  // VK_RCONTROL
-            Key::RightShift => 0xA1, // VK_RSHIFT
-            Key::F13 => 0x7C,
-            Key::F14 => 0x7D,
-            Key::F15 => 0x7E,
-            Key::Pause => 0x13,
-            Key::ScrollLock => 0x91,
+            Key::RightAlt => Some(0xA5),   // VK_RMENU
+            Key::RightCtrl => Some(0xA3),  // VK_RCONTROL
+            Key::RightShift => Some(0xA1), // VK_RSHIFT
+            Key::F13 => Some(0x7C),
+            Key::F14 => Some(0x7D),
+            Key::F15 => Some(0x7E),
+            Key::Pause => Some(0x13),
+            Key::ScrollLock => Some(0x91),
+            Key::RightCommand => None,
+        }
+    }
+
+    /// The macOS virtual-key code, where a Mac keyboard has the key. Right
+    /// Option is the same physical key as Right Alt, so it shares its code.
+    pub fn mac_code(self) -> Option<u16> {
+        match self {
+            Key::RightAlt => Some(0x3D),     // kVK_RightOption
+            Key::RightCommand => Some(0x36), // kVK_RightCommand
+            Key::RightCtrl => Some(0x3E),    // kVK_RightControl
+            Key::RightShift => Some(0x3C),   // kVK_RightShift
+            Key::F13 => Some(0x69),
+            Key::F14 => Some(0x6B),
+            Key::F15 => Some(0x71),
+            Key::Pause | Key::ScrollLock => None,
         }
     }
 
@@ -125,9 +180,56 @@ mod tests {
     ];
 
     #[test]
-    fn offers_exactly_ownkeys_keys_and_codes() {
-        let ours: Vec<(&str, u16)> = Key::ALL.iter().map(|k| (k.name(), k.vk())).collect();
+    fn windows_offers_exactly_ownkeys_keys_and_codes() {
+        let ours: Vec<(&str, u16)> = Key::WINDOWS
+            .iter()
+            .map(|k| (k.name(), k.vk().expect("a Windows key has a virtual key")))
+            .collect();
         assert_eq!(ours, OWNKEY);
+        assert_eq!(Key::RightCommand.vk(), None);
+    }
+
+    #[test]
+    fn macos_offers_the_keys_a_mac_keyboard_has() {
+        let names: Vec<&str> = Key::MACOS.iter().map(|k| k.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "right alt",
+                "right command",
+                "right ctrl",
+                "right shift",
+                "f13",
+                "f14",
+                "f15"
+            ]
+        );
+        for key in Key::MACOS {
+            assert!(key.mac_code().is_some(), "{key} has a Mac key code");
+        }
+        // Pause and Scroll Lock aren't on a Mac keyboard.
+        assert_eq!(Key::Pause.mac_code(), None);
+        assert_eq!(Key::ScrollLock.mac_code(), None);
+    }
+
+    #[test]
+    fn the_mac_key_codes_match_the_keyboard() {
+        let codes: Vec<(&str, u16)> = Key::MACOS
+            .iter()
+            .map(|k| (k.name(), k.mac_code().expect("a Mac key has a code")))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                ("right alt", 0x3D),
+                ("right command", 0x36),
+                ("right ctrl", 0x3E),
+                ("right shift", 0x3C),
+                ("f13", 0x69),
+                ("f14", 0x6B),
+                ("f15", 0x71)
+            ]
+        );
     }
 
     #[test]
@@ -141,6 +243,7 @@ mod tests {
     #[test]
     fn parse_ignores_case_and_surrounding_space() {
         assert_eq!(Key::parse("  Right Alt "), Some(Key::RightAlt));
+        assert_eq!(Key::parse("RIGHT COMMAND"), Some(Key::RightCommand));
         assert_eq!(Key::parse("SCROLL LOCK"), Some(Key::ScrollLock));
     }
 
@@ -158,7 +261,7 @@ mod tests {
 
     #[test]
     fn copy_while_held_matches_ownkeys_press_capture_keys() {
-        // REWRITE_PRESS_CAPTURE_HOTKEYS, ownkey.py:195-199.
+        // REWRITE_PRESS_CAPTURE_HOTKEYS, ownkey.py:195-199, plus Right Command.
         let press_capture: Vec<&str> = Key::ALL
             .into_iter()
             .filter(|k| k.can_copy_while_held())
@@ -166,7 +269,15 @@ mod tests {
             .collect();
         assert_eq!(
             press_capture,
-            ["right ctrl", "f13", "f14", "f15", "pause", "scroll lock"]
+            [
+                "right command",
+                "right ctrl",
+                "f13",
+                "f14",
+                "f15",
+                "pause",
+                "scroll lock"
+            ]
         );
     }
 }

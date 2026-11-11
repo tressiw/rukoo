@@ -41,13 +41,20 @@ windows = { version = "=0.62.2", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The objc2 versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 pull in, so Voice shares one set of
-# bindings with its own windows. `SMAppService` is Start at login.
+# bindings with its own windows. `SMAppService` is Start at login; AVFoundation, Core Graphics and
+# IOKit read the macOS permission states.
 libc = "0.2"
 objc2 = "=0.6.5"
 objc2-audio-toolbox = { version = "=0.3.2", default-features = false, features = [
   "std",
   "AudioServices",
 ] }
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "AVCaptureDevice",
+  "AVMediaFormat",
+] }
+objc2-core-graphics = "=0.3.2"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSArray",
@@ -55,6 +62,10 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSLocale",
   "NSString",
   "NSUserDefaults",
+] }
+objc2-io-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "hidsystem",
 ] }
 objc2-service-management = { version = "=0.3.2", features = ["SMAppService", "SMErrors"] }
 

@@ -155,6 +155,7 @@ pub fn state(core: &Core) -> Value {
         "providers": providers(),
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
+        "permissions": crate::permissions::view(&*core.svc.permissions),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),

@@ -21,9 +21,11 @@ fn load(value: Value) -> Config {
 #[test]
 fn installed_defaults() {
     let cfg = Config::defaults(false);
+    let (hotkey, rewrite_hotkey) =
+        voice_core::config::default_hotkeys_on(false, cfg!(target_os = "macos"));
     assert_eq!(cfg.version, 1);
-    assert_eq!(cfg.hotkey, "right alt");
-    assert_eq!(cfg.rewrite_hotkey, "right ctrl");
+    assert_eq!(cfg.hotkey, hotkey);
+    assert_eq!(cfg.rewrite_hotkey, rewrite_hotkey);
     assert!(cfg.paste_mode);
     assert!(!cfg.ready_chime);
     assert_eq!(cfg.audio_provider, "mistral");
@@ -72,6 +74,30 @@ fn development_defaults_never_use_ownkeys_keys() {
         (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
         ("f13", "f14")
     );
+}
+
+#[test]
+fn defaults_follow_the_platform_and_a_development_copy() {
+    use voice_core::config::default_hotkeys_on;
+    // Windows keeps Ownkey's Right Alt and Right Ctrl.
+    assert_eq!(
+        default_hotkeys_on(false, false),
+        ("right alt", "right ctrl")
+    );
+    // A Mac starts on Right Option and Right Command (plan D5).
+    assert_eq!(
+        default_hotkeys_on(false, true),
+        ("right alt", "right command")
+    );
+    // Development copies use F13 and F14 on either platform.
+    assert_eq!(default_hotkeys_on(true, false), ("f13", "f14"));
+    assert_eq!(default_hotkeys_on(true, true), ("f13", "f14"));
+    // Right Command is the one key a Mac adds; the rest stay Ownkey's names.
+    assert!(voice_core::config::HOTKEYS.contains(&"right command"));
+    assert!(voice_core::config::MACOS_HOTKEYS.contains(&"right command"));
+    assert!(!voice_core::config::WINDOWS_HOTKEYS.contains(&"right command"));
+    assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"pause"));
+    assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"scroll lock"));
 }
 
 #[test]
@@ -376,7 +402,7 @@ fn values_are_checked_on_load() {
     assert_eq!(load(json!({"language": "xx"})).language, "auto");
     assert_eq!(
         load(json!({"rewrite_hotkey": "bogus"})).rewrite_hotkey,
-        "right ctrl"
+        voice_core::config::default_hotkeys_on(false, cfg!(target_os = "macos")).1
     );
 }
 

@@ -88,6 +88,8 @@ const SCENARIOS = [
   ['main-screen-unavailable', 'page=meetings&screenUnavailable=1'],
   ['storage-screen', 'page=storage&features=screen'],
   ['main-speakers-cpu', 'page=meetings&speakers=cpu'],
+  ['permissions', 'page=permissions&platform=macos'],
+  ['permissions-denied', 'page=permissions&platform=macos&permissions=denied'],
   ['speakers-ready', 'page=speakers&speakers=ready'],
   ['speakers-off', 'page=speakers&speakers=off'],
   ['speakers-cpu', 'page=speakers&speakers=cpu'],
@@ -170,6 +172,14 @@ async function main() {
         for (const lang of LANGS) {
           for (const name of SETTINGS_PAGES) await settings(path.join(out, 'settings', `${theme}-${lang}`, `${name}.png`), `page=${name}&theme=${theme}&lang=${lang}`);
           for (const [name, query] of SCENARIOS) await settings(path.join(out, 'settings', `${theme}-${lang}`, `${name}.png`), `${query}&theme=${theme}&lang=${lang}`);
+          // The macOS key picker: Mac names, and only keys a Mac keyboard has.
+          await size(760, 680);
+          await page.goto(`${base}settings.html?mock=1&page=main&platform=macos&theme=${theme}&lang=${lang}`);
+          await page.waitForSelector('[data-a="choose:dictation.hotkey"]');
+          await page.click('[data-a="choose:dictation.hotkey"]');
+          await page.waitForTimeout(300);
+          await shot(path.join(out, 'settings', `${theme}-${lang}`, 'dictation-key-macos.png'));
+          await page.keyboard.press('Escape');
         }
       // A narrow window, at Settings' minimum width.
       for (const [theme, lang] of [
@@ -180,6 +190,8 @@ async function main() {
         for (const [name, query] of [
           ['main', 'page=main&scenario=busy'],
           ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
+          ['permissions', 'page=permissions&platform=macos'],
+          ['permissions-denied', 'page=permissions&platform=macos&permissions=denied'],
           ['transcription', 'page=transcription&scenario=busy'],
           ['meeting-transcription', 'page=meetingTranscription&scenario=cloud'],
           ['meeting-transcription-stream', 'page=meetingTranscription&speakers=consent'],

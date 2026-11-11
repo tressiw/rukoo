@@ -42,9 +42,13 @@ pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
 }
 
 pub(crate) fn is_key_down(key: Key) -> bool {
+    // A key this keyboard doesn't have, such as a Mac's Right Command, is never down.
+    let Some(vk) = key.vk() else {
+        return false;
+    };
     // Only the high bit, "down right now". The low bit, "pressed since the
     // last call", is shared with every other caller and unreliable.
-    let state = unsafe { GetAsyncKeyState(i32::from(key.vk())) };
+    let state = unsafe { GetAsyncKeyState(i32::from(vk)) };
     state as u16 & 0x8000 != 0
 }
 

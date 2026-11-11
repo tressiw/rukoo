@@ -9,6 +9,7 @@ mod dictation;
 mod engine;
 pub mod media;
 pub mod meetings;
+pub mod permissions;
 mod pill;
 mod platform;
 pub mod services;

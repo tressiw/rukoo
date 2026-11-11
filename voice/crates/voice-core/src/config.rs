@@ -27,8 +27,21 @@ use crate::providers::{
 
 pub const CONFIG_VERSION: u64 = 1;
 
-/// The keys Voice offers for dictation, the rewrite key and the meeting stop key, as stored.
-pub const HOTKEYS: [&str; 8] = [
+/// The keys Voice offers for dictation, the rewrite key and the meeting stop key, as stored. A
+/// config from another platform keeps its key, so every name is accepted on load.
+pub const HOTKEYS: [&str; 9] = [
+    "right alt",
+    "right command",
+    "right ctrl",
+    "right shift",
+    "f13",
+    "f14",
+    "f15",
+    "pause",
+    "scroll lock",
+];
+/// The keys a Windows keyboard has, in Ownkey's order.
+pub const WINDOWS_HOTKEYS: [&str; 8] = [
     "right alt",
     "right ctrl",
     "right shift",
@@ -38,6 +51,26 @@ pub const HOTKEYS: [&str; 8] = [
     "pause",
     "scroll lock",
 ];
+/// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there; Right Command is the one
+/// Mac key Voice adds, and Right Option is the same key as Right Alt.
+pub const MACOS_HOTKEYS: [&str; 7] = [
+    "right alt",
+    "right command",
+    "right ctrl",
+    "right shift",
+    "f13",
+    "f14",
+    "f15",
+];
+
+/// The keys this platform can offer in Settings, so a key the keyboard lacks can't be chosen.
+pub fn offered_hotkeys() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &MACOS_HOTKEYS
+    } else {
+        &WINDOWS_HOTKEYS
+    }
+}
 pub const LANGUAGES: [&str; 11] = [
     "auto", "en", "nl", "de", "fr", "es", "it", "pt", "pl", "ja", "zh",
 ];
@@ -590,8 +623,17 @@ pub fn provider_form_problem(
 }
 
 fn default_hotkeys(dev_mode: bool) -> (&'static str, &'static str) {
+    default_hotkeys_on(dev_mode, cfg!(target_os = "macos"))
+}
+
+/// The keys a fresh config gets. A development copy uses F13 and F14 on every platform, so it
+/// never answers the installed Ownkey's keys; on a Mac an installed copy starts with Right Option
+/// and Right Command (plan D5).
+pub fn default_hotkeys_on(dev_mode: bool, macos: bool) -> (&'static str, &'static str) {
     if dev_mode {
         ("f13", "f14")
+    } else if macos {
+        ("right alt", "right command")
     } else {
         ("right alt", "right ctrl")
     }

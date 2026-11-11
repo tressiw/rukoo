@@ -295,9 +295,93 @@
     "message": "General",
     "description": "Settings: group title above Language and Theme. voice/ui/settings.js (mainPage)."
   },
+  "settings.groups.permissions": {
+    "message": "Permissions",
+    "description": "Settings: group title above the macOS privacy permission rows, shown on macOS only. voice/ui/settings.js (mainPage)."
+  },
   "settings.groups.about": {
     "message": "About",
     "description": "Settings: group title above updates, the Ownkey import, logs, licenses and version. voice/ui/settings.js (mainPage)."
+  },
+  "settings.permissions.intro": {
+    "message": "macOS ties these to Voice's signature. After an update, switch them on again.",
+    "description": "Settings > Permissions: one line above the macOS permission rows, explaining why an update loses them (plan D4). voice/ui/settings.js (mainPage)."
+  },
+  "settings.permissions.microphone": {
+    "message": "Microphone",
+    "description": "Settings > Permissions: name of the microphone permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.microphoneWhy": {
+    "message": "Records your voice for dictation and meetings.",
+    "description": "Settings > Permissions: one line why Voice needs the microphone. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.systemAudio": {
+    "message": "System Audio Recording",
+    "description": "Settings > Permissions: name of the System Audio Recording permission, for the other side of a meeting. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.systemAudioWhy": {
+    "message": "Records the other side of a meeting.",
+    "description": "Settings > Permissions: one line why Voice needs System Audio Recording. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.inputMonitoring": {
+    "message": "Input Monitoring",
+    "description": "Settings > Permissions: name of the Input Monitoring permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.inputMonitoringWhy": {
+    "message": "Lets Voice see the dictation key while another app is in front.",
+    "description": "Settings > Permissions: one line why Voice may need Input Monitoring. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.accessibility": {
+    "message": "Accessibility",
+    "description": "Settings > Permissions: name of the Accessibility permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.accessibilityWhy": {
+    "message": "Lets Voice type the text and read your selection.",
+    "description": "Settings > Permissions: one line why Voice needs Accessibility. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.screenRecording": {
+    "message": "Screen Recording",
+    "description": "Settings > Permissions: name of the Screen Recording permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.screenRecordingWhy": {
+    "message": "Records the screen when a meeting asks for frames or video.",
+    "description": "Settings > Permissions: one line why Voice may need Screen Recording. voice/ui/settings.js (PERMISSIONS)."
+  },
+  "settings.permissions.state.on": {
+    "message": "On",
+    "description": "Settings > Permissions: status pill for a permission macOS reports as granted. voice/ui/settings.js (permissionStatus)."
+  },
+  "settings.permissions.state.off": {
+    "message": "Off",
+    "description": "Settings > Permissions: status pill for a permission that is switched off or denied. The row says what to do. voice/ui/settings.js (permissionStatus)."
+  },
+  "settings.permissions.state.notAsked": {
+    "message": "Not asked yet",
+    "description": "Settings > Permissions: status pill before macOS first asks for a permission. Not an error. voice/ui/settings.js (permissionStatus)."
+  },
+  "settings.permissions.state.unknown": {
+    "message": "Unknown",
+    "description": "Settings > Permissions: status pill when there is no way to tell, such as System Audio Recording before a tap can be checked. Not an error. voice/ui/settings.js (permissionStatus)."
+  },
+  "settings.permissions.denied": {
+    "message": "Open System Settings and switch on {name}; if Rukoo Voice is already switched on there, remove it with the minus button and add it again.",
+    "description": "Settings > Permissions: what to do for a permission that is off, including after an update (plan D4). {name}: the permission's name. voice/ui/settings.js (permissionsCard)."
+  },
+  "settings.permissions.notAskedHelp": {
+    "message": "Voice asks when it first needs it.",
+    "description": "Settings > Permissions: note under a permission macOS hasn't asked for yet. voice/ui/settings.js (permissionsCard)."
+  },
+  "settings.permissions.systemAudioUnknown": {
+    "message": "macOS doesn't let Voice check this one; it asks when a meeting records the call.",
+    "description": "Settings > Permissions: note under System Audio Recording, which has no public preflight call (plan D2, S2). Not an error. voice/ui/settings.js (permissionsCard)."
+  },
+  "settings.permissions.open": {
+    "message": "Open",
+    "description": "Settings > Permissions: button that opens this permission's pane in System Settings. voice/ui/settings.js (permissionsCard)."
+  },
+  "settings.permissions.openFailed": {
+    "message": "Couldn't open System Settings.",
+    "description": "Settings > Permissions: dialog text when opening the permission pane failed. voice/ui/settings.js (act)."
   },
   "settings.status.dictation": {
     "message": "Dictation",
@@ -1700,6 +1784,18 @@
   "settings.keys.rightAlt": {
     "message": "Right Alt",
     "description": "Settings: key name in key lists and descriptions. Also AltGr on many layouts. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.rightCommand": {
+    "message": "Right Command",
+    "description": "Settings: key name on macOS, where Right Command is Voice's rewrite key by default. voice/ui/settings.js (KEY_NAMES)."
+  },
+  "settings.keys.rightOption": {
+    "message": "Right Option",
+    "description": "Settings: macOS name of the physical key stored as right alt; Right Option is Voice's dictation key by default. voice/ui/settings.js (MAC_KEY_NAMES)."
+  },
+  "settings.keys.rightControl": {
+    "message": "Right Control",
+    "description": "Settings: macOS name of the key stored as right ctrl. voice/ui/settings.js (MAC_KEY_NAMES)."
   },
   "settings.keys.rightCtrl": {
     "message": "Right Ctrl",
