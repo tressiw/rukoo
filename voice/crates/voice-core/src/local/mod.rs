@@ -6,6 +6,10 @@ mod download;
 mod engine;
 #[cfg(windows)]
 mod job;
+// The Unix parent watch both workers run. It lives here, next to the code that spawns them, and
+// not in a crate of its own: the workers include the file by path, because a worker that a model
+// takes down shouldn't link the app's network and archive stacks.
+pub mod parent;
 mod registry;
 
 pub use download::{extract, Progress, Stage};
