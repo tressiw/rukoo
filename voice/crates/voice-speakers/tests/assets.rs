@@ -1,6 +1,6 @@
-//! `voice/scripts/speaker-assets.ps1` fetches the model the tests label with. It has to be the
-//! file the app verifies, so its pin must match `ModelSpec::nemotron()` in voice-core. voice-core
-//! isn't a dependency of this crate, so both are compared as text.
+//! `voice/scripts/speaker-assets.ps1` and `speaker-assets.mjs` fetch the model the tests label
+//! with. It has to be the file the app verifies, so its pin must match `ModelSpec::nemotron()` in
+//! voice-core. voice-core isn't a dependency of this crate, so both are compared as text.
 
 use std::fs;
 use std::path::PathBuf;
@@ -42,22 +42,21 @@ fn the_assets_script_fetches_the_model_voice_core_pins() {
     let sha256 = literal_after(after_name, ",");
     assert_eq!(sha256.len(), 64, "{sha256}");
 
-    let script = voice_file("scripts/speaker-assets.ps1");
     let url =
         format!("https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/{revision}/{name}");
-    assert!(
-        script.contains(&format!("$NemotronUrl = '{url}'")),
-        "speaker-assets.ps1 should fetch {url}"
-    );
-    assert!(
-        script.contains(&format!("$NemotronSize = {size}\n"))
-            || script.contains(&format!("$NemotronSize = {size}\r\n")),
-        "speaker-assets.ps1 should expect {size} bytes"
-    );
-    assert!(
-        script.contains(&format!("$NemotronSha256 = '{sha256}'")),
-        "speaker-assets.ps1 should expect SHA-256 {sha256}"
-    );
+    for script in ["scripts/speaker-assets.ps1", "scripts/speaker-assets.mjs"] {
+        let text = voice_file(script);
+        assert!(text.contains(&url), "{script} should fetch {url}");
+        assert!(
+            text.contains(sha256),
+            "{script} should check SHA-256 {sha256}"
+        );
+        assert!(
+            text.contains(&format!("NemotronSize = {size}"))
+                || text.contains(&format!("NEMOTRON_SIZE = {size}")),
+            "{script} should expect {size} bytes"
+        );
+    }
 }
 
 #[test]
