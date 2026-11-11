@@ -1,21 +1,36 @@
-//! A PNG of one of the app's own pages through WebView2's CapturePreview, for the development self-test.
-//! It renders the page itself, so it never reads the screen or another app's windows.
+//! A PNG of one of the app's own pages, for the development self-test and the `capture` hook: WebView2's
+//! CapturePreview on Windows, WKWebView's snapshot on macOS (`capture_mac.rs`). Both render the page
+//! itself, so neither reads the screen or another app's windows.
 
+#[cfg(windows)]
 use std::fs;
+#[cfg(windows)]
 use std::path::Path;
+#[cfg(windows)]
 use std::sync::mpsc;
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+pub use crate::capture_mac::capture_png;
+
+#[cfg(windows)]
 use tauri::WebviewWindow;
+#[cfg(windows)]
 use webview2_com::CapturePreviewCompletedHandler;
+#[cfg(windows)]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Controller, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
 };
+#[cfg(windows)]
 use windows::Win32::System::Com::{IStream, STREAM_SEEK_SET};
+#[cfg(windows)]
 use windows::Win32::UI::Shell::SHCreateMemStream;
 
+#[cfg(windows)]
 type Done = mpsc::Sender<Result<Vec<u8>, String>>;
 
+#[cfg(windows)]
 pub fn capture_png(window: &WebviewWindow, path: &Path) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     window
@@ -32,6 +47,7 @@ pub fn capture_png(window: &WebviewWindow, path: &Path) -> Result<(), String> {
 }
 
 // WebView2 writes into memory; the file is written here once it's complete, so nobody reads it half done.
+#[cfg(windows)]
 fn start(controller: ICoreWebView2Controller, done: Done) -> Result<(), String> {
     unsafe {
         let core = controller.CoreWebView2().map_err(|e| e.message())?;
@@ -53,6 +69,7 @@ fn start(controller: ICoreWebView2Controller, done: Done) -> Result<(), String> 
     }
 }
 
+#[cfg(windows)]
 fn read_all(stream: &IStream) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut buf = vec![0u8; 64 * 1024];

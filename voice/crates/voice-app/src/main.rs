@@ -6,8 +6,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod args;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_mac;
 mod catalog;
 mod commands;
 mod devhook;

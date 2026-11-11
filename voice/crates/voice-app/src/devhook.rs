@@ -8,8 +8,8 @@
 //! items call), `pill_screen_click` (what a click on the pill's screen button does: opens its menu),
 //! `pill_screen_set` with meeting, mode and optional monitor (the selected menu action), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
-//! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from
-//! WebView2. Nothing here sends input or reads the screen.
+//! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from the
+//! web view. Nothing here sends input or reads the screen.
 //!
 //! Settings and bucket sync, as the page would change them: `{"cmd": "settings", "key":
 //! "storage.sync.bucket", "value": "test"}` calls `settings_set`, and `{"cmd": "sync", "action":
@@ -192,7 +192,7 @@ fn capture(
     }))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn png(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     let Some(window) = window else {
         return json!({ "file": path.display().to_string(), "error": "no window" });
@@ -203,7 +203,7 @@ fn png(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn png(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     json!({ "file": path.display().to_string(), "error": "captures need WebView2" })
 }
