@@ -30,7 +30,7 @@ impl SystemShell {
 
     #[cfg(not(target_os = "macos"))]
     pub fn new(_app: &tauri::AppHandle) -> SystemShell {
-        SystemShell
+        SystemShell {}
     }
 }
 
