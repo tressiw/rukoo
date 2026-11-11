@@ -5,6 +5,12 @@
 
 use serde::Serialize;
 
+/// The features the build for this platform needs, in the order they are reported.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const REQUIRED: [&str; 3] = ["neon", "dotprod", "fp16"];
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+const REQUIRED: [&str; 4] = ["avx2", "fma", "f16c", "bmi2"];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CpuFeatures {
     /// The Windows build's baseline.
@@ -69,26 +75,34 @@ fn arm_feature(name: &str) -> bool {
 }
 
 impl CpuFeatures {
+    /// Whether this processor has the feature `name`, as [`CpuFeatures::missing`] names them.
+    fn has(&self, name: &str) -> bool {
+        match name {
+            "avx2" => self.avx2,
+            "fma" => self.fma,
+            "f16c" => self.f16c,
+            "bmi2" => self.bmi2,
+            "neon" => self.neon,
+            "dotprod" => self.dotprod,
+            "fp16" => self.fp16,
+            _ => false,
+        }
+    }
+
+    /// The names of the missing features among `required`, in the order given. It takes the list,
+    /// so the baseline of either build can be checked on any machine.
+    pub fn missing_among(&self, required: &[&'static str]) -> Vec<&'static str> {
+        required
+            .iter()
+            .copied()
+            .filter(|name| !self.has(name))
+            .collect()
+    }
+
     /// The names of the missing features of this platform's build, in a fixed order; empty when
     /// the runtime can run.
     pub fn missing(&self) -> Vec<&'static str> {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let all = [
-            ("neon", self.neon),
-            ("dotprod", self.dotprod),
-            ("fp16", self.fp16),
-        ];
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let all = [
-            ("avx2", self.avx2),
-            ("fma", self.fma),
-            ("f16c", self.f16c),
-            ("bmi2", self.bmi2),
-        ];
-        all.into_iter()
-            .filter(|(_, present)| !present)
-            .map(|(name, _)| name)
-            .collect()
+        self.missing_among(&REQUIRED)
     }
 }
 
@@ -106,15 +120,53 @@ mod tests {
         fp16: true,
     };
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    const REQUIRED: [&str; 3] = ["neon", "dotprod", "fp16"];
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    const REQUIRED: [&str; 4] = ["avx2", "fma", "f16c", "bmi2"];
-
     #[test]
-    fn missing_features_are_named_in_order() {
+    fn missing_features_are_the_platforms_baseline() {
         assert_eq!(CpuFeatures::default().missing(), REQUIRED);
         assert!(ALL.missing().is_empty());
+    }
+
+    /// The x86-64 runtime's baseline, whichever platform runs this test.
+    const X86: [&str; 4] = ["avx2", "fma", "f16c", "bmi2"];
+    /// The arm64 runtime's baseline.
+    const ARM: [&str; 3] = ["neon", "dotprod", "fp16"];
+
+    #[test]
+    fn the_x86_baseline_is_named_in_order() {
+        let complete = CpuFeatures {
+            avx2: true,
+            fma: true,
+            f16c: true,
+            bmi2: true,
+            ..CpuFeatures::default()
+        };
+        assert!(complete.missing_among(&X86).is_empty());
+        // Everything but AVX2 and FMA.
+        let old = CpuFeatures {
+            f16c: true,
+            bmi2: true,
+            ..CpuFeatures::default()
+        };
+        assert_eq!(old.missing_among(&X86), ["avx2", "fma"]);
+        assert_eq!(CpuFeatures::default().missing_among(&X86), X86);
+    }
+
+    #[test]
+    fn the_arm_baseline_is_named_in_order() {
+        let complete = CpuFeatures {
+            neon: true,
+            dotprod: true,
+            fp16: true,
+            ..CpuFeatures::default()
+        };
+        assert!(complete.missing_among(&ARM).is_empty());
+        let no_dotprod = CpuFeatures {
+            neon: true,
+            fp16: true,
+            ..CpuFeatures::default()
+        };
+        assert_eq!(no_dotprod.missing_among(&ARM), ["dotprod"]);
+        assert_eq!(CpuFeatures::default().missing_among(&ARM), ARM);
     }
 
     #[test]
