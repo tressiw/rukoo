@@ -345,7 +345,7 @@ On macOS the output also has `"screenRecording": true` or `false`: whether this 
 
 `inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads, and on macOS the shared box walker reads them.
 
-`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. On macOS the real screen is ScreenCaptureKit: one `SCStream` on the monitor's display, `420f` frames at the video's frame rate, encoded by VideoToolbox as they are. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it, and 5, only on macOS, Screen Recording is off.
+`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. On macOS the real screen is ScreenCaptureKit: one `SCStream` on the monitor's display, `420f` frames in sRGB at the video's frame rate, encoded by VideoToolbox as they are. The frames' JPEGs say sRGB too. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it, and 5, only on macOS, Screen Recording is off.
 
 `--test` is honoured only in a development copy, with `RUKOO_VOICE_DATA_DIR` set. It replaces the screen with a synthetic source and adds faults, as `synthetic:<w>x<h>` followed by options separated by commas:
 

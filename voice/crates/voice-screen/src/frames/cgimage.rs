@@ -1,10 +1,11 @@
 //! A `CGImage` of a frame's BGRA bytes, for the JPEG encoder and Vision: both take Core Graphics
-//! images, and neither needs a bitmap context to get one.
+//! images, and neither needs a bitmap context to get one. The bytes are sRGB, the colour space the
+//! capture asks ScreenCaptureKit for, and the image says so, so the JPEG carries it too.
 
 use objc2_core_foundation::{CFData, CFDictionary, CFRetained, CFString, CFType};
 use objc2_core_graphics::{
-    CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo,
+    kCGColorSpaceSRGB, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
+    CGImageAlphaInfo, CGImageByteOrderInfo,
 };
 
 use crate::platform::Pixels;
@@ -20,7 +21,9 @@ pub fn from_pixels(pixels: &Pixels) -> Option<CFRetained<CGImage>> {
     }
     let data = CFData::from_bytes(&pixels.bgra);
     let provider = CGDataProvider::with_cf_data(Some(&data))?;
-    let space = CGColorSpace::new_device_rgb()?;
+    // SAFETY: the name is a static the framework owns.
+    let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+        .or_else(CGColorSpace::new_device_rgb)?;
     // SAFETY: the provider holds the pixels, and the layout matches `BGRA`.
     unsafe {
         CGImage::new(
@@ -70,5 +73,9 @@ mod tests {
         let image = from_pixels(&pixels).expect("a CGImage");
         assert_eq!(CGImage::width(Some(&image)), 64);
         assert_eq!(CGImage::height(Some(&image)), 32);
+        // The colour space the stream delivers in, so a viewer reads the colours as captured.
+        let space = CGImage::color_space(Some(&image)).expect("a colour space");
+        let name = CGColorSpace::name(Some(&space)).expect("a named colour space");
+        assert_eq!(name.to_string(), unsafe { kCGColorSpaceSRGB }.to_string());
     }
 }

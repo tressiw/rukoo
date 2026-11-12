@@ -29,7 +29,8 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFString, CFType, CGRect};
 use objc2_core_graphics::{
-    kCGDisplayStreamYCbCrMatrix_ITU_R_709_2, CGRectMakeWithDictionaryRepresentation,
+    kCGColorSpaceSRGB, kCGDisplayStreamYCbCrMatrix_ITU_R_709_2,
+    CGRectMakeWithDictionaryRepresentation,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags};
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
@@ -158,6 +159,10 @@ impl Source for ScreenSource {
             // The matrix the stream encodes with, so the JPEG and OCR paths convert the way the
             // encoder assumes.
             configuration.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_709_2);
+            // sRGB, not the display's own space (P3 on a MacBook), which the stream would use
+            // otherwise: the JPEG says sRGB and the video's BT.709 has sRGB's primaries, so the
+            // frames, the OCR input and the video agree.
+            configuration.setColorSpaceName(kCGColorSpaceSRGB);
         }
         let output = Output::new(self.to_main.clone(), generation, width, height);
         let queue = DispatchQueue::new("nl.bvdm.rukoo.voice.screen", None);
