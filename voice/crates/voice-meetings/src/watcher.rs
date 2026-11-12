@@ -216,7 +216,7 @@ impl Mapper {
                     reason,
                 });
             }
-            Line::Heartbeat { .. } | Line::Unknown => {}
+            Line::Heartbeat { .. } | Line::Silent { .. } | Line::Sound { .. } | Line::Unknown => {}
         }
         out
     }

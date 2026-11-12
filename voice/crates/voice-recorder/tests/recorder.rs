@@ -643,9 +643,9 @@ fn a_slow_device_open_is_not_a_sleep() {
         ],
         &[],
     );
-    // The recorder thread answers nothing while it opens, so the test reads the timeline first.
-    m.wait_for_heartbeat(8_000);
+    // The device opens on a thread of its own, so the recorder answers meanwhile.
     let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(8_000);
     command(&mut client, &token, json!({ "cmd": "stop" }));
     assert!(wait_exit(&mut child).success());
 
