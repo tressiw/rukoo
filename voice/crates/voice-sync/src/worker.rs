@@ -325,6 +325,29 @@ impl Shared {
         });
     }
 
+    /// The worker opened the key and the secret: an error that said it couldn't is over, though
+    /// nothing has uploaded since. Other errors wait for a request that succeeds.
+    fn note_key_opened(&self) {
+        let cleared = {
+            let mut st = self.lock();
+            let stale = st
+                .last_error
+                .as_ref()
+                .is_some_and(|e| matches!(e.code.as_str(), "key" | "key_denied" | "no_secret"));
+            if stale {
+                st.last_error = None;
+            }
+            stale
+        };
+        let persisted = self.queue.last_error().ok().flatten();
+        let persisted_stale = persisted.is_some_and(|(_, code, _)| {
+            matches!(code.as_str(), "key" | "key_denied" | "no_secret")
+        });
+        if cleared || persisted_stale {
+            let _ = self.queue.set_meta("failing_since", None);
+        }
+    }
+
     /// A request succeeded: nothing fails any more.
     fn note_success(&self) {
         let mut st = self.lock();
@@ -725,6 +748,7 @@ impl Worker {
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
+                shared.note_key_opened();
                 {
                     let mut st = shared.lock();
                     st.rescan = true;

@@ -628,7 +628,7 @@ mod login {
     }
 
     #[test]
-    fn denied_access_is_a_key_error() -> Result<(), SyncError> {
+    fn denied_access_is_a_key_denied_error() -> Result<(), SyncError> {
         let dir = Scratch::new("kc-denied");
         let store = FakeStore::default();
         let p = keychain(dir.path(), &store);
@@ -636,14 +636,16 @@ mod login {
         // errSecAuthFailed, as Deny in the access dialog leaves it.
         store.deny(StoreError::Denied(-25293));
         let error = p.unprotect(&blob, SECRET_LABEL).unwrap_err();
-        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert_eq!(error.kind, SyncErrorKind::KeyDenied);
+        assert_eq!(error.code(), "key_denied");
+        assert!(error.kind.is_key());
         assert!(error.message.contains("-25293"), "{}", error.message);
         assert!(error.message.contains("didn't allow"), "{}", error.message);
         // A keychain that may not be asked at all fails a save the same way.
         let other = Scratch::new("kc-denied-new");
         let q = keychain(other.path(), &store);
         let error = q.protect(b"a key", MASTER_KEY_LABEL).unwrap_err();
-        assert_eq!(error.kind, SyncErrorKind::Key);
+        assert_eq!(error.kind, SyncErrorKind::KeyDenied);
         assert!(store.item(&account(&q, MASTER_KEY_LABEL)).is_none());
         // Allowing it again leaves what was there.
         store.allow();
@@ -705,6 +707,37 @@ mod login {
         let next = KeyStore::new(dir.path(), keys);
         assert_eq!(next.load().unwrap_err().kind, SyncErrorKind::Key);
         assert_eq!(next.secret().unwrap_err().kind, SyncErrorKind::NoSecret);
+        Ok(())
+    }
+
+    /// Deny (errSecUserCanceled, -128) isn't a lost key: the key and the secret stay, Settings ask
+    /// the user to allow Voice instead of to enter the key or save the secret again, and both open
+    /// once allowed.
+    #[test]
+    fn a_refusal_is_not_a_missing_item() -> Result<(), SyncError> {
+        let dir = Scratch::new("kc-refused");
+        let store = FakeStore::default();
+        let key_store = KeyStore::new(dir.path(), Arc::new(keychain(dir.path(), &store)));
+        let key = key_store.create(9)?;
+        key_store.save_secret("keychain-secret")?;
+        store.deny(StoreError::Denied(-128));
+        let refused = key_store.load().unwrap_err();
+        assert_eq!(refused.kind, SyncErrorKind::KeyDenied);
+        assert!(refused.message.contains("-128"), "{}", refused.message);
+        assert!(refused.message.contains("Try again"), "{}", refused.message);
+        let secret = key_store.secret().unwrap_err();
+        assert_eq!(secret.kind, SyncErrorKind::KeyDenied, "not NoSecret");
+        assert!(
+            secret.message.contains("bucket secret"),
+            "{}",
+            secret.message
+        );
+        store.allow();
+        assert_eq!(key_store.load()?.unwrap().kid(), key.kid());
+        assert_eq!(
+            key_store.secret()?.as_deref().map(String::as_str),
+            Some("keychain-secret")
+        );
         Ok(())
     }
 

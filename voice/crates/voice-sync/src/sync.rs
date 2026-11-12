@@ -521,10 +521,7 @@ impl BucketSync {
             let st = shared.lock();
             st.cfg.is_some()
                 && !st.moving()
-                && !st
-                    .blocked
-                    .as_ref()
-                    .is_some_and(|b| b.error.kind.is_key())
+                && !st.blocked.as_ref().is_some_and(|b| b.error.kind.is_key())
         };
         ok && shared.keys.info().is_some() && self.secret_saved()
     }

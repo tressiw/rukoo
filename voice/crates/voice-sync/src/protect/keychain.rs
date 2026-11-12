@@ -368,6 +368,22 @@ mod tests {
     }
 
     #[test]
+    fn refusals_are_told_from_a_missing_item() {
+        use security_framework::base::Error;
+        for code in [-128, -25293, -25308, -25320] {
+            assert_eq!(
+                store_error(Error::from_code(code)),
+                StoreError::Denied(code)
+            );
+        }
+        assert_eq!(store_error(Error::from_code(-25300)), StoreError::Missing);
+        assert_eq!(
+            store_error(Error::from_code(-25291)),
+            StoreError::Other(-25291)
+        );
+    }
+
+    #[test]
     fn a_folder_voice_cant_reach_is_a_key_error_naming_it() {
         let dir = std::env::temp_dir().join(format!("voice-sync-nowhere-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
