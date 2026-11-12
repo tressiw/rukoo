@@ -43,6 +43,7 @@ use crate::settings::SettingsRuntime;
 /// Notification titles the engine uses besides dictation's (voice/ui/i18n `app.notify.*`).
 pub const NOTIFY_SETTINGS: &str = "app.notify.settings";
 pub const NOTIFY_WELCOME: &str = "app.notify.welcome";
+pub use engine::NOTIFY_SCREEN_PERMISSION;
 pub use sync::NOTIFY_SYNC;
 
 /// Every notification title the engine sends; voice-app checks that both catalogs have them.

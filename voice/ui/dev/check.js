@@ -1019,6 +1019,7 @@ check('the screen notices read right in both languages, with the screen glyph', 
     'meeting-video-dropped-device': ['Video stopped: graphics card', 'Video gestopt: videokaart'],
     'meeting-frames-dropped': ['Screen stopped: disk almost full', 'Scherm gestopt: schijf bijna vol'],
     'meeting-screen-failed': ['Screen recording stopped', 'Schermopname gestopt'],
+    'meeting-screen-permission': ['Screen Recording is off', 'Schermopname staat uit'],
     'meeting-screen-moved': ['Screen: DELL U2720Q', 'Scherm: DELL U2720Q']
   };
   for (const [state, texts] of Object.entries(notices)) {

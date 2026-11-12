@@ -40,6 +40,8 @@ pub const SCREEN_EXE: &str = "rukoo-voice-screen";
 /// The screen process's exit codes, as the recorder's (voice/RECORDING.md).
 const EXIT_CONFLICT: i32 = 3;
 const EXIT_BUSY: i32 = 4;
+/// The computer won't let the screen process capture: macOS' Screen Recording is off.
+const EXIT_NO_PERMISSION: i32 = 5;
 /// How long a control request may take.
 const REQUEST_WAIT: Duration = Duration::from_secs(1);
 /// How long `stop` over the control port may take: it finalizes the video and drains OCR.
@@ -128,6 +130,11 @@ pub enum ScreenChange {
         id: String,
         name: String,
     },
+    /// The computer won't let the screen process capture the screen: macOS' Screen Recording is
+    /// off, or was switched off during the meeting. The screen isn't recorded; the audio goes on.
+    NoPermission {
+        id: String,
+    },
     /// The screen process died five times in a row; the screen isn't recorded any more.
     GaveUp {
         id: String,
@@ -169,6 +176,9 @@ struct ScreenLive {
     /// The `stop` line's reason, once the journal has one.
     stopped: Option<String>,
     gave_up: bool,
+    /// The journal says the Screen Recording grant is gone, or the process refused to start for
+    /// lack of it. Retrying can't help, and the drops that follow aren't a graphics device.
+    no_permission: bool,
     monitors: Option<usize>,
 }
 
@@ -190,6 +200,7 @@ impl ScreenLive {
             dropped_frames: None,
             stopped: None,
             gave_up: false,
+            no_permission: false,
             monitors: None,
         }
     }
@@ -222,7 +233,8 @@ impl ScreenLive {
                     };
                     if slot.is_none() {
                         *slot = Some(reason);
-                        if report {
+                        // The permission's own notice already said so.
+                        if report && !self.no_permission {
                             changes.push(ScreenChange::Dropped {
                                 id: self.id.clone(),
                                 what: part,
@@ -237,6 +249,16 @@ impl ScreenLive {
                             id: self.id.clone(),
                             name,
                         });
+                    }
+                }
+                Line::NoPermission { .. } => {
+                    if !self.no_permission {
+                        self.no_permission = true;
+                        if report {
+                            changes.push(ScreenChange::NoPermission {
+                                id: self.id.clone(),
+                            });
+                        }
                     }
                 }
                 Line::Stop { reason, .. } => self.stopped = Some(reason),
@@ -815,6 +837,10 @@ impl ScreenSupervisor {
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 live.file = screenfile::live(dir);
             }
+            Err(e) if e.code == Some(EXIT_NO_PERMISSION) => {
+                self.refused_without_permission(slot, id, dir, &e.message);
+                return;
+            }
             // The watchdog's next round counts it as a process that died.
             Err(e) => log::warn!(
                 "screen: {id}: the screen process didn't start: {}",
@@ -823,6 +849,34 @@ impl ScreenSupervisor {
         }
         drop(slot);
         self.changed.notify_all();
+    }
+
+    /// A screen process that refused to start, or to start again, because the computer doesn't
+    /// let it capture the screen. Starting it again can't work until the user switches the grant
+    /// on, so the screen part ends here without the five tries of a process that crashes, and
+    /// the notice names the setting. A journal with content, from a process that recorded before
+    /// the grant went, is closed like a given-up one. The slot's lock is released first.
+    fn refused_without_permission(
+        &self,
+        mut slot: MutexGuard<'_, Option<ScreenLive>>,
+        id: &str,
+        dir: &Path,
+        message: &str,
+    ) {
+        if let Some(live) = slot.as_mut().filter(|l| l.id == id) {
+            live.phase = Phase::Stopped;
+            live.gave_up = true;
+            live.no_permission = true;
+        }
+        drop(slot);
+        self.changed.notify_all();
+        log::warn!("screen: {id}: the screen process won't start without permission: {message}");
+        if journal_has_content(dir) {
+            if let Err(e) = self.finalize(id, dir, "failed") {
+                log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
+            }
+        }
+        self.emit(ScreenChange::NoPermission { id: id.to_string() });
     }
 
     /// The start handshake: `meeting.starting`, then a wait for every connected Rukoo's
@@ -1583,6 +1637,10 @@ impl ScreenSupervisor {
                 live.file = Some(file);
                 live.alive_since = Instant::now();
             }
+            Err(e) if e.code == Some(EXIT_NO_PERMISSION) => {
+                self.refused_without_permission(slot, &id, &dir, &e.message);
+                return;
+            }
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 // Another screen process records into it after all: watch that one. It is
                 // alive, so this attempt doesn't count.
@@ -1772,6 +1830,59 @@ mod tests {
             "{changes:?}"
         );
         assert_eq!(live.shown_mode(), ScreenMode::Frames);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A screen process that lost the Screen Recording grant writes `no_permission` and then the
+    /// drops. The supervisor reports the permission once, and the drops after it as no news of
+    /// their own: a graphics device that went isn't what happened.
+    #[test]
+    fn a_lost_permission_is_reported_instead_of_the_drops_that_follow() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-permission-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-1", &dir, ScreenMode::Video, Phase::Running);
+        use voice_screen_files::journal::Line;
+        journal.write(&Line::NoPermission { t: 4200 }).unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 4200,
+                what: "video".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 4200,
+                what: "frames".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        journal
+            .write(&Line::Stop {
+                t: 4300,
+                reason: "dropped".into(),
+            })
+            .unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(changes.as_slice(), [ScreenChange::NoPermission { id }] if id == "m-1"),
+            "{changes:?}"
+        );
+        assert!(live.no_permission);
+        // The drops are still noted, so the pill shows no screen.
+        assert_eq!(live.dropped_frames, Some(Reason::Device));
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
+        // A line read later says nothing more.
+        assert!(live.read_journal(true).is_empty());
         drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
     }

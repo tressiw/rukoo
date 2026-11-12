@@ -57,6 +57,7 @@ const PILL_STATES = [
   'meeting-video-dropped-encoder',
   'meeting-frames-dropped',
   'meeting-screen-failed',
+  'meeting-screen-permission',
   'meeting-screen-moved',
   'meeting-screen-button',
   'meeting-screen-off',

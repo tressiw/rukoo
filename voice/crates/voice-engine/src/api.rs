@@ -176,8 +176,12 @@ pub struct TrayState {
 pub struct Notification {
     /// Catalog key of the title, e.g. `app.notify.dictationFailed`.
     pub title_key: String,
-    /// The body, already in the user's language or an English provider message.
+    /// The body, already in the user's language or an English provider message. With a
+    /// `body_key` it is the English fallback.
     pub body: String,
+    /// Catalog key of a body with English and Dutch text, which the app shows in the user's
+    /// language instead of `body`.
+    pub body_key: Option<String>,
 }
 
 /// Rejection of a command, `{ code, message }` in API.md.
