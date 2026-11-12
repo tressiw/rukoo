@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use support::{wait_for, Harness};
+use support::{lock, wait_for, Harness};
 use voice_bridge::EventLog;
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::{PillPhase, StopReason};
@@ -54,6 +54,10 @@ fn main() {
         (
             "each_meeting_keeps_the_retention_it_started_with",
             each_meeting_keeps_the_retention_it_started_with,
+        ),
+        (
+            "a_silent_call_says_so_once_and_settings_learns_it",
+            a_silent_call_says_so_once_and_settings_learns_it,
         ),
     ];
     let filters: Vec<String> = std::env::args()
@@ -376,5 +380,64 @@ fn each_meeting_keeps_the_retention_it_started_with() {
         !meeting_dir(&h.data(), &next).join("audio").exists()
     });
     assert!(meeting_dir(&h.data(), &kept).join("audio").is_dir());
+    engine.shutdown();
+}
+
+/// A call track of exact zeros while another app plays, as a Mac gives without the System Audio
+/// Recording grant: the pill and a notification say so once, the recording goes on, and Settings'
+/// System Audio Recording row shows what the meeting learned.
+fn a_silent_call_says_so_once_and_settings_learns_it() {
+    let mut h = harness("silent-call", json!({}));
+    h.test_sources = Some("mic=synthetic:tone:440,call=synthetic:tap,playing".into());
+    h.timing
+        .recorder_args
+        .extend(["--silence-ms".to_string(), "1000".to_string()]);
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    wait_for("the pill's call notice", || {
+        lock(&h.sink.pills).iter().any(|p| {
+            p.notice
+                .as_ref()
+                .is_some_and(|n| n.key == "pill.callSilent")
+        })
+    });
+    let note = h.sink.wait_note("app.notify.meeting");
+    assert_eq!(
+        note.body_key.as_deref(),
+        Some("app.notify.callSilent"),
+        "{note:?}"
+    );
+    assert!(
+        note.body.contains("System Audio Recording"),
+        "{}",
+        note.body
+    );
+    assert!(
+        lines(&h.data(), &id)
+            .iter()
+            .any(|l| matches!(l, Line::Silent { track, .. } if track == "call")),
+        "the timeline has no silent line"
+    );
+    // Told once: the next status rounds keep it silent without another notification.
+    std::thread::sleep(Duration::from_millis(1500));
+    let told = h
+        .sink
+        .notes()
+        .iter()
+        .filter(|n| n.body_key.as_deref() == Some("app.notify.callSilent"))
+        .count();
+    assert_eq!(told, 1);
+    assert_eq!(pill_meeting_state(&h).as_deref(), Some("recording"));
+    let state = engine.settings_state();
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            state["permissions"]["systemAudio"], "denied",
+            "{}",
+            state["permissions"]
+        );
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+    engine.stop_meeting(StopReason::User).unwrap();
     engine.shutdown();
 }

@@ -145,7 +145,9 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
     let permissions = read_permissions
-        .then(|| crate::permissions::view(&*core.svc.permissions))
+        .then(|| {
+            crate::permissions::view_learning(&*core.svc.permissions, core.system_audio_learned())
+        })
         .flatten();
     json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),

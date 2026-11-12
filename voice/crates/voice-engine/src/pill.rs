@@ -49,6 +49,9 @@ pub mod notices {
     pub const FRAMES_DROPPED_DISK: &str = "pill.framesDropped.disk";
     pub const SCREEN_FAILED: &str = "pill.screenFailed";
     pub const SCREEN_PERMISSION: &str = "pill.screenPermission";
+    /// The call track holds only silence while another app plays sound (voice-recorder
+    /// `silence.rs`); a notification says where to switch System Audio Recording on.
+    pub const CALL_SILENT: &str = "pill.callSilent";
     pub const SCREEN_CHANGE_FAILED: &str = "pill.screenChangeFailed";
     /// `{name}`: the monitor's name.
     pub const SCREEN_MOVED: &str = "pill.screenMoved";
