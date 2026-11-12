@@ -314,7 +314,7 @@ When both parts are dropped, the process writes `stop` with reason `dropped` and
 ### `rukoo-voice-screen`
 
 ```
-rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
 rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 rukoo-voice-screen probe
 rukoo-voice-screen inspect <file.mp4>
@@ -325,6 +325,7 @@ rukoo-voice-screen inspect <file.mp4>
 - It refuses to start while `screen.json` names a process that answers on its port (exit code 4), when the journal has `stop`, and when `screen/` has content and `--resume` isn't given (exit code 3).
 - It waits up to 5 s for a `session` line in the timeline, else it exits with code 1.
 - It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
+- `--exclude-pid <pid>` names a process whose windows the recording leaves out, and repeats for each one. Voice passes the pid of every connected Rukoo, so Rukoo stays out of a meeting's frames. Windows ignores the option, because Rukoo already keeps its own windows out there. Voice reads the pids once, when it starts the process, so a Rukoo that connects later or comes back with another pid isn't followed until the process is started again.
 - It follows the timeline every 250 ms: it stops capturing at `pause` and starts again at `resume`, and at `stop` it ends at the `stop` line's `t`, finishes the video file, reads the frames still queued, writes `video_end` and `stop` with reason `meeting`, removes `screen.json` and exits with code 0.
 - It stops by itself, with reason `interrupted`, when the timeline has had no new line for 60 s of awake time and nobody asked its `status` in that time: the screen is never recorded without the audio.
 - It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names. Frames are logged by id, size, bytes and JPEG and OCR time only. A development copy also logs the graphics memory it uses once a minute.

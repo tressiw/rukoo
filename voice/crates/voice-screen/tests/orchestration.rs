@@ -507,6 +507,7 @@ impl Meeting {
             mode: Mode::Video,
             resume: false,
             monitor: None,
+            exclude_pids: Vec::new(),
             test: None,
         }
     }
