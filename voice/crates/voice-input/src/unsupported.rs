@@ -2,11 +2,13 @@
 //! so instead of failing silently.
 //!
 //! Linux uses all of them. macOS implements the pasteboard, Secure Event
-//! Input, posted keys, the selection and the foreground app itself, and
-//! shares only [`key_state`] and [`is_key_down`], which read the physical
-//! keyboard and aren't implemented there yet.
+//! Input, the physical keyboard, posted keys, the selection and the foreground
+//! app itself, so on macOS the module compiles to nothing.
 
-use crate::{InputError, Key};
+#[cfg(not(target_os = "macos"))]
+use crate::InputError;
+#[cfg(not(target_os = "macos"))]
+use crate::Key;
 
 #[cfg(not(target_os = "macos"))]
 use std::time::Duration;
@@ -16,10 +18,12 @@ use crate::clipboard::BeforeKeys;
 #[cfg(not(target_os = "macos"))]
 use crate::target::WindowInfo;
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
     Err(InputError::Unsupported)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn is_key_down(_key: Key) -> bool {
     false
 }

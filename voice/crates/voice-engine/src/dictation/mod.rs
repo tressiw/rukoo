@@ -248,6 +248,19 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
     }
 }
 
+/// The key-up can be lost when the session goes away: a fast user switch, the
+/// lock screen, or the Mac sleeping. The app hears those from the system and
+/// calls this, which treats the held hotkey as released and stops the
+/// dictation. A key-up that arrives later changes nothing.
+pub(crate) fn release_all(core: &Arc<Core>) {
+    if core.shutting_down() {
+        return;
+    }
+    if lock(&core.dictation.ptt).release_all() {
+        stop_recording(core);
+    }
+}
+
 fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
     let this = &core.dictation;
     let cfg = core.config();
