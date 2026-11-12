@@ -1353,7 +1353,15 @@ impl EngineApi for FakeEngine {
                         json!({ "exists": true, "id": "00000000", "exported": true });
                     json!({ "id": "00000000" })
                 }
-                _ => return Err(invalid("action is show, saved or import.")),
+                "retry" => {
+                    if st.settings["sync"]["state"] == "key" {
+                        st.settings["sync"]["state"] = json!("idle");
+                        st.settings["sync"]["lastError"] = Value::Null;
+                        st.settings["sync"]["key"]["exists"] = json!(true);
+                    }
+                    Value::Null
+                }
+                _ => return Err(invalid("action is show, saved, import or retry.")),
             };
             st.settings_changed(out);
             Ok(result)

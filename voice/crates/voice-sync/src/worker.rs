@@ -46,6 +46,10 @@ const PRUNE_RETRY: Duration = Duration::from_secs(15 * 60);
 const DAY_MS: u64 = 86_400_000;
 /// The staging folder in `<data>/sync`.
 pub(crate) const STAGING_DIR: &str = "staging";
+/// Settings hear that the worker waits for the protector once a read of the key takes this long,
+/// so a read that answers at once (DPAPI, or a keychain item Voice may read) never shows as
+/// `unlocking`.
+const UNLOCK_NOTICE: Duration = Duration::from_millis(250);
 
 /// What the facade, the worker, restores and fetches share.
 pub(crate) struct Shared {
@@ -97,6 +101,12 @@ pub(crate) struct State {
     pub(crate) last_error: Option<LastError>,
     /// The generation whose remote meetings were counted for `restore.available`.
     pub(crate) listed: Option<u64>,
+    /// The worker is reading the key and the secret from the protector. On macOS that read waits
+    /// while the keychain dialog is open; Settings show `sync.state` `unlocking` meanwhile.
+    pub(crate) unlocking: bool,
+    /// The last read of the master key failed with a key error (it is missing, damaged or the
+    /// system refused it), so Settings don't count it as a key Voice has (`sync.key.exists`).
+    pub(crate) key_unreadable: bool,
     /// The place the queue's rows describe ([`SyncConfig::target`]), as `queue.db` has it.
     pub(crate) target: Option<String>,
     /// Counts changes of where Voice reads from and with which key: sync turned on or off, moved
@@ -119,8 +129,9 @@ impl State {
 pub(crate) struct Blocked {
     pub(crate) error: SyncError,
     /// On the monotonic clock: a wall clock set back after a `clock` error must not stretch the
-    /// wait by the size of the error.
-    pub(crate) until: Instant,
+    /// wait by the size of the error. `None` waits for a change: a keychain the user refused is
+    /// asked again only when the user says so, never on a timer that would show the dialog again.
+    pub(crate) until: Option<Instant>,
     pub(crate) generation: u64,
 }
 
@@ -180,10 +191,29 @@ impl Shared {
     /// makes it, so the key on disk is the key every caller got.
     pub(crate) fn key_or_create(&self, now: u64) -> Result<(MasterKey, bool), SyncError> {
         let _key = self.key_lock();
-        match self.keys.load()? {
-            Some(key) => Ok((key, false)),
-            None => Ok((self.keys.create(now)?, true)),
-        }
+        let made = match self.keys.load() {
+            Ok(Some(key)) => Ok((key, false)),
+            Ok(None) => self.keys.create(now).map(|key| (key, true)),
+            Err(e) => Err(e),
+        };
+        self.note_key_read(made.as_ref().err());
+        made
+    }
+
+    /// Remembers whether the last read of the master key opened it, for `sync.key.exists`.
+    pub(crate) fn note_key_read(&self, error: Option<&SyncError>) {
+        self.lock().key_unreadable = error.is_some_and(|e| e.kind.is_key());
+    }
+
+    /// The error that stops uploads for this long, or until the next change for a refused key.
+    pub(crate) fn block(&self, error: SyncError, generation: u64) {
+        let until = (error.kind != SyncErrorKind::KeyDenied)
+            .then(|| Instant::now() + self.opts.timing.blocked);
+        self.lock().blocked = Some(Blocked {
+            error,
+            until,
+            generation,
+        });
     }
 
     pub(crate) fn cfg(&self) -> Option<SyncConfig> {
@@ -318,7 +348,9 @@ impl Shared {
             (st.cfg.clone(), st.place)
         };
         let cfg = cfg.ok_or_else(|| SyncError::new(SyncErrorKind::Off, "Bucket sync is off."))?;
-        let key = self.keys.load()?.ok_or_else(|| {
+        let loaded = self.keys.load();
+        self.note_key_read(loaded.as_ref().err());
+        let key = loaded?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::Key, "Voice has no encryption key yet.")
         })?;
         let secret = self.keys.secret()?.ok_or_else(|| {
@@ -456,6 +488,47 @@ enum Step {
     Idle(Duration),
 }
 
+/// Marks a read of the key and the secret: `sync.state` is `unlocking` until it drops. Settings
+/// hear of it once the read takes [`UNLOCK_NOTICE`], and of its end from the caller.
+struct Unlocking<'a>(&'a Arc<Shared>);
+
+impl<'a> Unlocking<'a> {
+    fn start(shared: &'a Arc<Shared>) -> Unlocking<'a> {
+        shared.lock().unlocking = true;
+        let weak = Arc::downgrade(shared);
+        let notice = thread::Builder::new()
+            .name("sync-unlock-notice".into())
+            .spawn(move || {
+                thread::sleep(UNLOCK_NOTICE);
+                if let Some(shared) = weak.upgrade() {
+                    let waiting = shared.lock().unlocking;
+                    if waiting {
+                        shared.changed();
+                    }
+                }
+            });
+        if let Err(e) = notice {
+            log::debug!("sync: no notice of a slow key read: {e}");
+        }
+        Unlocking(shared)
+    }
+}
+
+impl Drop for Unlocking<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unlocking = false;
+    }
+}
+
+/// The key and the secret a connect uses, read before the worker takes `busy`.
+struct Unlocked {
+    /// The generation they were read for; a connect for a later one reads them again.
+    generation: u64,
+    key: Result<MasterKey, SyncError>,
+    /// Read only once the key opened, so a refused key brings no second keychain dialog.
+    secret: Result<Option<Zeroizing<String>>, SyncError>,
+}
+
 /// Why the worker can't upload now.
 enum Ready {
     Yes,
@@ -532,9 +605,10 @@ impl Worker {
             }
             let seen = shared.wakes();
             let pending = shared.flush();
+            let unlocked = self.unlock();
             let wait = {
                 let _busy = shared.busy();
-                match self.prepare() {
+                match self.prepare(unlocked) {
                     Ready::No(d) => Some(d),
                     Ready::Yes => {
                         self.maintain();
@@ -554,9 +628,42 @@ impl Worker {
         }
     }
 
+    /// Reads the key and the secret when the worker is about to connect, before it takes `busy`.
+    /// On macOS a read waits while the keychain dialog is open, and a meeting's deletion, a key
+    /// import or a restore must not wait for that dialog. Nothing when no connect is due.
+    fn unlock(&self) -> Option<Unlocked> {
+        let shared = &self.shared;
+        let (on, generation, blocked) = {
+            let st = shared.lock();
+            (
+                st.cfg.is_some(),
+                st.generation,
+                st.blocked.as_ref().map(|b| (b.generation, b.until)),
+            )
+        };
+        if !on || (self.generation == Some(generation) && self.remote.is_some()) {
+            return None;
+        }
+        let waits = |until: Option<Instant>| until.is_none_or(|until| until > Instant::now());
+        if blocked.is_some_and(|(blocked, until)| blocked == generation && waits(until)) {
+            return None;
+        }
+        let _unlocking = Unlocking::start(shared);
+        let key = shared.key_or_create(shared.now()).map(|(key, _)| key);
+        let secret = match &key {
+            Ok(_) => shared.keys.secret(),
+            Err(_) => Ok(None),
+        };
+        Some(Unlocked {
+            generation,
+            key,
+            secret,
+        })
+    }
+
     /// Loads the configuration, the key, the secret and the bucket when they changed, and says
-    /// whether uploads may go.
-    fn prepare(&mut self) -> Ready {
+    /// whether uploads may go. `unlocked` holds the key and the secret [`Worker::unlock`] read.
+    fn prepare(&mut self, unlocked: Option<Unlocked>) -> Ready {
         let shared = self.shared.clone();
         let (cfg, generation, blocked) = {
             let st = shared.lock();
@@ -572,9 +679,11 @@ impl Worker {
         };
         let now = shared.now();
         if let Some(blocked) = &blocked {
-            let left = blocked.until.saturating_duration_since(Instant::now());
-            if blocked.generation == generation && !left.is_zero() {
-                return Ready::No(left);
+            let left = blocked
+                .until
+                .map(|until| until.saturating_duration_since(Instant::now()));
+            if blocked.generation == generation && left.is_none_or(|left| !left.is_zero()) {
+                return Ready::No(left.unwrap_or(TICK));
             }
             let mut st = shared.lock();
             if st
@@ -588,12 +697,17 @@ impl Worker {
         if self.generation == Some(generation) && self.remote.is_some() {
             return Ready::Yes;
         }
+        // The key and the secret were read for this generation; after a change they are read
+        // again first, outside `busy`.
+        let Some(unlocked) = unlocked.filter(|u| u.generation == generation) else {
+            return Ready::No(Duration::ZERO);
+        };
         self.keep_previous();
         self.listed.clear();
         self.wait_until = None;
         // Retries that a clock running ahead scheduled for later than any backoff can.
         self.reschedule_ahead(now);
-        match self.connect(&cfg, now) {
+        match self.connect(&cfg, unlocked) {
             Ok((remote, left_open)) => {
                 self.cancel_left_open(left_open);
                 self.remote = Some(remote);
@@ -609,11 +723,7 @@ impl Worker {
             Err(error) => {
                 log::warn!("sync: can't start uploading: {error}");
                 shared.note_failure(&error);
-                shared.lock().blocked = Some(Blocked {
-                    error,
-                    until: Instant::now() + shared.opts.timing.blocked,
-                    generation,
-                });
+                shared.block(error, generation);
                 self.generation = Some(generation);
                 shared.changed();
                 Ready::No(TICK)
@@ -626,14 +736,14 @@ impl Worker {
     fn connect(
         &self,
         cfg: &SyncConfig,
-        now: u64,
+        unlocked: Unlocked,
     ) -> Result<(Remote, Vec<(String, String)>), SyncError> {
         let shared = &self.shared;
-        let (key, _) = shared.key_or_create(now)?;
+        let key = unlocked.key?;
         if shared.queue.adopt_kid(&key.kid())? {
             log::info!("sync: the encryption key changed; the queue starts again");
         }
-        let secret = shared.keys.secret()?.ok_or_else(|| {
+        let secret = unlocked.secret?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
         let timing = &shared.opts.timing;
@@ -1703,13 +1813,7 @@ impl Worker {
                 SyncErrorKind::Crypto => {
                     let _ = self.gone(row, "it can't be encrypted");
                 }
-                _ => {
-                    shared.lock().blocked = Some(Blocked {
-                        error,
-                        until: Instant::now() + shared.opts.timing.blocked,
-                        generation,
-                    });
-                }
+                _ => shared.block(error, generation),
             }
         }
         shared.changed();

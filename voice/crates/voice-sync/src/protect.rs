@@ -38,8 +38,10 @@ const FILE_VERSION: u8 = 1;
 /// stand-in in tests.
 ///
 /// `protect` fails with `Local`; `unprotect` fails with `Key` when the blob isn't one this user
-/// and label can open. The keychain protector reports a missing item and denied access as `Key`
-/// too, so Settings say the key is the problem and Voice keeps running.
+/// and label can open. The keychain protector reports a missing item as `Key` too, and access the
+/// user or macOS refused as `KeyDenied`, so Settings say the key is the problem, tell a refusal
+/// from a lost key, and Voice keeps running. A call may wait for the user: on macOS, the keychain
+/// dialog. Callers never hold a lock that anything else waits for while they call it.
 pub trait Protector: Send + Sync {
     fn protect(&self, plain: &[u8], label: &str) -> Result<Vec<u8>, SyncError>;
     fn unprotect(&self, blob: &[u8], label: &str) -> Result<Zeroizing<Vec<u8>>, SyncError>;

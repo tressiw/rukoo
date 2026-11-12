@@ -24,9 +24,17 @@
 //! reports as a key error.
 //!
 //! macOS ties a keychain item's access to the signature of the program that made it, so after an
-//! update or a rebuilt development bundle macOS asks once whether Voice may read it. Always Allow
-//! ends that; Deny lands here as [`StoreError::Denied`] and Settings shows a key error while Voice
-//! keeps running.
+//! update or a rebuilt development bundle macOS asks whether Voice may read it. It asks per item:
+//! each has its own access list, and Security.framework has no read that answers for two items in
+//! one dialog. With sync on that is two dialogs, the master key's and then the bucket secret's;
+//! Always Allow ends each. Deny lands here as [`StoreError::Denied`], which is a `KeyDenied` error:
+//! Settings shows it with Try again, Voice keeps running, and the bucket secret isn't asked for
+//! after the master key was refused. A missing item stays a `Key` error, whose way out is the
+//! recovery code.
+//!
+//! A read waits as long as the dialog is open, so Voice never reads an item on a thread that
+//! anything else waits for: the sync worker reads them on its own thread, outside its `busy` lock,
+//! and Settings show `sync.state` `unlocking` meanwhile.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,7 +45,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::Protector;
+use super::{Protector, SECRET_LABEL};
 use crate::keys::random;
 use crate::names::hex;
 use crate::{SyncError, SyncErrorKind};
@@ -66,13 +74,16 @@ const ERR_SEC_AUTH_FAILED: i32 = -25293;
 const ERR_SEC_USER_CANCELED: i32 = -128;
 /// Nobody could answer a dialog, such as a locked keychain in a session without a desktop.
 const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+/// The Mac is in dark wake (Power Nap), where no dialog can show.
+const ERR_SEC_IN_DARK_WAKE: i32 = -25320;
 
 /// Why [`ItemStore`] couldn't answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
     /// No item for that account.
     Missing,
-    /// The user denied access, dismissed the dialog, or macOS wouldn't ask. Carries the OSStatus.
+    /// The user denied access, dismissed the dialog, or macOS couldn't ask now. Carries the
+    /// OSStatus. The item is still there.
     Denied(i32),
     /// Anything else the keychain reported.
     Other(i32),
@@ -122,9 +133,10 @@ impl ItemStore for LoginKeychain {
 fn store_error(error: security_framework::base::Error) -> StoreError {
     match error.code() {
         ERR_SEC_ITEM_NOT_FOUND => StoreError::Missing,
-        code @ (ERR_SEC_AUTH_FAILED | ERR_SEC_USER_CANCELED | ERR_SEC_INTERACTION_NOT_ALLOWED) => {
-            StoreError::Denied(code)
-        }
+        code @ (ERR_SEC_AUTH_FAILED
+        | ERR_SEC_USER_CANCELED
+        | ERR_SEC_INTERACTION_NOT_ALLOWED
+        | ERR_SEC_IN_DARK_WAKE) => StoreError::Denied(code),
         code => StoreError::Other(code),
     }
 }
@@ -198,7 +210,7 @@ impl<S: ItemStore> Keychain<S> {
                 random(&mut *key)?;
                 self.store
                     .set(&account, &*key)
-                    .map_err(|e| store_failed("save", &account, e))?;
+                    .map_err(|e| store_failed("save", label, &account, e))?;
                 return Ok(key);
             }
             Err(StoreError::Missing) => {
@@ -207,7 +219,7 @@ impl<S: ItemStore> Keychain<S> {
                     "Voice can't find the login keychain item that opens its encryption key file. Import the key from its recovery code, or save the bucket secret again.",
                 ))
             }
-            Err(e) => return Err(store_failed("read", &account, e)),
+            Err(e) => return Err(store_failed("read", label, &account, e)),
         };
         if bytes.len() != KEY_LEN {
             return Err(SyncError::new(
@@ -221,19 +233,32 @@ impl<S: ItemStore> Keychain<S> {
     }
 }
 
-/// An item Voice couldn't save or read, as Settings show it under Error details.
-fn store_failed(what: &str, account: &str, error: StoreError) -> SyncError {
-    let message = match error {
-        StoreError::Denied(code) => format!(
-            "macOS didn't allow Voice to {what} its encryption key in the login keychain (error {code}). Allow Voice in the dialog, then try again."
+/// An item Voice couldn't save or read, as Settings show it under Error details. A refusal is
+/// `KeyDenied`, so Settings ask the user to allow Voice instead of to enter the key again.
+fn store_failed(what: &str, label: &str, account: &str, error: StoreError) -> SyncError {
+    let item = if label == SECRET_LABEL {
+        "the key that protects its bucket secret"
+    } else {
+        "its encryption key"
+    };
+    let (kind, message) = match error {
+        StoreError::Denied(code) => (
+            SyncErrorKind::KeyDenied,
+            format!(
+                "macOS didn't allow Voice to {what} {item} in the login keychain (error {code}). Choose Try again in Settings > Storage, then Always Allow when macOS asks."
+            ),
         ),
-        StoreError::Other(code) => format!(
-            "The login keychain couldn't {what} Voice's encryption key (error {code}). Try again."
+        StoreError::Other(code) => (
+            SyncErrorKind::Key,
+            format!("The login keychain couldn't {what} {item} (error {code}). Try again."),
         ),
-        StoreError::Missing => "Voice can't find the login keychain item that holds its encryption key. Import the key from its recovery code, or save the bucket secret again.".to_owned(),
+        StoreError::Missing => (
+            SyncErrorKind::Key,
+            "Voice can't find the login keychain item that holds its encryption key. Import the key from its recovery code, or save the bucket secret again.".to_owned(),
+        ),
     };
     log::warn!("sync: {message} (account {account})");
-    SyncError::new(SyncErrorKind::Key, message)
+    SyncError::new(kind, message)
 }
 
 impl<S: ItemStore> Protector for Keychain<S> {

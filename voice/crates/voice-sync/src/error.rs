@@ -21,6 +21,9 @@ pub enum SyncErrorKind {
     NoSecret,
     Off,
     Key,
+    /// The system wouldn't let Voice open its key now: the user chose Deny in macOS's keychain
+    /// dialog, or nobody could answer it. The key is still there; allowing Voice opens it again.
+    KeyDenied,
     KeyInUse,
     NotInBucket,
     Crypto,
@@ -43,7 +46,7 @@ impl SyncError {
     }
 
     /// The code Settings maps to text: endpoint, network, auth, bucket, clock, permission,
-    /// no_secret, key, key_in_use, off or failed. A timeout counts as `network`: in both cases
+    /// no_secret, key, key_denied, key_in_use, off or failed. A timeout counts as `network`: in both cases
     /// Voice couldn't get an answer from the endpoint.
     pub fn code(&self) -> &'static str {
         match self.kind {
@@ -55,6 +58,7 @@ impl SyncError {
             SyncErrorKind::Permission => "permission",
             SyncErrorKind::NoSecret => "no_secret",
             SyncErrorKind::Key => "key",
+            SyncErrorKind::KeyDenied => "key_denied",
             SyncErrorKind::KeyInUse => "key_in_use",
             SyncErrorKind::Off => "off",
             SyncErrorKind::Throttled
@@ -76,6 +80,15 @@ impl SyncError {
                 | SyncErrorKind::Throttled
                 | SyncErrorKind::Server
         )
+    }
+}
+
+impl SyncErrorKind {
+    /// Voice can't open its key or the bucket secret on this computer: the key is unreadable or
+    /// missing (`Key`), or the system wouldn't let Voice open it now (`KeyDenied`). Both stop
+    /// uploads and show as `sync.state` `key`.
+    pub fn is_key(self) -> bool {
+        matches!(self, SyncErrorKind::Key | SyncErrorKind::KeyDenied)
     }
 }
 
@@ -109,6 +122,7 @@ mod tests {
             (NoSecret, "no_secret", false),
             (Off, "off", false),
             (Key, "key", false),
+            (KeyDenied, "key_denied", false),
             (KeyInUse, "key_in_use", false),
             (NotInBucket, "failed", false),
             (Crypto, "failed", false),
