@@ -3,8 +3,8 @@
 //!
 //! Windows has the full backend. macOS has the pasteboard, Secure Event Input,
 //! posted keys (Cmd+V to paste, Cmd+C to copy, Unicode events to type) and the
-//! Accessibility API for the selection and the focused element; reading the
-//! physical keyboard returns what step 2's spike S1 decides, and until then
+//! Accessibility API for the selection and the focused element. Reading the
+//! physical keyboard isn't there yet and returns
 //! [`InputError::Unsupported`]. Other platforms return
 //! [`InputError::Unsupported`] for everything; the platform-neutral parts
 //! ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`]) work
@@ -228,6 +228,14 @@ pub fn is_key_down(key: Key) -> bool {
     sys::is_key_down(key)
 }
 
+/// Whether macOS lets Voice post keys into other apps and read their accessibility objects: the
+/// Accessibility grant. It reads the grant without prompting. Settings shows the same reading,
+/// so the row and the error that names the switch can't disagree.
+#[cfg(target_os = "macos")]
+pub fn accessibility_trusted() -> bool {
+    mac::is_accessibility_trusted()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,8 +292,8 @@ mod tests {
         );
     }
 
-    /// macOS has the pasteboard and posts keys; the physical keyboard waits
-    /// for spike S1. Nothing here types or touches the pasteboard.
+    /// macOS has the pasteboard and posts keys; reading the physical keyboard
+    /// isn't there yet. Nothing here types or touches the pasteboard.
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_os_posts_keys_but_reads_no_physical_keys_yet() {

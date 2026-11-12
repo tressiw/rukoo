@@ -5,9 +5,9 @@
 //! checks it first (`mac::ax`). The events carry their own modifier flags:
 //! macOS otherwise hands a posted event the session's current flags, and a
 //! user who still holds Right Option from the hotkey would turn Cmd+V into
-//! Cmd+Option+V. That is the macOS answer to the wait `BeforeKeys` asks for
-//! on Windows, and it makes the chord right even in the 50 ms before the
-//! release is seen (spike S1).
+//! Cmd+Option+V. The wait `BeforeKeys` asks for is still there, as on Windows;
+//! the explicit flags make the chord right even in the moment before the
+//! release is seen.
 //!
 //! The events are built here as plain data (`KeyEvent`) so the key codes and
 //! flags can be checked without posting anything; `Keys` is what puts them on

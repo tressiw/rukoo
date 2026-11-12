@@ -199,8 +199,8 @@ mod mac_microphone {
     /// Whether that id means "this Mac has no input device".
     ///
     /// cpal 0.18.2's Core Audio backend keeps the unknown id and hands out a device for it; its
-    /// name, its id and its format then all fail, and calling `to_string` on the device used to
-    /// panic (spike S2). Voice reads the id itself and treats it as no microphone, so dictation
+    /// name, its id and its format then all fail, and calling `to_string` on the device can
+    /// panic. Voice reads the id itself and treats it as no microphone, so dictation
     /// says so instead of failing inside cpal.
     pub(super) fn is_missing(device: Option<u32>) -> bool {
         // A HAL that didn't answer leaves cpal's own `None` to report the missing microphone.

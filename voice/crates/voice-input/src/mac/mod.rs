@@ -6,7 +6,7 @@
 //! it with `AXIsProcessTrusted`, which never prompts, and returns
 //! [`InputError::Accessibility`], whose message says what to switch on, rather
 //! than failing silently. Reading the physical keyboard (`key_state`,
-//! `is_key_down`) waits for spike S1.
+//! `is_key_down`) isn't implemented yet.
 
 use std::thread;
 use std::time::Duration;
@@ -23,6 +23,11 @@ mod events;
 mod pasteboard;
 mod secure;
 
+/// The Accessibility grant, for `voice_input::accessibility_trusted`.
+pub(crate) fn is_accessibility_trusted() -> bool {
+    ax::is_trusted()
+}
+
 pub(crate) use pasteboard::{clear_if, copy_hidden, wait_for_clipboard_restore};
 
 /// Why Voice can't type right now, in the order the user can act on it: a
@@ -33,12 +38,12 @@ fn check() -> Result<(), InputError> {
     ax::check()
 }
 
-/// Comes with step 2 after spike S1: reads the physical keyboard.
+/// Not implemented yet: reads the physical keyboard.
 pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
     crate::unsupported::key_state()
 }
 
-/// Comes with step 2 after spike S1: reads the physical keyboard.
+/// Not implemented yet: reads the physical keyboard.
 pub(crate) fn is_key_down(key: Key) -> bool {
     crate::unsupported::is_key_down(key)
 }

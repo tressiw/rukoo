@@ -208,13 +208,6 @@ impl Keyboard for SendKeys {
         }
         Err(InputError::Blocked)
     }
-
-    fn send_text(&mut self, text: &str) -> Result<(), InputError> {
-        // Windows has no keyboard event that carries text: every code unit is
-        // a Unicode key stroke of its own.
-        let batch: Vec<Stroke> = strokes::typing(text).concat();
-        self.send(&batch)
-    }
 }
 
 fn to_input(stroke: &Stroke) -> INPUT {

@@ -63,10 +63,17 @@ fn text(value: &CFType) -> Option<String> {
     value.downcast_ref::<CFString>().map(ToString::to_string)
 }
 
+/// How long one Accessibility request may wait for the app to answer. The default is six seconds,
+/// and a hung app would hold up the dictation that long before Voice falls back to Cmd+C.
+const REQUEST_TIMEOUT_SECONDS: f32 = 1.0;
+
 /// The system-wide element, which every app's focus hangs off.
 fn system_wide() -> CFRetained<AXUIElement> {
     // SAFETY: it takes no arguments and always hands back a new element.
-    unsafe { AXUIElement::new_system_wide() }
+    let element = unsafe { AXUIElement::new_system_wide() };
+    // SAFETY: the element is valid; the timeout is a plain number of seconds.
+    let _ = unsafe { element.set_messaging_timeout(REQUEST_TIMEOUT_SECONDS) };
+    element
 }
 
 /// The element that has the keyboard focus, in whatever app is in front.

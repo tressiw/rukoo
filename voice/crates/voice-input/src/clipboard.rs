@@ -134,10 +134,11 @@ pub(crate) trait Keyboard {
     /// Sends one batch. [`InputError::Blocked`] when Windows inserted fewer
     /// events than it was given.
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError>;
-    /// Types one chunk of text as a single keyboard event, where the platform
-    /// has one: macOS' `CGEventKeyboardSetUnicodeString`. Windows sends the
-    /// chunk as Unicode key strokes, which is what [`crate::strokes::typing`]
-    /// cuts into one batch per character.
+    /// Types one chunk of text as a single keyboard event with
+    /// `CGEventKeyboardSetUnicodeString`. Windows has no such event: it sends
+    /// Unicode key strokes, which [`crate::strokes::typing`] cuts into one
+    /// batch per character.
+    #[cfg(target_os = "macos")]
     fn send_text(&mut self, text: &str) -> Result<(), InputError>;
 }
 
@@ -165,6 +166,7 @@ impl Keyboard for Guarded<'_> {
         self.keyboard.send(strokes)
     }
 
+    #[cfg(target_os = "macos")]
     fn send_text(&mut self, text: &str) -> Result<(), InputError> {
         (self.before)()?;
         self.keyboard.send_text(text)
@@ -606,6 +608,7 @@ mod tests {
             Ok(())
         }
 
+        #[cfg(target_os = "macos")]
         fn send_text(&mut self, text: &str) -> Result<(), InputError> {
             // One Unicode event on macOS; the fake keeps the units as the strokes Windows would
             // send, so the same test reads both.

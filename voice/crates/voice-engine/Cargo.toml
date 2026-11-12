@@ -57,7 +57,7 @@ objc2-av-foundation = { version = "=0.3.2", default-features = false, features =
   "AVCaptureDevice",
   "AVMediaFormat",
 ] }
-# macOS' default input device, which cpal 0.18.2 reports even when there is none (spike S2).
+# macOS' default input device, which cpal 0.18.2 reports even when there is none.
 objc2-core-audio = { version = "=0.3.2", default-features = false, features = [
   "AudioHardware",
 ] }

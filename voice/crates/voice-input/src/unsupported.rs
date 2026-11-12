@@ -3,8 +3,8 @@
 //!
 //! Linux uses all of them. macOS implements the pasteboard, Secure Event
 //! Input, posted keys, the selection and the foreground app itself, and
-//! shares only [`key_state`] and [`is_key_down`], which wait for step 2's
-//! spike S1.
+//! shares only [`key_state`] and [`is_key_down`], which read the physical
+//! keyboard and aren't implemented there yet.
 
 use crate::{InputError, Key};
 
