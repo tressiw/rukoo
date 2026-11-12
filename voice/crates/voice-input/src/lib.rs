@@ -1,9 +1,12 @@
-//! Input for Rukoo Voice dictation on Windows: push-to-talk hotkeys, text
-//! insertion, selection capture and the focused window.
+//! Input for Rukoo Voice dictation: push-to-talk hotkeys, text insertion,
+//! selection capture and the focused window.
 //!
-//! Other platforms compile and return [`InputError::Unsupported`]; the
-//! platform-neutral parts ([`HotkeyPoller::spawn_with`], [`PushToTalk`],
-//! [`target::classify`]) work everywhere.
+//! Windows has the full backend. macOS has the pasteboard and Secure Event
+//! Input for step 2; its keys, typed text, selection capture and foreground
+//! window still return [`InputError::Unsupported`]. Other platforms return
+//! [`InputError::Unsupported`] for everything; the platform-neutral parts
+//! ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`]) work
+//! everywhere.
 //!
 //! The behavior ports Ownkey for Windows. Where Voice differs on purpose
 //! (clipboard restore, Shift+Enter for newlines), the code says so.
@@ -20,14 +23,20 @@ mod ptt;
 mod strokes;
 pub mod target;
 
+// The stubs in `unsupported` are shared: macOS uses them for everything step 2
+// still fills in, and Linux uses them for every call.
 #[cfg(not(windows))]
 mod unsupported;
-#[cfg(not(windows))]
-use unsupported as sys;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
 use win as sys;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+use mac as sys;
+#[cfg(not(any(windows, target_os = "macos")))]
+use unsupported as sys;
 
 pub use clipboard::BeforeKeys;
 pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL};
@@ -49,9 +58,10 @@ pub enum InsertMode {
 pub enum InputError {
     /// Not available on this platform yet.
     Unsupported,
-    /// Windows inserted fewer key events than were sent. User Interface
-    /// Privilege Isolation does that for a window of an app that runs as
-    /// administrator.
+    /// The app refuses the keys. On Windows, User Interface Privilege
+    /// Isolation does that for a window of an app that runs as administrator.
+    /// On macOS, Secure Event Input does it while a password field or
+    /// Terminal's Secure Keyboard Entry is active.
     Blocked,
     /// Another app kept the clipboard open.
     ClipboardBusy,
@@ -61,15 +71,29 @@ pub enum InputError {
     System(String),
 }
 
+/// Why the platform refused keys, in its own terms.
+fn blocked_message() -> &'static str {
+    #[cfg(windows)]
+    {
+        "Windows blocked typing into an app that runs as administrator."
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        "Typing is blocked on this platform."
+    }
+}
+
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InputError::Unsupported => {
                 f.write_str("Typing and hotkeys aren't supported on this platform yet.")
             }
-            InputError::Blocked => {
-                f.write_str("Windows blocked typing into an app that runs as administrator.")
-            }
+            InputError::Blocked => f.write_str(blocked_message()),
             InputError::ClipboardBusy => {
                 f.write_str("Another app is using the clipboard. Try again.")
             }
@@ -84,7 +108,8 @@ impl std::error::Error for InputError {}
 /// Inserts `text` into the focused app. Empty text does nothing.
 ///
 /// [`InsertMode::Paste`] takes a snapshot of the clipboard, puts the text on
-/// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V.
+/// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V
+/// (Cmd+V on macOS, once step 2 posts keys).
 /// It returns right away. A background thread waits 2 s and then puts the
 /// snapshot back, unless something else was copied by then or the window the
 /// keys went to doesn't answer within 1 s: an app that hasn't handled Ctrl+V
@@ -156,29 +181,13 @@ pub fn wait_for_clipboard_restore() {
 /// For a secret the user saves, such as bucket sync's recovery code, whose copy a page's
 /// `navigator.clipboard` would leave in Win+V history and, with cloud clipboard on, online.
 pub fn copy_hidden(text: &str) -> Result<(), InputError> {
-    #[cfg(windows)]
-    {
-        win::copy_hidden(text)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err(InputError::Unsupported)
-    }
+    sys::copy_hidden(text)
 }
 
 /// Empties the clipboard, but only while it still holds exactly `text`: something the user copied
 /// since stays. Returns whether it emptied it. For [`copy_hidden`]'s text after a while.
 pub fn clear_if(text: &str) -> Result<bool, InputError> {
-    #[cfg(windows)]
-    {
-        win::clear_if(text)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err(InputError::Unsupported)
-    }
+    sys::clear_if(text)
 }
 
 /// The foreground window, or `None` when there is none (for example on the
@@ -211,9 +220,15 @@ mod tests {
 
     #[test]
     fn errors_read_as_user_messages() {
+        #[cfg(windows)]
         assert_eq!(
             InputError::Blocked.to_string(),
             "Windows blocked typing into an app that runs as administrator."
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            InputError::Blocked.to_string(),
+            "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
         );
         assert_eq!(
             InputError::Clipboard("Access is denied.".into()).to_string(),
@@ -221,7 +236,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn other_platforms_say_unsupported() {
         assert_eq!(
@@ -240,6 +255,33 @@ mod tests {
         assert_eq!(text_target(), TextTarget::Unknown);
         assert_eq!(copy_hidden("x"), Err(InputError::Unsupported));
         assert_eq!(clear_if("x"), Err(InputError::Unsupported));
+        assert!(!is_key_down(Key::F13));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert_eq!(
+            HotkeyPoller::spawn(vec![Key::F13], tx).unwrap_err(),
+            InputError::Unsupported
+        );
+    }
+
+    /// macOS has the pasteboard, so `copy_hidden` and `clear_if` work; the
+    /// keys and the focus do not yet. This touches no real pasteboard.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_os_has_no_keys_typing_or_focus_yet() {
+        assert_eq!(
+            insert_text("x", InsertMode::Paste),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(
+            insert_text("x", InsertMode::Type),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(
+            capture_selection(Duration::from_millis(1)),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(foreground_window(), None);
+        assert_eq!(text_target(), TextTarget::Unknown);
         assert!(!is_key_down(Key::F13));
         let (tx, _rx) = std::sync::mpsc::channel();
         assert_eq!(

@@ -27,6 +27,30 @@ use voice_protocol::{ScreenMode, StartedBy, Track};
 
 pub const RATE: usize = 16_000;
 
+/// Live speaker labels need the NeMo worker to run faster than real time. Below this many seconds
+/// of audio per second, a host (a hosted macOS runner measured 0.5, a Windows runner 8, an M4 27)
+/// can't keep labels up, and the tests that play audio in real time would only time out.
+/// `RUKOO_VOICE_TEST_MIN_REALTIME` overrides it, to see the skip on a fast machine.
+pub fn min_realtime_factor() -> f64 {
+    std::env::var("RUKOO_VOICE_TEST_MIN_REALTIME")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0)
+}
+
+/// True, after printing why, when the speaker worker measured `factor` and that is below
+/// [`min_realtime_factor`].
+pub fn too_slow_for_live_labels(test: &str, factor: f64) -> bool {
+    let min = min_realtime_factor();
+    let slow = factor < min;
+    if slow {
+        eprintln!(
+            "skipped {test}: the speaker worker runs at {factor} times real time on this host, below the {min} that live labels need"
+        );
+    }
+    slow
+}
+
 /// A temp folder, removed after a passing test and kept after a failing one.
 pub struct TempDir(PathBuf);
 

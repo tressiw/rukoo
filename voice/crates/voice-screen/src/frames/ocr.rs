@@ -7,10 +7,8 @@ use windows::Graphics::Imaging::SoftwareBitmap;
 use windows::Media::Ocr::OcrEngine;
 
 use super::jpeg;
+use super::upscale::{upscale_2x, UPSCALE_MAX_HEIGHT};
 use crate::platform::Pixels;
-
-/// Frames at most this high are read at twice their size.
-pub const UPSCALE_MAX_HEIGHT: u32 = 1080;
 
 pub struct Ocr {
     engine: Option<OcrEngine>,
@@ -95,82 +93,9 @@ pub fn languages() -> Vec<String> {
         .collect()
 }
 
-/// Twice the size, bilinear: each new pixel between two old ones is their mean. Each row is
-/// doubled across once, then each new row is the mean of the doubled rows around it.
-pub fn upscale_2x(pixels: &Pixels) -> Pixels {
-    let (w, h) = (pixels.width as usize, pixels.height as usize);
-    let row_len = w * 4;
-    let wide = |y: usize| -> Vec<u8> {
-        let row = &pixels.bgra[y * row_len..(y + 1) * row_len];
-        let mut out = Vec::with_capacity(row_len * 2);
-        for (x, px) in row.chunks_exact(4).enumerate() {
-            let right = if x + 1 < w {
-                &row[(x + 1) * 4..(x + 2) * 4]
-            } else {
-                px
-            };
-            out.extend_from_slice(px);
-            out.extend(px.iter().zip(right).map(|(a, b)| mean(*a, *b)));
-        }
-        out
-    };
-    let mut out = Vec::with_capacity(row_len * 4 * h);
-    let mut current = wide(0);
-    for y in 0..h {
-        let next = if y + 1 < h {
-            wide(y + 1)
-        } else {
-            current.clone()
-        };
-        out.extend_from_slice(&current);
-        out.extend(current.iter().zip(&next).map(|(a, b)| mean(*a, *b)));
-        current = next;
-    }
-    Pixels {
-        bgra: out,
-        width: (w * 2) as u32,
-        height: (h * 2) as u32,
-    }
-}
-
-fn mean(a: u8, b: u8) -> u8 {
-    ((u16::from(a) + u16::from(b)) / 2) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn upscales_between_pixels() {
-        let pixels = Pixels {
-            bgra: vec![0, 0, 0, 255, 200, 200, 200, 255],
-            width: 2,
-            height: 1,
-        };
-        let big = upscale_2x(&pixels);
-        assert_eq!((big.width, big.height), (4, 2));
-        let blue: Vec<u8> = big.bgra.chunks(4).map(|p| p[0]).collect();
-        assert_eq!(blue, vec![0, 100, 200, 200, 0, 100, 200, 200]);
-        assert!(big.bgra.chunks(4).all(|p| p[3] == 255));
-
-        // Down a column, and the corner between four pixels.
-        let square = Pixels {
-            bgra: [0u8, 40, 80, 120]
-                .iter()
-                .flat_map(|&v| [v, v, v, 255])
-                .collect(),
-            width: 2,
-            height: 2,
-        };
-        let big = upscale_2x(&square);
-        assert_eq!((big.width, big.height), (4, 4));
-        let blue: Vec<u8> = big.bgra.chunks(4).map(|p| p[0]).collect();
-        assert_eq!(
-            blue,
-            vec![0, 20, 40, 40, 40, 60, 80, 80, 80, 100, 120, 120, 80, 100, 120, 120]
-        );
-    }
 
     #[test]
     fn lists_languages_and_reads_nothing_on_a_blank_frame() {

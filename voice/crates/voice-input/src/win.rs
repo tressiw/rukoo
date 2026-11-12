@@ -296,6 +296,8 @@ impl Drop for Open {
 struct WinClipboard;
 
 impl Clipboard for WinClipboard {
+    type Snapshot = Snapshot;
+
     fn sequence(&self) -> u32 {
         unsafe { GetClipboardSequenceNumber() }
     }

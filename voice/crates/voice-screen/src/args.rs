@@ -50,8 +50,9 @@ impl Mode {
 /// Windows can on a still screen.
 /// `dirty` gives each frame the dirty regions Windows reports; without it frames have none.
 /// `warp` makes the graphics device Microsoft's software rasterizer, as on a CI runner without
-/// a GPU. `no-video-device` gives the next `n` graphics devices after the `device-lost-at` loss
-/// no video support, as a basic display driver has while the real one restarts.
+/// a GPU; it does nothing on macOS, which has no such device. `no-video-device` gives the next
+/// `n` graphics devices after the `device-lost-at` loss no video support, as a basic display
+/// driver has while the real one restarts.
 /// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
 /// capture's `Closed` notice, as when that notice is lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

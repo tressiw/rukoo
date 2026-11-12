@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The release Info.plist. Tauri merges these keys over the ones it generates: the version,
+	     the bundle id and the executable name come from tauri.conf.json and Cargo.toml. Info.dev.plist
+	     is not a merge partner but the whole plist of the development bundle, whose id and name differ,
+	     so its keys and this file's keys are kept in step by hand. The usage texts match, apart from
+	     the app name, and the Dutch translations are in nl.lproj/InfoPlist.strings. -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Rukoo Voice uses the microphone for your dictation and for your side of a meeting.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Rukoo Voice records the other side of a meeting from what your Mac plays.</string>
+</dict>
+</plist>

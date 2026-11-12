@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "name": "nemo-runtime-97a15af-1",
   "repository": "https://github.com/NVIDIA/NeMo-Speech.cpp",
   "commit": "97a15afa5caa9bce5baaa86c1184103877af4101",
@@ -7,121 +7,146 @@
     "ggml": "c03b4e2bcece5134827881af90242086daf75be5",
     "llama.cpp": "560445bf34c87356ad0f8d80fb03ec5488850b65"
   },
-  "build": "cpu backend, asr profile, portable AVX2 baseline, no OpenMP",
-  "flags": {
-    "GGML_NATIVE": "OFF",
-    "GGML_OPENMP": "OFF",
-    "GGML_SSE42": "ON",
-    "GGML_AVX": "ON",
-    "GGML_AVX2": "ON",
-    "GGML_BMI2": "ON",
-    "GGML_FMA": "ON",
-    "GGML_F16C": "ON",
-    "GGML_AVX_VNNI": "OFF",
-    "GGML_AVX512": "OFF"
-  },
-  "vcpkg": {
-    "tag": "2026.07.29",
-    "triplet": "x64-windows-static-md"
-  },
-  "toolset": {
-    "runner": "windows-2025",
-    "msvc": "19.51.36260.0"
-  },
-  "cpu": [
-    "avx2",
-    "fma",
-    "f16c",
-    "bmi2"
-  ],
-  "archive": {
-    "url": "https://github.com/MajesteitBart/rukoo/releases/download/nemo-runtime-97a15af-1/nemo-runtime-97a15af-1-win-x64.zip",
-    "size": 2023687,
-    "sha256": "3442f3248ca51779b17a95ad8d757eb8adadadcda1d459e4229ebc1c653bb350"
-  },
-  "files": [
-    {
-      "path": "nemo_speech_asr_c.dll",
-      "size": 56832,
-      "sha256": "4c71af2594e6db295085027e3499363023bd0667f481f90d1923fe4794dd89ee"
+  "targets": {
+    "windows-x86_64": {
+      "build": "cpu backend, asr profile, portable AVX2 baseline, no OpenMP",
+      "flags": {
+        "GGML_NATIVE": "OFF",
+        "GGML_OPENMP": "OFF",
+        "GGML_SSE42": "ON",
+        "GGML_AVX": "ON",
+        "GGML_AVX2": "ON",
+        "GGML_BMI2": "ON",
+        "GGML_FMA": "ON",
+        "GGML_F16C": "ON",
+        "GGML_AVX_VNNI": "OFF",
+        "GGML_AVX512": "OFF"
+      },
+      "vcpkg": {
+        "tag": "2026.07.29",
+        "triplet": "x64-windows-static-md"
+      },
+      "toolset": {
+        "runner": "windows-2025",
+        "msvc": "19.51.36260.0"
+      },
+      "cpu": [
+        "avx2",
+        "fma",
+        "f16c",
+        "bmi2"
+      ],
+      "archive": {
+        "url": "https://github.com/MajesteitBart/rukoo/releases/download/nemo-runtime-97a15af-1/nemo-runtime-97a15af-1-win-x64.zip",
+        "size": 2023687,
+        "sha256": "3442f3248ca51779b17a95ad8d757eb8adadadcda1d459e4229ebc1c653bb350"
+      },
+      "files": [
+        {
+          "path": "nemo_speech_asr_c.dll",
+          "size": 56832,
+          "sha256": "4c71af2594e6db295085027e3499363023bd0667f481f90d1923fe4794dd89ee"
+        },
+        {
+          "path": "nemo_speech_asr.dll",
+          "size": 4268544,
+          "sha256": "fd42c652faf5905e5aefdff075a27248fa63866f272c203b3bd1a88dc3a9c48b"
+        },
+        {
+          "path": "ggml.dll",
+          "size": 68608,
+          "sha256": "171ddd24eab23cdf1914f5b9baf59d39a5f768761588ca7df14b960aa6bc202f"
+        },
+        {
+          "path": "ggml-base.dll",
+          "size": 638464,
+          "sha256": "79bf56956c4005646f460b61ea6b6ce4d6d1dab1c288566be9e9234d46a3b1af"
+        },
+        {
+          "path": "ggml-cpu.dll",
+          "size": 786432,
+          "sha256": "7d5095565d75685aa7d34c0a6fd2b0867dd59995fcc1206fa93d838c059cf506"
+        },
+        {
+          "path": "msvcp140.dll",
+          "size": 643512,
+          "sha256": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+          "version": "14.51.36247.0"
+        },
+        {
+          "path": "vcruntime140.dll",
+          "size": 178616,
+          "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+          "version": "14.51.36247.0"
+        },
+        {
+          "path": "vcruntime140_1.dll",
+          "size": 50112,
+          "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+          "version": "14.51.36247.0"
+        },
+        {
+          "path": "licenses/LICENSE",
+          "size": 12454,
+          "sha256": "6eb0d1526ef4d4e4f5516c6d679eb148aefc36d0d2df9d9cc1fa048fa287963c"
+        },
+        {
+          "path": "licenses/NOTICE",
+          "size": 239,
+          "sha256": "0f55f591903fe80a07f8b1331029983b2b9f460967ccfb8dbe60f958958bec25"
+        },
+        {
+          "path": "licenses/THIRD_PARTY_NOTICES.md",
+          "size": 9399,
+          "sha256": "ab6332bcc1e2f64155eb5c8523faed68cc7adb9c63413d07ed1ad8fd5da57664"
+        },
+        {
+          "path": "licenses/darts-clone.txt",
+          "size": 1491,
+          "sha256": "ed8437dc7358a40ef10afd3635ac1cd43c88fbaaaf6cd27c414f8ada5d68f447"
+        },
+        {
+          "path": "licenses/vcpkg/abseil.txt",
+          "size": 11361,
+          "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747"
+        },
+        {
+          "path": "licenses/vcpkg/protobuf.txt",
+          "size": 1732,
+          "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
+        },
+        {
+          "path": "licenses/vcpkg/sentencepiece.txt",
+          "size": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "licenses/vcpkg/utf8-range.txt",
+          "size": 1091,
+          "sha256": "02de69b64fc36d9e938f418e52723e42f0b2b226d58a9cb3c8dcbdf7059f5074"
+        }
+      ]
     },
-    {
-      "path": "nemo_speech_asr.dll",
-      "size": 4268544,
-      "sha256": "fd42c652faf5905e5aefdff075a27248fa63866f272c203b3bd1a88dc3a9c48b"
-    },
-    {
-      "path": "ggml.dll",
-      "size": 68608,
-      "sha256": "171ddd24eab23cdf1914f5b9baf59d39a5f768761588ca7df14b960aa6bc202f"
-    },
-    {
-      "path": "ggml-base.dll",
-      "size": 638464,
-      "sha256": "79bf56956c4005646f460b61ea6b6ce4d6d1dab1c288566be9e9234d46a3b1af"
-    },
-    {
-      "path": "ggml-cpu.dll",
-      "size": 786432,
-      "sha256": "7d5095565d75685aa7d34c0a6fd2b0867dd59995fcc1206fa93d838c059cf506"
-    },
-    {
-      "path": "msvcp140.dll",
-      "size": 643512,
-      "sha256": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
-      "version": "14.51.36247.0"
-    },
-    {
-      "path": "vcruntime140.dll",
-      "size": 178616,
-      "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
-      "version": "14.51.36247.0"
-    },
-    {
-      "path": "vcruntime140_1.dll",
-      "size": 50112,
-      "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
-      "version": "14.51.36247.0"
-    },
-    {
-      "path": "licenses/LICENSE",
-      "size": 12454,
-      "sha256": "6eb0d1526ef4d4e4f5516c6d679eb148aefc36d0d2df9d9cc1fa048fa287963c"
-    },
-    {
-      "path": "licenses/NOTICE",
-      "size": 239,
-      "sha256": "0f55f591903fe80a07f8b1331029983b2b9f460967ccfb8dbe60f958958bec25"
-    },
-    {
-      "path": "licenses/THIRD_PARTY_NOTICES.md",
-      "size": 9399,
-      "sha256": "ab6332bcc1e2f64155eb5c8523faed68cc7adb9c63413d07ed1ad8fd5da57664"
-    },
-    {
-      "path": "licenses/darts-clone.txt",
-      "size": 1491,
-      "sha256": "ed8437dc7358a40ef10afd3635ac1cd43c88fbaaaf6cd27c414f8ada5d68f447"
-    },
-    {
-      "path": "licenses/vcpkg/abseil.txt",
-      "size": 11361,
-      "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747"
-    },
-    {
-      "path": "licenses/vcpkg/protobuf.txt",
-      "size": 1732,
-      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
-    },
-    {
-      "path": "licenses/vcpkg/sentencepiece.txt",
-      "size": 11358,
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
-    },
-    {
-      "path": "licenses/vcpkg/utf8-range.txt",
-      "size": 1091,
-      "sha256": "02de69b64fc36d9e938f418e52723e42f0b2b226d58a9cb3c8dcbdf7059f5074"
+    "macos-aarch64": {
+      "build": "cpu backend (NEON, no Metal), asr profile with diarization, no OpenMP, static SentencePiece",
+      "flags": {
+        "GGML_NATIVE": "OFF",
+        "GGML_OPENMP": "OFF",
+        "GGML_METAL": "OFF",
+        "GGML_ACCELERATE": "ON",
+        "GGML_CPU_ARM_ARCH": "armv8.2-a+dotprod+fp16"
+      },
+      "toolset": {
+        "runner": "macos-15",
+        "deploymentTarget": "15.0"
+      },
+      "cpu": [
+        "neon",
+        "dotprod",
+        "fp16"
+      ],
+      "archive": null,
+      "files": []
     }
-  ]
+  }
 }

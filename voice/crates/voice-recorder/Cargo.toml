@@ -27,5 +27,9 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_WindowsProgramming",
 ] }
 
+# `flock`, which keeps a second recorder off a meeting's files.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 hound = "=3.5.1"

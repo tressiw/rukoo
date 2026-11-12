@@ -140,12 +140,14 @@ impl TimelineWriter {
     /// newline, left by a writer that was killed mid-write, is cut off first: readers ignore it
     /// anyway, and the next line must not run into it.
     ///
-    /// On Windows other processes can still read the file but no second writer can open it.
+    /// Other processes can still read the file, but no second writer can open it: Windows refuses
+    /// that at open through the share mode, Unix through a lock on the open file.
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         exclusive_writer(&mut options);
         let mut file = options.open(path)?;
+        lock_writer(&file)?;
         let mut text = Vec::new();
         file.read_to_end(&mut text)?;
         if text.last().is_some_and(|&b| b != b'\n') {
@@ -177,6 +179,37 @@ fn exclusive_writer(options: &mut OpenOptions) {
 
 #[cfg(not(windows))]
 fn exclusive_writer(_options: &mut OpenOptions) {}
+
+/// Keeps a second writer off the file. Windows already refused it at open through the share mode;
+/// elsewhere an exclusive `flock` on the open file does it, which every process on the machine
+/// sees and which ends with this one, also when it is hard-killed. A reader never takes the lock,
+/// so following the timeline keeps working.
+///
+/// A lock belongs to the open file, so a process that forks hands it to the child until that child
+/// execs, and another process can find the file held for those milliseconds. The recorder starts
+/// no other program, so nothing holds a meeting's files that way.
+///
+/// `WouldBlock` says another writer holds it, which callers know as [`io::ErrorKind::WouldBlock`].
+#[cfg(unix)]
+fn lock_writer(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: `flock` only reads the descriptor; the lock belongs to the file, not to memory.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // EWOULDBLOCK reads as `WouldBlock`; a signal in the call changes nothing, so try again.
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_writer(_file: &File) -> io::Result<()> {
+    Ok(())
+}
 
 /// Reads a timeline; a missing file reads as empty.
 pub fn read(path: &Path) -> io::Result<Vec<Line>> {
@@ -547,6 +580,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "{\"kind\":\"pause\",\"t\":1}\n{\"kind\":\"resume\",\"t\":2}\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Windows reports its share mode as a sharing violation; Unix as a lock it can't take. The
+    /// recorder maps both to its "another recorder" exit code, which `meeting.rs` tests.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_writer_cannot_open_the_timeline_but_a_reader_can() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-recorder-lock-{}-{}",
+            std::process::id(),
+            crate::clock::wall_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let mut first = TimelineWriter::open(&path).unwrap();
+        first.write(&Line::Pause { t: 1 }).unwrap();
+        let err = match TimelineWriter::open(&path) {
+            Ok(_) => panic!("a second writer opened the timeline"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+        assert_eq!(read(&path).unwrap(), vec![Line::Pause { t: 1 }]);
+        drop(first);
+        // The next writer gets it once the first closed the file.
+        let mut next = TimelineWriter::open(&path).unwrap();
+        next.write(&Line::Resume { t: 2 }).unwrap();
+        drop(next);
+        assert_eq!(
+            read(&path).unwrap(),
+            vec![Line::Pause { t: 1 }, Line::Resume { t: 2 }]
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -1089,12 +1089,12 @@
     "description": "Settings > Speaker labels: the status row with the switch off. voice/ui/settings.js (speakersPage, speakersReason)."
   },
   "settings.speakers.reason.platform": {
-    "message": "Speaker labels work on Windows only in this version.",
-    "description": "Settings > Speaker labels and the Meetings row: why labels are off on macOS or Linux. voice/ui/settings.js (speakersReason)."
+    "message": "Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.",
+    "description": "Settings > Speaker labels and the Meetings row: why labels are off on this computer, such as Linux on a PC or an Intel Mac. voice/ui/settings.js (speakersReason)."
   },
   "settings.speakers.reason.cpu": {
     "message": "This processor lacks {missing}, which speaker labels need. Meetings label the whole call as one speaker.",
-    "description": "Settings > Speaker labels and the Meetings row: the processor lacks instructions the speaker model needs. {missing}: a list of names such as \"AVX2 and BMI2\". voice/ui/settings.js (speakersReason)."
+    "description": "Settings > Speaker labels and the Meetings row: the processor lacks instructions the speaker model needs. {missing}: a list of names such as \"AVX2 and BMI2\" or \"NEON and FP16\". voice/ui/settings.js (speakersReason)."
   },
   "settings.speakers.reason.runtime": {
     "message": "The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.",

@@ -46,6 +46,26 @@ pub fn classify(focus_class: Option<&str>, has_caret: bool) -> TextTarget {
     }
 }
 
+/// The AX roles of the elements that take text, as `AXUIElementCopyAttributeValue`
+/// names them.
+const MAC_TEXT_ROLES: [&str; 4] = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"];
+/// Finder's desktop and the Dock have no text box of their own. Finder's search
+/// field and rename field are text roles and win above this list.
+const MAC_NON_TEXT_BUNDLES: [&str; 2] = ["com.apple.finder", "com.apple.dock"];
+
+/// Classifies macOS' frontmost app and the AX role of its focused element.
+/// Pure: the caller reads `NSWorkspace.frontmostApplication.bundleIdentifier`
+/// and the role through the Accessibility API, which step 2 adds.
+pub fn classify_mac(bundle_id: Option<&str>, ax_role: Option<&str>) -> TextTarget {
+    if ax_role.is_some_and(|role| MAC_TEXT_ROLES.contains(&role)) {
+        return TextTarget::Selected;
+    }
+    match bundle_id {
+        Some(bundle) if MAC_NON_TEXT_BUNDLES.contains(&bundle) => TextTarget::NotSelected,
+        _ => TextTarget::Unknown,
+    }
+}
+
 /// The foreground window and its focus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowInfo {
@@ -112,6 +132,61 @@ mod tests {
             classify(None, true),
             TextTarget::Unknown,
             "no focus information at all"
+        );
+    }
+
+    #[test]
+    fn mac_text_roles_are_text_targets() {
+        for role in MAC_TEXT_ROLES {
+            assert_eq!(
+                classify_mac(Some("com.apple.TextEdit"), Some(role)),
+                TextTarget::Selected,
+                "{role}"
+            );
+            assert_eq!(
+                classify_mac(Some("com.apple.finder"), Some(role)),
+                TextTarget::Selected,
+                "Finder's search field, {role}"
+            );
+        }
+    }
+
+    #[test]
+    fn finders_desktop_and_the_dock_are_not() {
+        for bundle in MAC_NON_TEXT_BUNDLES {
+            for role in [None, Some("AXScrollArea"), Some("AXList"), Some("AXButton")] {
+                assert_eq!(
+                    classify_mac(Some(bundle), role),
+                    TextTarget::NotSelected,
+                    "{bundle} {role:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn other_mac_apps_are_unknown_without_a_text_role() {
+        assert_eq!(
+            classify_mac(Some("com.apple.Safari"), Some("AXButton")),
+            TextTarget::Unknown
+        );
+        assert_eq!(
+            classify_mac(Some("com.apple.Safari"), None),
+            TextTarget::Unknown
+        );
+        assert_eq!(classify_mac(None, None), TextTarget::Unknown);
+        assert_eq!(
+            classify_mac(None, Some("AXTextField")),
+            TextTarget::Selected,
+            "the role alone is enough"
+        );
+    }
+
+    #[test]
+    fn ax_roles_are_case_sensitive() {
+        assert_eq!(
+            classify_mac(Some("com.apple.TextEdit"), Some("axtextfield")),
+            TextTarget::Unknown
         );
     }
 

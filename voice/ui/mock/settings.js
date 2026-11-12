@@ -422,7 +422,7 @@ function speakersState(state, forced) {
     reason,
     detail: reason && reason === forced.reason ? forced.detail || null : null,
     missing: reason === 'cpu' ? forced.missing || [] : [],
-    cpu: forced.cpu || { avx2: true, fma: true, f16c: true, bmi2: true },
+    cpu: forced.cpu || { avx2: true, fma: true, f16c: true, bmi2: true, neon: false, dotprod: false, fp16: false },
     runtime: !forced.reason && installed ? { location: 'voice', commit: '97a15af' } : null,
     live: forced.live || []
   };

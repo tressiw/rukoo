@@ -247,6 +247,19 @@ impl Core {
         looks(&self.opts, &self.svc, &self.config())
     }
 
+    /// Re-reads the system's theme and language for the Settings that follow them. The pill and
+    /// the Settings page only learn a look from here or from a changed setting, so without this a
+    /// system change would reach neither until the user changed something else.
+    pub fn refresh_looks(&self) {
+        let now = self.looks();
+        if self.pill.read(|p| p.looks()) == now {
+            return;
+        }
+        self.pill.update(|p, _| p.set_looks(now));
+        self.sink.ui_changed();
+        self.settings_changed();
+    }
+
     pub fn tray(&self) -> TrayState {
         let recording = self.meetings.controller.current();
         TrayState {
@@ -1043,11 +1056,16 @@ impl EngineApi for EngineImpl {
             .map_err(control_error)
     }
 
+    fn system_looks_changed(&self) {
+        self.0.refresh_looks();
+    }
+
     fn ui(&self) -> UiOptions {
         let cfg = self.0.config();
         let looks = self.0.looks();
         UiOptions {
             theme: looks.theme,
+            theme_follows_system: cfg.ui_theme == core_config::Theme::System,
             locale: looks.locale,
             pill_edge: looks.edge,
             hide_pill_from_capture: cfg.pill_hide_from_capture,
