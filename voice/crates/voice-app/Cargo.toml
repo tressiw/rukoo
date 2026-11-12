@@ -31,8 +31,9 @@ libc = "0.2"
 # The objc2 family tauri 2.12.5, tao 0.37.2 and wry 0.57.1 build against, so the WKWebView handle is one
 # type. The app reads its language from AppKit, gives its windows an appearance, hears the system's
 # theme change, says in an NSAlert why it can't start,
-# captures its own pages through WKWebView, posts notifications through Notification Center and
-# chooses folders with NSOpenPanel.
+# captures its own pages through WKWebView, posts notifications through Notification Center,
+# chooses folders with NSOpenPanel, and shows the pill and its button panels without taking focus
+# (screens, tracking areas, and the window list for the front window's display).
 # `objc2-user-notifications` loses its default features so it doesn't bring in Core Location.
 objc2 = "=0.6.5"
 block2 = "=0.6.2"
@@ -45,6 +46,8 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSApplication",
   "NSBitmapImageRep",
   "NSColor",
+  "NSEvent",
+  "NSGraphics",
   "NSImage",
   "NSImageRep",
   "NSOpenPanel",
@@ -52,6 +55,8 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSResponder",
   "NSRunningApplication",
   "NSSavePanel",
+  "NSScreen",
+  "NSTrackingArea",
   "NSView",
   "NSWindow",
   "NSWorkspace",
@@ -65,6 +70,7 @@ objc2-core-foundation = { version = "=0.3.2", default-features = false, features
 ] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
   "CGSession",
+  "CGWindow",
 ] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
@@ -81,6 +87,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSOperation",
   "NSString",
   "NSURL",
+  "NSValue",
 ] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
   "std",
