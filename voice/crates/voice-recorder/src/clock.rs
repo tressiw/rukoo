@@ -420,6 +420,20 @@ mod tests {
         );
     }
 
+    /// cpal stamps a Core Audio buffer with its host time, which is `mach_absolute_time`, and the
+    /// recorder times every buffer with `Instant` when it arrives. On macOS `Instant` reads the
+    /// same counter (`CLOCK_UPTIME_RAW`), so buffer times and the meeting clock stop together
+    /// while the Mac sleeps, and the suspend check's awake clock agrees with both.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn instant_runs_on_the_awake_counter() {
+        let (a, start) = (Stamp::now(), Instant::now());
+        std::thread::sleep(Duration::from_millis(50));
+        let (b, passed) = (Stamp::now(), start.elapsed().as_millis() as u64);
+        let awake = b.awake - a.awake;
+        assert!(awake.abs_diff(passed) <= 2, "awake {awake} ms, Instant {passed} ms");
+    }
+
     #[test]
     fn clock_moves_forward_only() {
         let mut clock = MeetingClock::starting_at(5_000);

@@ -60,6 +60,8 @@ The recorder never writes silence to cover a gap: a lost device, a crash, a paus
 
 The one exception is real silence on a loopback track (`default-output` or `output:<id>`). The loopback endpoint delivers nothing while nothing plays, so while its device is healthy, the recorder pads the track with zeros from the clock once it trails the clock by more than 0.5 s, and again up to the moment of a pause or stop. This is what Ownkey does (`meetings/capture.py:414-418`). Padding stops the moment the device reports an error, and it never trims a track that runs ahead.
 
+On macOS the loopback is a Core Audio process tap, which delivers blocks all the time, of exact zeros while nothing plays, so it is rarely padded. A tap also delivers exact zeros, without an error, when macOS doesn't let Voice record system audio. The recorder checks for that (`silence.rs`): when a call track has delivered only exact zeros since its first block while another process played sound by Core Audio's process list, for 30 s, or for 120 s when the list can't be read, it writes `silent`, and the first sound after that writes `sound`. Any sound before proves the grant and ends the check for the session. The recording never stops over it.
+
 ## The timeline
 
 `timeline.jsonl` holds one JSON object per line. The recorder writes each line with a single write and a trailing newline, and starts every object with `kind`.
@@ -74,15 +76,17 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 | `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `recorder` | A recorder starts recording into the meeting. `session` counts from 1, `version` is the format version 1, `recorder` the recorder's version. `boot` is the clock that counts sleep when `t` was read, in 100 ns units: the Windows interrupt time, or `mach_continuous_time` on macOS. It is missing on Linux |
 | `track` | `t`, `track`, `source`, `device`, `deviceId`, `nativeRate`, `nativeChannels` | A track opened a device: at the start, after a loss, after a move and after a suspend. `device` is its name |
 | `segment` | `t`, `track`, `seq`, `file` | A segment starts at `t`. `file` is relative to the meeting folder, with forward slashes |
-| `segment_end` | `t`, `track`, `seq`, `samples` | A segment closed; `t` is its end |
+| `segment_end` | `t`, `track`, `seq`, `samples` | A segment closed; `t` is its end. The next segment of a running stream starts there, unless the stream delivered more than 100 ms more or less audio than the clock says passed during the segment, such as a device that skipped a stretch shorter than the 0.5 s after which a loopback track is padded: then it starts where its first audio was heard, and the two times differ |
 | `heartbeat` | `t`, `wall`, `boot`, `samples` | Every second. `samples` maps each track with an open segment to the samples on disk in it; a track without one is missing. `boot` as in `session` |
-| `device_lost` | `t`, `track`, `error` | A track has no device: it failed to open, the device failed, a microphone sent nothing for 5 s, or the disk refused the audio. Its segment closed |
+| `device_lost` | `t`, `track`, `error` | A track has no device: it failed to open, its open has taken more than 5 s so far, the device failed, a microphone sent nothing for 5 s, or the disk refused the audio. Its segment closed |
 | `device` | `t`, `track`, `device`, `reason` | A track got a device back, `reconnected`, or moved to another one, `default`. A `track` line follows |
 | `pause`, `resume` | `t` | The user paused or resumed |
 | `mark` | `t`, `id`, `label` | A user mark. `id` is `k-<n>` and `n` keeps counting across sessions; `label` is `null` without one |
 | `dictation` | `t`, `state` | The app reports dictation on the microphone: `start` or `end`. Only a change is written. The app reads the microphone through a tap and closes it when the user stops dictating, quits or crashes, so the recorder writes `end` itself when the microphone's last tap goes and a dictation is open. A dictation the dead session left open ends at `lastSeen` |
 | `suspend` | `t`, `until` | The computer slept for more than 3 s: since the last heartbeat, more time passed by a clock that counts sleep than the computer was awake. A stalled recorder or a step of the wall clock doesn't count. `t` is the last heartbeat before it, `until` the meeting time after it. The segments closed before the line; `track` lines follow as the devices reopen |
 | `crash` | `t`, `lastSeen` | Written by a resumed session: the previous one died, and audio is missing from `lastSeen` to `t` |
+| `silent` | `t`, `track`, `since` | The track has recorded only exact zeros since `since` while another app played sound, so the system may not let Voice record it: on macOS, System Audio Recording is off for Voice or its grant went stale. At most once per session |
+| `sound` | `t`, `track` | The first sound on a track after its `silent` line |
 | `stop` | `t`, `wall`, `reason` | Recording ended: `user`, `rukoo`, `limit` or `interrupted`. Nothing follows |
 
 A microphone that was unplugged for two seconds, with the heartbeats after the first left out:
@@ -123,11 +127,12 @@ rukoo-voice-recorder devices
 | `output:<id>` | Loopback of one output device, by an `id` from `devices`; padded |
 | `synthetic:tone:<hz>` | For tests: a sine at half scale, 48 kHz stereo, in real-time 10 ms blocks |
 | `synthetic:idle` | For tests: a healthy loopback with nothing playing, which delivers nothing; padded |
+| `synthetic:tap[,sound-at=<ms>[,sound-until=<ms>]][,playing]` | For tests: a macOS process tap, which delivers exact zeros all the time, a 600 Hz tone between the two times, and the silence check; `playing` says another app plays sound the whole time |
 | `file:<path>[,loop]` | A WAV file in real time, then silence, or looped. For end-to-end tests with recorded speech |
 
-The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default) and `,open-ms=<ms>` (every open takes this long on the recorder's thread, as a Bluetooth headset switching profile can). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
+The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default), `,open-ms=<ms>` (every open takes this long, as a Bluetooth headset switching profile can, or macOS' first process tap while its prompt waits) and `,skip-at=<ms>,skip-ms=<ms>` (the device delivers nothing for that long and then goes on in time, that stretch lost). The times count from the start of the session. Device sources work on Windows and macOS in this version; elsewhere `record` refuses them with exit code 2.
 
-Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--segment-ms <ms>` the 30 s segment length.
+Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length and `--silence-ms <ms>` the 30 s the silence check waits.
 
 | Exit code | Meaning |
 |---|---|
@@ -142,7 +147,9 @@ Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--
 - It refuses to start while `recorder.json` names a recorder that answers on its port.
 - `--resume` continues a meeting whose recorder died. With an empty timeline it starts session 1.
 - It captures each device in the device's own format and converts it to 16 kHz mono.
-- A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed.
+- Each device opens on a thread of its own, so the control port answers and the other track records while one opens. An open that takes more than 5 s writes `device_lost`, timed from when the open started, and the track gets `device` with `reconnected` when it opens at last. macOS holds the first process tap of an app until the user answers the System Audio Recording prompt, however long that takes.
+- On macOS, `default-output` and `output:<id>` record through a Core Audio process tap of that output device and a private aggregate device, which macOS removes with the recorder, also after a hard kill. cpal makes them for an output device without inputs. An output device that has inputs of its own, such as a USB headset or an audio interface, would give cpal's input stream its microphone instead, so the recorder makes the tap itself then, with the same settings, and opens the aggregate. A Mac without a microphone has no `default-input`: the track says "No microphone is available." and retries every second.
+- A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed, and on macOS when the device's sample rate changes: the new `track` line has the new `nativeRate`.
 - A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
 - On stop it pads healthy loopback tracks up to that moment, closes every segment, writes `stop`, removes `recorder.json` and only then replies.
@@ -172,6 +179,8 @@ The recorder writes it after the `session` line, to a temporary name that it ren
 { "inputs": [{ "id": "wasapi:{0.0.1.00000000}.{00000000-0000-0000-0000-000000000001}", "name": "Microphone (USB Audio CODEC)", "default": true }], "outputs": [{ "id": "wasapi:{0.0.0.00000000}.{00000000-0000-0000-0000-000000000002}", "name": "Speakers", "default": true }] }
 ```
 
+On macOS an id is `coreaudio:` and the device's Core Audio UID, such as `coreaudio:BuiltInSpeakerDevice`. A Mac without a microphone lists no inputs.
+
 ## The control port
 
 The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sends one JSON object per line and gets one line back for each. Every request carries the token, and a connection can carry several requests. The first request must arrive within 5 s of connecting, or the recorder closes the connection; after it, a connection may stay idle.
@@ -182,7 +191,7 @@ The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sen
 
 | `cmd` | Arguments | Reply |
 |---|---|---|
-| `status` | | `{"ok":true,"state":"recording","t":5120,"tracks":{"mic":{"device":"…","ok":true}}}`; `state` is `recording` or `paused`; a track without a device has `"device":null,"ok":false` and an `error` |
+| `status` | | `{"ok":true,"state":"recording","t":5120,"tracks":{"mic":{"device":"…","ok":true}}}`; `state` is `recording` or `paused`; a track without a device has `"device":null,"ok":false` and an `error`; a track whose device is opening has `"opening":true`, with `"ok":true` for its first 5 s; a track the silence check watches has `"silent":true` while it reports the call silent and `"heard":true` once it delivered sound |
 | `stop` | `reason`: `user` (default) or `rukoo` | `{"ok":true,"t":8160}` once `stop` is written; then the recorder exits |
 | `pause` | | `{"ok":true,"t":…}`, or `not_recording` when already paused |
 | `resume` | | `{"ok":true,"t":…}`, or `not_recording` when not paused |
