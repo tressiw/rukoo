@@ -1091,6 +1091,10 @@ impl EngineApi for EngineImpl {
         self.0.refresh_looks();
     }
 
+    fn release_hotkeys(&self) {
+        crate::dictation::release_all(&self.0);
+    }
+
     fn ui(&self) -> UiOptions {
         let cfg = self.0.config();
         let looks = self.0.looks();
