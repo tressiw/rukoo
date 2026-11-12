@@ -159,6 +159,9 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
         } => {
             system_appearance_changed(app);
         }
+        // Finder, Launchpad and Spotlight don't start a second copy of a running app; they send it this.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => reopen(app),
         RunEvent::Exit => shut_down(app),
         _ => {}
     });
@@ -333,6 +336,16 @@ fn open_settings(app: &AppHandle, focus: bool, page: Option<String>) {
     if let Err(error) = result {
         log::error!("settings: could not open: {error}");
     }
+}
+
+/// The user opened the running app again (Finder, Launchpad, Spotlight). Does what a second launch does:
+/// Settings comes forward, whether or not the pill or another window is visible. This runs on the event
+/// loop, and `open_settings` must not, so it gets its own thread.
+#[cfg(target_os = "macos")]
+fn reopen(app: &AppHandle) {
+    log::info!("Voice was opened again; opening Settings");
+    let app = app.clone();
+    thread::spawn(move || open_settings(&app, true, None));
 }
 
 /// Tray clicks arrive on the event loop; everything they start runs on its own thread.
