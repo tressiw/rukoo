@@ -2,18 +2,24 @@
 //! `SendInput`.
 //!
 //! Posting into another app needs the Accessibility permission; the caller
-//! checks it first (`mac::ax`). The events carry their own modifier flags:
-//! macOS otherwise hands a posted event the session's current flags, and a
-//! user who still holds Right Option from the hotkey would turn Cmd+V into
-//! Cmd+Option+V. The wait `BeforeKeys` asks for is still there, as on Windows;
-//! the explicit flags make the chord right even in the moment before the
-//! release is seen.
+//! checks it first (`mac::ax`). The events come from a private event source,
+//! whose key state starts empty instead of mirroring the session's, and carry
+//! their own modifier flags. An event made without a source takes the
+//! session's current flags, and a user who still holds Right Option or Shift
+//! would turn Cmd+V into Cmd+Option+V. Whether a modifier the user physically
+//! holds still reaches the app next to these flags hasn't been seen at a real
+//! keyboard, so the wait `BeforeKeys` asks for is still there, as on Windows,
+//! and the copy at a press only happens for keys that add no modifier
+//! (`Key::can_copy_while_held`).
 //!
 //! The events are built here as plain data (`KeyEvent`) so the key codes and
 //! flags can be checked without posting anything; `Keys` is what puts them on
 //! the session.
 
-use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::{
+    CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGKeyCode,
+};
 
 use crate::clipboard::{Clock, Keyboard, TYPE_PACE};
 use crate::strokes::{self, Stroke};
@@ -171,30 +177,43 @@ pub(crate) struct Keys;
 
 impl Keyboard for Keys {
     fn send(&mut self, batch: &[Stroke]) -> Result<(), InputError> {
+        let source = private_source()?;
         for event in events(batch) {
-            post(&event)?;
+            post(&source, &event)?;
         }
         Ok(())
     }
 
     fn send_text(&mut self, text: &str) -> Result<(), InputError> {
+        let source = private_source()?;
         // A down and an up event both carry the text; apps read it from the
         // down event, and the up keeps their key state honest.
         for down in [true, false] {
-            post(&KeyEvent {
-                code: UNICODE_KEY,
-                down,
-                flags: CGEventFlags::empty(),
-                text: Some(text.to_string()),
-            })?;
+            post(
+                &source,
+                &KeyEvent {
+                    code: UNICODE_KEY,
+                    down,
+                    flags: CGEventFlags::empty(),
+                    text: Some(text.to_string()),
+                },
+            )?;
         }
         Ok(())
     }
 }
 
+/// A source whose key state is Voice's own, empty at the start, rather than the session's.
+fn private_source() -> Result<CFRetained<CGEventSource>, InputError> {
+    CGEventSource::new(CGEventSourceStateID::Private).ok_or_else(|| {
+        InputError::System("macOS refused to create a keyboard event source.".into())
+    })
+}
+
 /// Posts one event at the HID level, where the session's own keys arrive.
-fn post(event: &KeyEvent) -> Result<(), InputError> {
-    let Some(cg) = CGEvent::new_keyboard_event(None, event.code as CGKeyCode, event.down) else {
+fn post(source: &CGEventSource, event: &KeyEvent) -> Result<(), InputError> {
+    let Some(cg) = CGEvent::new_keyboard_event(Some(source), event.code as CGKeyCode, event.down)
+    else {
         return Err(InputError::System(
             "macOS refused to create a keyboard event.".into(),
         ));

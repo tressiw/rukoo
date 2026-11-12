@@ -315,13 +315,14 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         let _ = thread::Builder::new()
             .name("selection".into())
             .spawn(move || {
-                // The rewrite key is down on purpose here; it doesn't change Ctrl+C.
+                // The rewrite key is down on purpose here; it doesn't change the copy chord.
                 let copied = input.capture_selection(CAPTURE_TIMEOUT, &mut || Ok(()));
                 slot.set(copied.ok().flatten())
             });
         pending
     } else {
-        // Right Alt and Right Shift would turn Ctrl+C into another shortcut: copy after the release.
+        // A key that would add a modifier to the copy, such as Right Alt or, on a Mac, Right
+        // Control: copy after the release.
         Selection::ready(None)
     };
     let activity = activity_of(mode);
