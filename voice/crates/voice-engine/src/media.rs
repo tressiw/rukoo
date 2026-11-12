@@ -5,7 +5,7 @@
 //! `open` runs on the bridge's command thread, and a connection's commands run one at a time, so
 //! it only checks and looks up and answers within milliseconds. Mixing audio, fetching media back
 //! from the user's bucket and cutting a clip run as jobs on at most two `media-prepare` threads in
-//! Windows' background mode. Rukoo asks again until the file is ready.
+//! the platform's background mode. Rukoo asks again until the file is ready.
 //!
 //! Audio mixes live in `<data>/media/`, which is emptied at start and capped at 2 GiB; each goes
 //! 10 minutes after its last read. Frames and clips are read where the screen recording keeps them

@@ -45,3 +45,32 @@ windows = { version = "=0.62.2", features = [
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The same objc2 versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 use: the app reads its language
+# from AppKit, gives its windows an appearance, hears the system's theme change and says in an
+# NSAlert why it can't start.
+block2 = "=0.6.2"
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSAlert",
+  "NSAppearance",
+  "NSApplication",
+  "NSColor",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSDistributedNotificationCenter",
+  "NSGeometry",
+  "NSLocale",
+  "NSNotification",
+  "NSOperation",
+  "NSString",
+  "block2",
+] }

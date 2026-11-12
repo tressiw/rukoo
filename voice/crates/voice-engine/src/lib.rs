@@ -29,6 +29,7 @@ pub use api::{
     Notice, Notification, PillPhase, PillRepair, PillSnapshot, StopReason, Theme, TrayState,
     UiOptions, UiSink,
 };
+pub use platform::SystemInfo;
 pub use services::Services;
 
 use crate::dictation::Dictation;

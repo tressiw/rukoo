@@ -22,8 +22,9 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Microphone capture, the chime, autostart and the disk check are Windows-only in 0.1, as in the
-# recorder; elsewhere they report that the platform isn't supported.
+# Microphone capture, autostart and the Ownkey check are Windows-only in 0.1, as in the recorder;
+# elsewhere they report that the platform isn't supported. The theme, the language, the chime and
+# the free-space check read macOS' own settings through objc2.
 [target.'cfg(windows)'.dependencies]
 cpal = "=0.18.2"
 windows = { version = "=0.62.2", features = [
@@ -36,6 +37,22 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The objc2 versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 pull in, so Voice shares one set of
+# bindings with its own windows.
+libc = "0.2"
+objc2-audio-toolbox = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "AudioServices",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSLocale",
+  "NSString",
+  "NSUserDefaults",
 ] }
 
 [dev-dependencies]
