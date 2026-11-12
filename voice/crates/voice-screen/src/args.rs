@@ -8,7 +8,7 @@ use crate::ExitError;
 
 pub const USAGE: &str = "\
 usage:
-  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
   rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
   rukoo-voice-screen probe
   rukoo-voice-screen inspect <file.mp4>";
@@ -181,10 +181,16 @@ pub struct RecordOptions {
     pub resume: bool,
     /// `--monitor`: record this monitor or exit 1.
     pub monitor: Option<String>,
+    /// `--exclude-pid`: leave the windows of each of these processes out of the recording. Only
+    /// the platforms that can filter by process use it; Windows leaves Rukoo out through Rukoo's
+    /// own content protection.
+    pub exclude_pids: Vec<u32>,
     pub test: Option<TestSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// The command line is parsed once, so the size of the largest variant costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Cmd {
     Record(RecordOptions),
     Finalize { meeting: PathBuf, reason: String },
@@ -214,6 +220,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
     let mut mode = None;
     let mut resume = false;
     let mut monitor = None;
+    let mut exclude_pids: Vec<u32> = Vec::new();
     let mut test = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -230,6 +237,21 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
                 })?);
             }
             "--resume" => resume = true,
+            "--exclude-pid" => {
+                let v = value()?;
+                let pid = v
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&pid| pid != 0)
+                    .ok_or_else(|| {
+                        ExitError::usage(format!(
+                            "--exclude-pid takes a process id of 1 or more, got {v:?}"
+                        ))
+                    })?;
+                if !exclude_pids.contains(&pid) {
+                    exclude_pids.push(pid);
+                }
+            }
             "--monitor" => {
                 let v = value()?;
                 if v.is_empty() || v.chars().count() > 64 {
@@ -261,6 +283,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
         mode: mode.ok_or_else(|| ExitError::usage(format!("--mode is required\n{USAGE}")))?,
         resume,
         monitor,
+        exclude_pids,
         test,
     })
 }
@@ -327,9 +350,45 @@ mod tests {
                 mode: Mode::Video,
                 resume: true,
                 monitor: Some(r"\\.\DISPLAY2".into()),
+                exclude_pids: Vec::new(),
                 test: None,
             })
         );
+    }
+
+    /// Every platform parses the exclusions; only the platforms that can filter by process use
+    /// them.
+    #[test]
+    fn parses_repeated_exceptions() {
+        let cmd = parse(
+            &args(&[
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "4821",
+                "--exclude-pid",
+                "77",
+                "--exclude-pid",
+                "4821",
+            ]),
+            false,
+        )
+        .unwrap();
+        let Cmd::Record(opts) = cmd else {
+            panic!("not a record command")
+        };
+        assert_eq!(opts.exclude_pids, vec![4821, 77]);
+        // A line without the switch excludes nothing but this process, which the screen process
+        // adds itself.
+        let Cmd::Record(opts) =
+            parse(&args(&["record", "--meeting", "m", "--mode", "off"]), false).unwrap()
+        else {
+            panic!("not a record command")
+        };
+        assert!(opts.exclude_pids.is_empty());
     }
 
     #[test]
@@ -457,6 +516,41 @@ mod tests {
                 "frames",
                 "--test",
                 "synthetic:64x64,write-fail=audio@1",
+            ],
+            vec![
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "0",
+            ],
+            vec![
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "-3",
+            ],
+            vec![
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "rukoo",
+            ],
+            vec![
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
             ],
             vec!["finalize"],
             vec!["finalize", "--meeting", "m", "--reason", "bored"],

@@ -49,6 +49,9 @@ pub mod exit {
     pub const CONFLICT: i32 = 3;
     /// Another screen process is recording into this meeting.
     pub const BUSY: i32 = 4;
+    /// The computer doesn't let this process capture the screen: macOS' Screen Recording grant is
+    /// off. It starts nothing and writes nothing, so Voice shows that reason and doesn't retry.
+    pub const NO_PERMISSION: i32 = 5;
 }
 
 #[derive(Debug)]
@@ -76,6 +79,13 @@ impl ExitError {
         Self {
             code: exit::BUSY,
             message: "another screen process is recording into this meeting".into(),
+        }
+    }
+
+    pub fn no_permission(message: impl Into<String>) -> Self {
+        Self {
+            code: exit::NO_PERMISSION,
+            message: message.into(),
         }
     }
 

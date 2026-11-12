@@ -1,7 +1,8 @@
 //! The macOS backend: Core Video pixel buffers, the synthetic screen for tests, VideoToolbox for
-//! video, Vision for text, ImageIO for JPEG and Core Graphics for the displays. The real screen
-//! capture, ScreenCaptureKit, comes with its own task: until then `Displays::can_capture` is
-//! false, so `record` refuses a real screen and only the synthetic one has a source.
+//! video, Vision for text, ImageIO for JPEG and Core Graphics for the displays. The real screen is
+//! ScreenCaptureKit, which comes with its own change: until then only the synthetic screen has a
+//! source. The Screen Recording grant it will need is checked by `Displays::missing_permission`,
+//! without ever asking for it.
 
 use std::path::Path;
 use std::sync::mpsc::SyncSender;
@@ -23,7 +24,7 @@ use crate::video::writer_mac::{MacVideoMaker, MacVideoWriter};
 
 use super::{
     Clocks, DeviceInfo, Disk, Displays, Frame, FrameIo, Jpeg, Pixels, Platform, PlatformError,
-    Reader, Source, ThreadInit, Thumbs, VideoMaker,
+    Reader, Source, SourceOptions, ThreadInit, Thumbs, VideoMaker,
 };
 
 /// The screen process's backend on macOS.
@@ -129,10 +130,10 @@ impl Platform for MacPlatform {
     fn source(
         &self,
         _device: MacDevice,
-        test: Option<&TestSpec>,
+        options: &SourceOptions,
         to_main: SyncSender<Ev<PixelBuffer>>,
     ) -> Box<dyn Source> {
-        match test {
+        match &options.test {
             Some(spec) => Box::new(synthetic_mac::new(to_main, spec)),
             None => Box::new(NoCapture),
         }
@@ -163,8 +164,8 @@ impl Platform for MacPlatform {
     }
 }
 
-/// The real screen until ScreenCaptureKit lands. `record` refuses it because `can_capture` is
-/// false, so this only answers if something asks for it anyway.
+/// The real screen until ScreenCaptureKit lands. It only answers if something asks for it
+/// without a test spec.
 struct NoCapture;
 
 impl Source for NoCapture {
@@ -200,12 +201,16 @@ impl Clocks for MacClocks {
     }
 }
 
-/// The monitors Core Graphics lists, and the synthetic ones a test spec asks for. The window
-/// Z-order and the cursor's monitor come with ScreenCaptureKit: nothing records the real screen
-/// before it.
-struct MacDisplays;
+/// The monitors Core Graphics lists, the synthetic ones a test spec asks for, and the windows
+/// and cursor that decide which monitor to record. The Screen Recording grant comes from a
+/// function, so a test can say what the preflight answered.
+struct MacDisplays {
+    granted: fn() -> bool,
+}
 
-static MAC_DISPLAYS: MacDisplays = MacDisplays;
+static MAC_DISPLAYS: MacDisplays = MacDisplays {
+    granted: monitors_mac::has_permission,
+};
 
 impl Displays for MacDisplays {
     fn list(&self, test: Option<&TestSpec>) -> Vec<MonitorInfo> {
@@ -215,16 +220,21 @@ impl Displays for MacDisplays {
         }
     }
 
-    fn z_order(&self) -> Vec<WindowInfo> {
-        Vec::new()
+    fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo> {
+        monitors_mac::z_order(exclude_pids)
     }
 
     fn cursor_monitor(&self) -> Option<String> {
-        None
+        monitors_mac::cursor_monitor()
     }
 
     fn can_capture(&self) -> bool {
-        false
+        // ScreenCaptureKit is part of the system; whether this process may use it is the grant.
+        true
+    }
+
+    fn missing_permission(&self) -> Option<String> {
+        monitors_mac::permission_error((self.granted)())
     }
 }
 
