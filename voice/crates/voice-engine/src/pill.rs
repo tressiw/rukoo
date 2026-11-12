@@ -27,6 +27,9 @@ pub const FAILED_HOLD: Duration = Duration::from_millis(2800);
 pub const MIC_BACK_HOLD: Duration = Duration::from_millis(2200);
 /// A part of the screen recording stopped: the notice stays this long.
 pub const DROP_HOLD: Duration = Duration::from_millis(4000);
+/// A screen notice the user has to act on, such as Screen Recording being off: longer than a
+/// drop's, because with notifications off it is the only trace on screen.
+pub const ACTION_HOLD: Duration = Duration::from_millis(15_000);
 /// The screen recording moved to another monitor.
 pub const MOVED_HOLD: Duration = Duration::from_millis(2200);
 pub const COMPACT_AFTER: Duration = Duration::from_millis(4000);

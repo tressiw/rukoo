@@ -26,7 +26,7 @@ use crate::media::MediaService;
 use crate::meetings::controller::{Change, NOTIFY_MEETING};
 use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
-use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
+use crate::pill::{notices, Looks, MeetingPhase, PillDriver, ACTION_HOLD, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::{Services, Speech};
 use crate::settings::SettingsRuntime;
@@ -484,11 +484,22 @@ impl Core {
                 self.pill_screen(&id);
                 self.settings_changed();
             }
-            ScreenChange::NoPermission { id } => {
+            ScreenChange::NoPermission { id, refused } => {
                 // At the start of a meeting or in the middle of one: either way the screen is
                 // gone and the audio goes on. The notice names the setting, because retrying
-                // can't help.
-                self.screen_notice(&id, Some(notices::SCREEN_PERMISSION), Map::new(), DROP_HOLD);
+                // can't help, and stays longer than a drop's: with notifications off it is the
+                // only trace on screen.
+                self.screen_notice(
+                    &id,
+                    Some(notices::SCREEN_PERMISSION),
+                    Map::new(),
+                    ACTION_HOLD,
+                );
+                // A screen process that refused to start: the app asks macOS once, which puts
+                // Voice in the Screen Recording list for the user to switch on.
+                if refused {
+                    self.sink.screen_permission_needed();
+                }
                 self.notify_keyed(
                     NOTIFY_MEETING,
                     NOTIFY_SCREEN_PERMISSION,
@@ -498,7 +509,7 @@ impl Core {
                 self.settings_changed();
             }
             ScreenChange::StoppedByUser { id } => {
-                self.screen_notice(&id, Some(notices::SCREEN_STOPPED), Map::new(), DROP_HOLD);
+                self.screen_notice(&id, Some(notices::SCREEN_STOPPED), Map::new(), ACTION_HOLD);
                 self.notify_keyed(NOTIFY_MEETING, NOTIFY_SCREEN_STOPPED, SCREEN_STOPPED_TEXT);
                 self.pill_screen(&id);
                 self.settings_changed();

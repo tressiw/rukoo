@@ -446,7 +446,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 | `accessibility` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
 | `screenRecording` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
 
-The system audio permission shares the Screen & System Audio Recording pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane. The pane names here and in Settings are macOS 27's; macOS 26 and earlier called three of them "Accessibility", "Screen Recording" and "System Audio Recording". Rejects with `invalid_value` for an id outside the table.
+The system audio permission shares the Screen & System Audio Recording pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane. The pane names here and in Settings are macOS 27's; macOS 26 and earlier called three of them "Accessibility", "Screen Recording" and "System Audio Recording". Rejects with `invalid_value` for an id outside the table. For `screenRecording` the app first asks macOS for the permission with `CGRequestScreenCaptureAccess`, at most once per app run and only while Voice doesn't have it: macOS lists an app under Screen & System Audio Recording only once it asked, so this puts Voice there, switched off, and shows the system's prompt once. The app asks the same way when a meeting with the screen on starts without the grant, and never at startup.
 
 ### Command `settings_clean_preview`
 

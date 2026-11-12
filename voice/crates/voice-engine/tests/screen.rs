@@ -1647,6 +1647,13 @@ fn a_screen_without_permission_says_so_and_is_not_retried() {
     );
     assert!(note.body.contains("Screen Recording"), "{}", note.body);
     assert!(note.body.contains("Privacy & Security"), "{}", note.body);
+    // The app asks macOS once, which lists Voice under Screen Recording.
+    assert_eq!(
+        h.sink
+            .screen_permission_asks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 
     // The supervisor's own five tries are over in under a second at these timings, and a retry
     // would have written the runs file again.

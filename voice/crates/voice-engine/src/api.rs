@@ -50,6 +50,9 @@ pub trait UiSink: Send + Sync + 'static {
     fn ui_changed(&self);
     /// Show the pill's native screen mode and monitor menu for this live meeting.
     fn screen_menu(&self, _info: Value) {}
+    /// A meeting with the screen on started without macOS' Screen Recording grant. The app asks
+    /// macOS for it once, which puts Voice in System Settings' list; the screen helper never asks.
+    fn screen_permission_needed(&self) {}
     /// The pill didn't ack snapshot `seq` after a show or a phase change: 500 ms after it the
     /// app nudges the window (resize by a pixel and raise it), after 2 s it builds a new window
     /// and replays [`EngineApi::pill_snapshot`] (pill-settings-design.md 3.2, step 5).

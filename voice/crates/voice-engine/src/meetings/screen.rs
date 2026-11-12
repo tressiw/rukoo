@@ -137,6 +137,9 @@ pub enum ScreenChange {
     /// off, or was switched off during the meeting. The screen isn't recorded; the audio goes on.
     NoPermission {
         id: String,
+        /// The screen process refused to start for the grant, as opposed to a grant that went
+        /// while it recorded.
+        refused: bool,
     },
     /// The user stopped the screen capture from the system's own control, such as macOS' menu
     /// bar button for screen sharing. The screen isn't recorded any more; the audio goes on.
@@ -280,6 +283,7 @@ impl ScreenLive {
                         if report {
                             changes.push(ScreenChange::NoPermission {
                                 id: self.id.clone(),
+                                refused: false,
                             });
                         }
                     }
@@ -944,7 +948,10 @@ impl ScreenSupervisor {
                 log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
             }
         }
-        self.emit(ScreenChange::NoPermission { id: id.to_string() });
+        self.emit(ScreenChange::NoPermission {
+            id: id.to_string(),
+            refused: true,
+        });
     }
 
     /// The start handshake: `meeting.starting`, then a wait for every connected Rukoo's
@@ -2030,7 +2037,7 @@ mod tests {
             .unwrap();
         let changes = live.read_journal(true);
         assert!(
-            matches!(changes.as_slice(), [ScreenChange::NoPermission { id }] if id == "m-1"),
+            matches!(changes.as_slice(), [ScreenChange::NoPermission { id, refused: false }] if id == "m-1"),
             "{changes:?}"
         );
         assert!(live.no_permission);
