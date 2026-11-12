@@ -1,6 +1,7 @@
 // The Rukoo Voice mark: Rukoo's pigeon with the pill's five-bar waveform in front of its beak.
 // markSvg() returns the mark as SVG text for one pixel size, with the bars on whole pixels, so every icon size stays
-// sharp. make-icons.js rasterizes it; voice.svg and voice-recording.svg are its 256 px output, kept as the vector source.
+// sharp. macIconSvg() puts the same mark on the rounded square macOS wants for an app icon. make-icons.js rasterizes
+// both; voice.svg and voice-recording.svg are the mark's 256 px output, kept as the vector source.
 'use strict';
 
 const fs = require('fs');
@@ -103,4 +104,53 @@ function markSvg(size, { recording = false } = {}) {
   );
 }
 
-module.exports = { markSvg, layout, SMALL };
+// A macOS app icon, in Apple's current shape: a rounded square with a margin, on Rukoo's dark canvas (--bg in
+// src/renderer/styles.css, the background the dark-head pigeon was drawn for). macOS shows an app's icon flat and
+// unmasked, so the shape, the margin and the canvas are part of the picture rather than something the system adds.
+// The template's proportions: an 824-unit tile on a 1024-unit canvas, 100 units of margin, a 185.4-unit corner radius.
+const MAC = {
+  canvas: 1024,
+  tile: 824,
+  radius: 185.4,
+  background: '#141519',
+  // The height of the mark's drawn content as a fraction of the tile, which leaves room around it and keeps the
+  // pigeon and the bars off the rounded corners.
+  height: 0.72,
+};
+
+// The box the mark's shapes occupy inside its 256-unit square, which is not the square itself: the pigeon stands on
+// the bottom edge of the layout and leaves a strip under its chest empty, and the bars reach further right than the
+// pigeon. Centring this box, rather than the square, spaces the colours evenly in the tile.
+const MARK_CONTENT = (() => {
+  const l = layout(256);
+  const p = l.pigeon;
+  return {
+    left: p.x + PIGEON.left * p.scale,
+    top: p.y,
+    right: Math.max(...l.bars.map(([x, , width]) => x + width)),
+    bottom: p.y + PIGEON.bottom * p.scale,
+  };
+})();
+
+// The app icon at `size` pixels for one side. The mark is laid out for the pixel size it gets in the tile, so its
+// bars stay on whole pixels at every size, and its content box is centred in the tile.
+function macIconSvg(size) {
+  const k = size / MAC.canvas;
+  const tile = MAC.tile * k;
+  const margin = (size - tile) / 2;
+  const contentHeight = MARK_CONTENT.bottom - MARK_CONTENT.top;
+  const markSize = Math.max(1, Math.round(((MAC.height * tile) / contentHeight) * 256));
+  const centre = (a, b) => (markSize * (a + b)) / 512;
+  const x = size / 2 - centre(MARK_CONTENT.left, MARK_CONTENT.right);
+  const y = size / 2 - centre(MARK_CONTENT.top, MARK_CONTENT.bottom);
+  const inner = markSvg(markSize).replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" ` +
+    `role="img" aria-label="Rukoo Voice">` +
+    `<rect x="${round(margin)}" y="${round(margin)}" width="${round(tile)}" height="${round(tile)}" ` +
+    `rx="${round(MAC.radius * k)}" fill="${MAC.background}"/>` +
+    `<g transform="translate(${round(x)} ${round(y)})">${inner}</g></svg>\n`
+  );
+}
+
+module.exports = { markSvg, macIconSvg, layout, SMALL };

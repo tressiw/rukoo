@@ -6,6 +6,7 @@
 // It draws each size into a canvas in a hidden window and writes:
 //   voice.svg, voice-recording.svg        the mark as a 256 px vector, normal and recording
 //   icon.ico                              the app icon: 16, 20, 24, 32, 40, 48, 64 and 256 px (exe, installer, shortcuts)
+//   icon.icns                             the macOS app icon: the mark on Apple's rounded square, 16 to 1024 px
 //   32x32.png, 128x128.png, 128x128@2x.png, icon.png (512 px)   the PNG set Tauri lists for other platforms
 //   tray-recording.ico, tray-recording.png   the tray icon while a meeting records (build.rs embeds the .ico)
 //   installer-sidebar.bmp                 the picture on the installer's first and last page (164 x 314)
@@ -14,11 +15,27 @@
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { markSvg } = require('./mark.js');
+const { markSvg, macIconSvg } = require('./mark.js');
 
 const HERE = __dirname;
 const APP_SIZES = [16, 20, 24, 32, 40, 48, 64, 256];
 const TRAY_SIZES = [16, 20, 24, 32, 40, 48, 64];
+// The pixel sizes a macOS app icon holds. 32, 64, 128, 256 and 512 px each serve two types, once as they are and
+// once as the 2x bitmap of the size below, so there are eleven entries for seven images.
+const ICNS_SIZES = [16, 32, 64, 128, 256, 512, 1024];
+const ICNS_TYPES = [
+  ['icp4', 16],
+  ['icp5', 32],
+  ['icp6', 64],
+  ['ic07', 128],
+  ['ic08', 256],
+  ['ic09', 512],
+  ['ic10', 1024],
+  ['ic11', 32], // 16 px at 2x
+  ['ic12', 64], // 32 px at 2x
+  ['ic13', 256], // 128 px at 2x
+  ['ic14', 512], // 256 px at 2x
+];
 // Rukoo's dark canvas (--bg in src/renderer/styles.css), the background the dark-head pigeon was drawn for.
 const SIDEBAR_BG = '#141519';
 
@@ -93,6 +110,53 @@ function ico(images) {
   return Buffer.concat([header, ...data]);
 }
 
+// An ICNS file: an 8-byte header, then one 8-byte header and the PNG for each type. macOS reads PNG in every one of
+// these types, so the PNGs the window renders are the data; no iconutil or other platform tool is involved.
+function icns(images) {
+  const entries = ICNS_TYPES.map(([type, size]) => {
+    const png = images.get(size);
+    if (!png) throw new Error(`no ${size} px image for ${type}`);
+    const head = Buffer.alloc(8);
+    head.write(type, 0, 'latin1');
+    head.writeUInt32BE(png.length + 8, 4);
+    return Buffer.concat([head, png]);
+  });
+  const header = Buffer.alloc(8);
+  header.write('icns', 0, 'latin1');
+  header.writeUInt32BE(8 + entries.reduce((total, entry) => total + entry.length, 0), 4);
+  return Buffer.concat([header, ...entries]);
+}
+
+// Reads an ICNS back and checks the container and every PNG's own header, so a wrong size fails here rather than in
+// Finder: the magic, the total length, each entry inside the file, and PNGs of the size its type names.
+function checkIcns(file, types) {
+  const buf = fs.readFileSync(file);
+  if (buf.subarray(0, 4).toString('latin1') !== 'icns') throw new Error(`${file} doesn't start with icns`);
+  if (buf.readUInt32BE(4) !== buf.length) throw new Error(`${file} says it is ${buf.readUInt32BE(4)} bytes, not ${buf.length}`);
+  const found = [];
+  let offset = 8;
+  while (offset < buf.length) {
+    if (offset + 8 > buf.length) throw new Error(`${file}: an entry starts past the end`);
+    const type = buf.subarray(offset, offset + 4).toString('latin1');
+    const length = buf.readUInt32BE(offset + 4);
+    if (length < 8 || offset + length > buf.length) throw new Error(`${file}: ${type} runs past the end`);
+    const png = buf.subarray(offset + 8, offset + length);
+    if (png.subarray(1, 4).toString('latin1') !== 'PNG') throw new Error(`${file}: ${type} is not a PNG`);
+    const wanted = types.find(([name]) => name === type);
+    if (!wanted) throw new Error(`${file}: has an unexpected ${type} entry`);
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    if (width !== wanted[1] || height !== wanted[1]) {
+      throw new Error(`${file}: ${type} is ${width} x ${height} instead of ${wanted[1]}`);
+    }
+    found.push(type);
+    offset += length;
+  }
+  if (found.join() !== types.map(([type]) => type).join()) {
+    throw new Error(`${file}: has ${found.join()} instead of ${types.map(([type]) => type).join()}`);
+  }
+}
+
 // A 24-bit BMP, the format NSIS wants for its wizard pictures.
 function bmp(width, height, rgba) {
   const row = Math.ceil((width * 3) / 4) * 4;
@@ -154,6 +218,14 @@ app.whenReady().then(async () => {
     for (const size of APP_SIZES) appImages.push({ size, ...(await draw(win, markSvg(size), size, size)) });
     write('icon.ico', ico(appImages));
     checkIco(path.join(HERE, 'icon.ico'), APP_SIZES);
+
+    // The macOS icon is its own composition: Apple's rounded square with the mark inside it. The PNGs for its sizes
+    // are drawn only for the .icns; the platform's flat PNG set above stays the bare mark.
+    const macImages = new Map();
+    for (const size of ICNS_SIZES) macImages.set(size, (await draw(win, macIconSvg(size), size, size)).png);
+    write('icon.icns', icns(macImages));
+    checkIcns(path.join(HERE, 'icon.icns'), ICNS_TYPES);
+
     for (const [name, size] of [['32x32.png', 32], ['128x128.png', 128], ['128x128@2x.png', 256], ['icon.png', 512]]) {
       write(name, (await draw(win, markSvg(size), size, size)).png);
     }
