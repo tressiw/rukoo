@@ -24,6 +24,9 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # The same versions tauri 2.12.5, wry and tao use, so HWNDs and WebView2 interfaces are one type.
 webview2-com = "=0.39.1"
