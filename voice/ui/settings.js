@@ -118,6 +118,9 @@ const SPEAKER_REASONS = {
   key: 'settings.speakers.reason.key',
   consent: 'settings.speakers.reason.consent'
 };
+// How a processor feature reads in Settings. The app names them lower case, as the settings state
+// documents; Windows has the x86-64 features, macOS the arm64 ones.
+const CPU_FEATURE_NAMES = { avx2: 'AVX2', fma: 'FMA', f16c: 'F16C', bmi2: 'BMI2', neon: 'NEON', dotprod: 'DotProd', fp16: 'FP16' };
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
 const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'about'];
 
@@ -315,7 +318,7 @@ function speakersReason() {
   if (!s || s.ready) return null;
   const key = SPEAKER_REASONS[s.reason];
   if (!key) return t('settings.meetings.speakersUnavailable');
-  const missing = (s.missing?.length ? s.missing : Object.keys(s.cpu || {}).filter((name) => s.cpu[name] === false)).map((name) => name.toUpperCase());
+  const missing = (s.missing?.length ? s.missing : Object.keys(s.cpu || {}).filter((name) => s.cpu[name] === false)).map((name) => CPU_FEATURE_NAMES[name] || name.toUpperCase());
   return t(key, { missing: list(missing), provider: providerLabel(state.config.meetings.provider, 'meetings') });
 }
 

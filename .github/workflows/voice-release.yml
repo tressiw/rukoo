@@ -1,14 +1,15 @@
 name: Release Rukoo Voice
 
-# Builds Rukoo Voice's Windows installer and portable zip for a voice-v<version> tag with voice/scripts/package.ps1,
-# and attaches them to that tag's GitHub release as a draft. The maintainer writes the notes and publishes it.
+# Builds Rukoo Voice's Windows installer and portable zip and its macOS DMG and zip for a voice-v<version> tag, and
+# attaches them to that tag's GitHub release as a draft. The maintainer writes the notes and publishes it.
 #
 # Voice tags are voice-v<version>, never v<version> (voice/AGENTS.md, "Pull requests and releases"). This workflow
 # runs only for voice-v tags, and Rukoo's release.yml runs only on request with a v<version> tag. A Voice release is
 # never marked Latest: the README's download link points to the latest release, and that has to stay Rukoo.
 #
-# Voice 0.1 is not code-signed: neither the installer nor the programs carry a signature, so Windows SmartScreen
-# warns on first run.
+# Voice 0.1 is not code-signed on Windows and is ad-hoc signed on macOS: neither installer nor programs carry a
+# Developer ID signature, so Windows SmartScreen warns on first run and a downloaded Mac app needs Open Anyway in
+# Privacy & Security.
 
 on:
   push:
@@ -119,3 +120,138 @@ jobs:
             'or untick "Set as the latest release" when you publish it on GitHub, so Rukoo stays the latest release.'
           )
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $summary
+
+  # The macOS package is ad-hoc signed with hardened runtime and not notarized, as Rukoo Mail's Mac packages are, so
+  # the first launch needs Open Anyway in Privacy & Security. voice/scripts/package-macos.mjs makes and checks the app,
+  # the DMG with hdiutil (not Tauri's Finder-driven DMG step) and the zip. It needs a NeMo runtime folder; until the
+  # macOS runtime is published, this job builds one with voice/nemo-runtime/build-macos.sh on the tagged commit and
+  # stops when that script is missing, rather than shipping a package without speaker labels.
+  release-macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TERM_COLOR: always
+      NEMO_OUT: voice/target/nemo/nemo_speech
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate the tag
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^voice-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "::error::Use voice-vMAJOR.MINOR.PATCH, optionally followed by -alpha.N, -beta.N or -rc.N."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # package-macos.mjs runs Tauri's CLI through npx and reads the version with node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Check the version and the release commit
+        run: |
+          version=$(node -e '
+            const fs = require("node:fs");
+            const text = fs.readFileSync("voice/Cargo.toml", "utf8");
+            const section = text.split(/^\[/m).find((part) => part.startsWith("workspace.package]"));
+            const match = section && /^version\s*=\s*"([^"]+)"/m.exec(section);
+            if (!match) { console.error("voice/Cargo.toml has no workspace version"); process.exit(1); }
+            process.stdout.write(match[1]);
+          ')
+          tagged="${RELEASE_TAG#voice-v}"
+          if [[ "$version" != "$tagged" ]]; then
+            echo "::error::The tag is $RELEASE_TAG, but voice/Cargo.toml has version $version."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Voice release tags must point to a commit merged into main."
+            exit 1
+          fi
+
+      - run: rustup show active-toolchain
+
+      - name: Build the NeMo runtime
+        run: |
+          if [[ ! -f voice/nemo-runtime/build-macos.sh ]]; then
+            echo "::error::voice/nemo-runtime/build-macos.sh is missing on $RELEASE_TAG, so this tag cannot build the arm64 NeMo runtime. A macOS package ships speaker labels; publish the runtime or add the script first."
+            exit 1
+          fi
+          bash voice/nemo-runtime/build-macos.sh --out "$NEMO_OUT"
+          if [[ ! -f "$NEMO_OUT/runtime.json" ]]; then
+            echo "::error::voice/nemo-runtime/build-macos.sh wrote no runtime.json to $NEMO_OUT."
+            exit 1
+          fi
+
+      # Builds the five release programs and Rukoo Voice.app, adds the runtime as Contents/Resources/nemo_speech,
+      # signs inside out ad-hoc with hardened runtime, checks the Info.plist keys, entitlements, imports and minimum
+      # system version, and writes the DMG, the zip and SHA256SUMS.txt.
+      - name: Build, sign and check the macOS package
+        run: node voice/scripts/package-macos.mjs --nemo-dir "$NEMO_OUT"
+
+      # The Windows job attaches its own SHA256SUMS.txt, so the Mac checksums get a platform name instead of
+      # replacing them.
+      - name: Name the checksums for this platform
+        run: cp voice/target/package/SHA256SUMS.txt voice/target/package/SHA256SUMS-macos-arm64.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rukoo-voice-macos-${{ env.RELEASE_TAG }}
+          path: |
+            voice/target/package/Rukoo-Voice-*-arm64.dmg
+            voice/target/package/Rukoo-Voice-*-arm64.zip
+            voice/target/package/SHA256SUMS-macos-arm64.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach the files to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#voice-v}"
+          files=(
+            "voice/target/package/Rukoo-Voice-$version-arm64.dmg"
+            "voice/target/package/Rukoo-Voice-$version-arm64.zip"
+            "voice/target/package/SHA256SUMS-macos-arm64.txt"
+          )
+          draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null) || draft=""
+          if [[ -z "$draft" ]]; then
+            # No release for this tag yet: make the draft. A tag such as voice-v0.2.0-rc.1 makes a pre-release.
+            flags=(--draft --latest=false --verify-tag --title "$RELEASE_TAG - Rukoo Voice $version"
+              --notes 'Rukoo Voice. Write the release notes here, then publish without marking it as the latest release.')
+            if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+            if ! gh release create "$RELEASE_TAG" "${files[@]}" "${flags[@]}"; then
+              # The Windows job can create the same draft at the same moment.
+              draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft) || { echo "::error::gh release create failed and there is no draft release for $RELEASE_TAG."; exit 1; }
+              if [[ "$draft" != "true" ]]; then
+                echo "::error::$RELEASE_TAG exists but is not a draft."
+                exit 1
+              fi
+              gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+              gh release edit "$RELEASE_TAG" --latest=false
+            fi
+          elif [[ "$draft" != "true" ]]; then
+            # Replacing the files of a published release would change what people already downloaded.
+            echo "::error::$RELEASE_TAG is already published. Make a new Voice version instead."
+            exit 1
+          else
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            gh release edit "$RELEASE_TAG" --latest=false
+          fi
+          {
+            echo "macOS package: ad-hoc signed, not notarized."
+            echo ""
+            echo "Draft release $RELEASE_TAG has Rukoo-Voice-$version-arm64.dmg, Rukoo-Voice-$version-arm64.zip and SHA256SUMS-macos-arm64.txt."
+            echo ""
+            echo "Publish it with \`gh release edit $RELEASE_TAG --draft=false --latest=false\`, or untick \"Set as the latest release\" when you publish it on GitHub, so Rukoo stays the latest release."
+          } >> "$GITHUB_STEP_SUMMARY"

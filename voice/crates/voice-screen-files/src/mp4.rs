@@ -613,32 +613,35 @@ pub fn fragment_ms(index: &Index) -> Vec<u64> {
         .collect()
 }
 
+/// A box: its 32-bit size, its type, then its payload.
+pub fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 8);
+    out.extend_from_slice(&(payload.len() as u32 + 8).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A full box's payload: version, flags, then `rest`.
+pub fn full(version: u8, flags: u32, rest: &[u8]) -> Vec<u8> {
+    let mut out = vec![version];
+    out.extend_from_slice(&flags.to_be_bytes()[1..]);
+    out.extend_from_slice(rest);
+    out
+}
+
 /// Builds fragmented MP4 files the way Media Foundation lays them out, for tests here and in
-/// other crates.
+/// other crates, from the same box builders as the writer in [`crate::fmp4`].
 #[doc(hidden)]
 pub mod synth {
+    pub use super::{bx, full};
+
     /// One sample: duration in timescale units, size in bytes, whether it is a sync sample.
     #[derive(Clone, Copy, Debug)]
     pub struct Sample {
         pub duration: u32,
         pub size: u32,
         pub sync: bool,
-    }
-
-    pub fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(payload.len() + 8);
-        out.extend_from_slice(&(payload.len() as u32 + 8).to_be_bytes());
-        out.extend_from_slice(kind);
-        out.extend_from_slice(payload);
-        out
-    }
-
-    /// A full box's payload: version, flags, then `rest`.
-    pub fn full(version: u8, flags: u32, rest: &[u8]) -> Vec<u8> {
-        let mut out = vec![version];
-        out.extend_from_slice(&flags.to_be_bytes()[1..]);
-        out.extend_from_slice(rest);
-        out
     }
 
     pub fn ftyp() -> Vec<u8> {

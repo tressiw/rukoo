@@ -2,21 +2,21 @@
 //! in a process of its own, so a crash in the native runtime never takes the app down.
 //!
 //! The app's speaker client (voice-core `speakers::client`) starts one worker per labelled
-//! meeting stream, in its kill-on-close job and at below-normal priority. The worker only runs
-//! NVIDIA Nemotron 3 Diarization; turning the probabilities into speaker turns and stable `call-N`
-//! ids happens in the app. It reads the runtime folder and the model file it is given and writes
-//! nothing to disk.
+//! meeting stream, in its kill-on-close job on Windows and watching its parent on Unix, at
+//! below-normal priority. The worker only runs NVIDIA Nemotron 3 Diarization; turning the
+//! probabilities into speaker turns and stable `call-N` ids happens in the app. It reads the
+//! runtime folder and the model file it is given and writes nothing to disk.
 //!
 //! # Protocol
 //!
 //! The framing is voice-local's: one JSON request per line on stdin, a request that names `bytes`
 //! followed by that many raw bytes, one JSON line per request on stdout in order, except `quit`.
 //! Logs and the runtime's own output go to stderr. The worker exits 0 on `quit` and when stdin
-//! closes.
+//! closes, and 70 on Unix when the app that started it is gone.
 //!
 //! | Request | Response |
 //! |---|---|
-//! | `{"op":"ping","id":1}` | `{"id":1,"ok":true,"pid":4242,"version":"0.1.0","cpu":{"avx2":true,"fma":true,"f16c":true,"bmi2":true}}` |
+//! | `{"op":"ping","id":1}` | `{"id":1,"ok":true,"pid":4242,"version":"0.1.0","cpu":{"avx2":true,"fma":true,"f16c":true,"bmi2":true,"neon":false,"dotprod":false,"fp16":false}}` |
 //! | `{"op":"load","id":2,"runtime":"C:\\…\\nemo_speech","model":"C:\\…\\Nemotron-3-Diarization.q8_0.gguf","preset":"v3-streaming","chunkFrames":38,"rightContextFrames":1}` | `{"id":2,"ok":true,"speakers":8,"secondsPerFrame":0.01,"loadMs":812,"runtimeVersion":"…"}` |
 //! | `{"op":"open","id":3}` | `{"id":3,"ok":true}` |
 //! | `{"op":"push","id":4,"rate":16000,"bytes":32000}` + 32000 bytes of s16le mono | `{"id":4,"ok":true,"first":0,"frames":304,"count":304,"probs":"<base64>"}` |
@@ -33,11 +33,12 @@
 //!   `first` to `first + frames`. `first` continues the previous reply's `count`, which is the
 //!   stream's frame count after the call.
 //! - A failure is `{"ok":false,"kind":…,"error":"<English message>"}` with `kind` one of
-//!   `bad_request`, `cpu` (the processor lacks AVX2, FMA, F16C or BMI2; nothing was loaded),
-//!   `runtime` (the folder, the DLL or an export is missing, or the DLL didn't load), `model` (the
-//!   runtime refused the model), `not_open` (`push` or `finish` without an open stream),
-//!   `behind` (the runtime dropped frames the worker hadn't returned) or `failed`. `error`
-//!   carries `nemo_speech_asr_last_error()` when the runtime gave one.
+//!   `bad_request`, `cpu` (the processor lacks the features the runtime is built for: AVX2, FMA,
+//!   F16C and BMI2 on Windows, NEON, dot-product and FP16 on macOS; nothing was loaded),
+//!   `runtime` (the folder, the library or an export is missing, or the library didn't load),
+//!   `model` (the runtime refused the model), `not_open` (`push` or `finish` without an open
+//!   stream), `behind` (the runtime dropped frames the worker hadn't returned) or `failed`.
+//!   `error` carries `nemo_speech_asr_last_error()` when the runtime gave one.
 //!
 //! `--self-test --runtime <dir> --model <gguf> --wav <16 kHz mono wav> [--report <json>]` labels
 //! the file in 1 s pushes and prints `{"speakers":n,"frames":f,"segments":s,"loadMs":l,
@@ -46,8 +47,13 @@
 
 mod backend;
 mod cpu;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 mod nemo;
+// The watch Voice uses to end this worker with itself lives in voice-core, next to the client that
+// spawns it. Included by path rather than as a dependency: a worker that a native runtime takes
+// down shouldn't link the app's network and archive stacks for a `kqueue` and `pidfd` watch.
+#[path = "../../voice-core/src/local/parent.rs"]
+mod parent;
 mod protocol;
 mod selftest;
 mod stdio;
@@ -60,6 +66,9 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     #[cfg(windows)]
     quiet_crashes();
+    // Before the arguments are read: when the app that started this worker is gone, so is the
+    // worker. A worker started by hand has no parent to watch.
+    parent::watch(worker::log);
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match args.first().and_then(|arg| arg.to_str()) {
         None => serve(),

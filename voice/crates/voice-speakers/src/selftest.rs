@@ -103,7 +103,7 @@ pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, String> {
 }
 
 /// Loads the runtime and the model, pushes the audio in 1 s pieces, finishes and counts.
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub fn run(options: &Options) -> Result<Report, String> {
     use std::time::Instant;
 
@@ -170,12 +170,12 @@ pub fn run(options: &Options) -> Result<Report, String> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
 pub fn run(options: &Options) -> Result<Report, String> {
     let bytes = std::fs::read(&options.wav)
         .map_err(|error| format!("could not read {}: {error}", options.wav.display()))?;
     read_wav(&bytes).map_err(|error| format!("{}: {error}", options.wav.display()))?;
-    Err("speaker labels run on Windows only".into())
+    Err("speaker labels run on Windows on x86-64 and macOS on Apple Silicon only".into())
 }
 
 #[cfg(test)]

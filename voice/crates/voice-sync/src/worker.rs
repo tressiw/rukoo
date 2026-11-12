@@ -3,7 +3,7 @@
 //! them and starts again after 5 s.
 //!
 //! The worker only reads closed files and never talks to the recorder, so nothing it does can cost
-//! audio. It runs in Windows background mode (D20).
+//! audio. It runs in the platform's background mode (D20).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -432,7 +432,8 @@ pub(crate) fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Lets this thread's disk and CPU yield to everything else (D20). Does nothing off Windows.
+/// Lets this thread's disk and CPU yield to everything else (D20). Does nothing off Windows and
+/// macOS.
 pub(crate) fn background_thread() {
     #[cfg(windows)]
     {
@@ -443,6 +444,17 @@ pub(crate) fn background_thread() {
         let set = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
         if let Err(e) = set {
             log::debug!("sync: background mode refused: {e}");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // UTILITY, not BACKGROUND: BACKGROUND throttles disk access as well, and an upload that
+        // waits for a stalled read holds the bucket's connection open.
+        // SAFETY: the call changes the quality of service of the calling thread and nothing else.
+        let result =
+            unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
+        if result != 0 {
+            log::debug!("sync: the system refused a lower quality of service: {result}");
         }
     }
 }
@@ -1834,4 +1846,25 @@ fn to_usize(n: u64) -> usize {
 
 pub(crate) fn local(what: &str, e: &io::Error) -> SyncError {
     SyncError::new(SyncErrorKind::Local, format!("{what}: {e}"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn the_worker_thread_lowers_its_quality_of_service() {
+        let class = std::thread::spawn(|| {
+            super::background_thread();
+            let mut class = libc::qos_class_t::QOS_CLASS_DEFAULT;
+            let mut priority = 0;
+            // SAFETY: `pthread_self` names this thread, and both out-pointers are valid.
+            let result = unsafe {
+                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut priority)
+            };
+            assert_eq!(result, 0);
+            class
+        })
+        .join()
+        .expect("the thread ran");
+        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_UTILITY as u32);
+    }
 }

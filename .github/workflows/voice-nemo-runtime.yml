@@ -1,9 +1,9 @@
 name: Voice NeMo runtime
 
 # Builds the NeMo-Speech.cpp runtime that Rukoo Voice's speaker worker loads, checks it on the AMI excerpt and
-# uploads the zip and its manifest as an artifact. Publishing the artifact as a release is a separate, manual step
-# (voice/nemo-runtime/README.md). It runs when its own files change, on any branch but not on tags, so a branch
-# can produce the artifact without a dispatch from main.
+# uploads it as an artifact: the zip and its manifest on Windows, the runtime folder on macOS. Publishing the artifact
+# as a release is a separate, manual step (voice/nemo-runtime/README.md). It runs when its own files change, on any
+# branch but not on tags, so a branch can produce the artifact without a dispatch from main.
 
 on:
   pull_request:
@@ -104,5 +104,65 @@ jobs:
         with:
           name: ${{ env.RUNTIME_NAME }}
           path: ${{ runner.temp }}\nemo-release\
+          retention-days: 30
+          if-no-files-found: error
+
+  build-macos:
+    # Apple Silicon. The image and the checkout path are pinned: the assert strings in the built
+    # dylibs embed their source path, so the same commit built in another folder has other bytes.
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No second checkout of NeMo-Speech.cpp: the script clones the pinned commit and submodules
+      # itself, so a local build and this job run the same commands.
+      - name: Build the runtime
+        run: |
+          ./voice/nemo-runtime/build-macos.sh \
+            --source "$RUNNER_TEMP/nemo/NeMo-Speech.cpp" \
+            --out "$RUNNER_TEMP/nemo-runtime/nemo_speech" \
+            --runner macos-15
+      - name: Build the speaker worker
+        working-directory: voice
+        run: cargo build --release --locked -p voice-speakers
+      - name: Cache the model and the AMI excerpt
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/speaker-assets
+          key: speaker-assets-${{ hashFiles('voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.mjs') }}
+      # The manifest names no macOS archive yet, so this fetches the model and the excerpt only.
+      - name: Fetch the model and the AMI excerpt
+        working-directory: voice
+        run: node scripts/speaker-assets.mjs --out "$RUNNER_TEMP/speaker-assets" --model --ami
+      # The worker loads the runtime in its own process, so a broken build ends that process with an
+      # error code instead of this step's shell.
+      - name: Smoke test on the AMI excerpt
+        working-directory: voice
+        run: |
+          assets="$RUNNER_TEMP/speaker-assets"
+          report="$RUNNER_TEMP/self-test.json"
+          target/release/rukoo-voice-speakers --self-test \
+            --runtime "$RUNNER_TEMP/nemo-runtime/nemo_speech" \
+            --model "$assets/nemotron/Nemotron-3-Diarization.q8_0.gguf" \
+            --wav "$assets/ami/ami_en2002d_2132.wav" \
+            --report "$report"
+          node -e '
+            const fs = require("node:fs");
+            const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (report.speakers < 3) throw new Error(`The runtime heard ${report.speakers} speakers on the AMI excerpt instead of at least 3`);
+            if (report.frames < 5900) throw new Error(`The runtime returned ${report.frames} frames for 60 s instead of about 6,000`);
+            console.log("Self-test:", JSON.stringify(report));
+          ' "$report"
+      # The folder as built: runtime.json pins its hashes, and packaging signs the dylibs and pins
+      # them in voice/nemo-runtime/manifest.json once it is published.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.RUNTIME_NAME }}-macos-arm64
+          path: ${{ runner.temp }}/nemo-runtime/nemo_speech
           retention-days: 30
           if-no-files-found: error

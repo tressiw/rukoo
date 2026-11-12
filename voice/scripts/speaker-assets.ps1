@@ -114,6 +114,12 @@ $variables = [ordered]@{}
 
 if ($Runtime) {
   $manifest = Get-Content -LiteralPath (Join-Path $Voice 'nemo-runtime\manifest.json') -Raw | ConvertFrom-Json
+  # Format 2 keeps one entry per platform; this script fetches the Windows one for the tests here.
+  $target = $manifest.targets.'windows-x86_64'
+  if (-not $target) { throw 'voice/nemo-runtime/manifest.json pins no windows-x86_64 runtime' }
+  foreach ($property in $target.PSObject.Properties) {
+    $manifest = $manifest | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force -PassThru
+  }
   Write-Host "Runtime $($manifest.name)"
   if (-not $manifest.archive) {
     Write-Host '  not published yet: voice/nemo-runtime/manifest.json has no archive, so the runtime is skipped'

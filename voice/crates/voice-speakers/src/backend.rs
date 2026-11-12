@@ -1,5 +1,6 @@
 //! What the worker asks of the diarizer, so its request handling can be tested without the native
-//! runtime. [`Native`] is NeMo-Speech.cpp on Windows and a refusal elsewhere.
+//! runtime. [`Native`] is NeMo-Speech.cpp on Windows and macOS on Apple Silicon, and a refusal
+//! elsewhere.
 
 use std::path::PathBuf;
 
@@ -8,7 +9,8 @@ use crate::protocol::{ErrorKind, Failure};
 
 /// The `v3-streaming` preset with Ownkey's live geometry: 38 frames of 80 ms (3.04 s) per chunk
 /// and 1 frame of right context. It ran 8.2 times faster than real time on the maintainer's PC
-/// with batch accuracy; the preset's own 13-frame chunk ran 3.3 times faster.
+/// with batch accuracy and 26 times on an Apple M4; the preset's own 13-frame chunk ran 3.3 times
+/// faster than real time on the PC.
 pub const PRESET: &str = "v3-streaming";
 pub const CHUNK_FRAMES: i32 = 38;
 pub const RIGHT_CONTEXT_FRAMES: i32 = 1;
@@ -18,9 +20,10 @@ pub const SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoadRequest {
-    /// The folder holding `nemo_speech_asr_c.dll` and the DLLs it needs.
+    /// The folder holding the runtime's C ABI library and the libraries it imports.
     pub runtime: PathBuf,
-    /// More folders to search for those DLLs' imports, such as Ownkey's C runtime one folder up.
+    /// More folders to search for those libraries' imports, such as Ownkey's C runtime one folder
+    /// up. Windows only.
     pub dll_dirs: Vec<PathBuf>,
     /// The Nemotron GGUF.
     pub model: PathBuf,
@@ -69,13 +72,13 @@ pub trait Backend {
 /// The real diarizer: NeMo-Speech.cpp, loaded from the folder `load` names.
 #[derive(Default)]
 pub struct Native {
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     model: Option<&'static crate::nemo::Model>,
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     stream: Option<crate::nemo::Stream>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 impl Backend for Native {
     fn load(&mut self, request: &LoadRequest) -> Result<Loaded, Failure> {
         let runtime = crate::nemo::Runtime::load(&request.runtime, &request.dll_dirs)?;
@@ -122,13 +125,13 @@ impl Backend for Native {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
 impl Backend for Native {
     fn load(&mut self, _request: &LoadRequest) -> Result<Loaded, Failure> {
         check_cpu(crate::cpu::detect())?;
         Err(Failure::new(
             ErrorKind::Runtime,
-            "Speaker labels run on Windows only.",
+            "Speaker labels run on Windows on x86-64 and macOS on Apple Silicon only.",
         ))
     }
 
