@@ -162,6 +162,16 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
         // Finder, Launchpad and Spotlight don't start a second copy of a running app; they send it this.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => reopen(app),
+        // Settings' own states stop reading the privacy permissions once its window is gone.
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } if label == settings_window::LABEL => {
+            if let Some(shared) = app.try_state::<Shared>() {
+                shared.engine.settings_closed();
+            }
+        }
         RunEvent::Exit => shut_down(app),
         _ => {}
     });

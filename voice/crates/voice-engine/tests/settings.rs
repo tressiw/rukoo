@@ -186,6 +186,73 @@ fn permissions_come_from_the_permissions_service() {
     engine.shutdown();
 }
 
+#[test]
+fn permissions_are_read_only_when_settings_asks_or_its_window_exists() {
+    let h = Harness::new("permissions-closed");
+    // A first start: the welcome path builds a state too.
+    let engine = h.start();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "starting Voice read the privacy permissions"
+    );
+    assert_eq!(
+        lock(&h.sink.settings).last().unwrap()["permissions"],
+        Value::Null,
+        "a pushed state while Settings is closed carries no permissions"
+    );
+
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "a setting change with Settings closed read the privacy permissions"
+    );
+    assert_eq!(
+        engine.settings_state_quiet()["permissions"],
+        Value::Null,
+        "a state for a caller that isn't the page read the privacy permissions"
+    );
+
+    // The page asks on load and on focus.
+    let state = engine.settings_state();
+    assert_eq!(
+        h.permissions.calls(),
+        5,
+        "the page's state didn't read every permission"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(state["permissions"]["accessibility"], "unknown");
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+
+    // While the window exists, pushed states carry them too; closing stops the reads.
+    engine.settings_opened();
+    let opened = h.permissions.calls();
+    assert!(opened > 5, "opening Settings read no permissions");
+    engine
+        .settings_set("dictation.readyChime", json!(false))
+        .unwrap();
+    assert!(
+        h.permissions.calls() > opened,
+        "a pushed state with Settings open read no permissions"
+    );
+    engine.settings_closed();
+    let closed = h.permissions.calls();
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        closed,
+        "a setting change after Settings closed read the permissions again"
+    );
+    engine.shutdown();
+}
+
 /// The newest `status` event's `screenDefault`.
 fn screen_default_sent(h: &Harness) -> Value {
     let log = voice_bridge::EventLog::open(&h.data()).unwrap();

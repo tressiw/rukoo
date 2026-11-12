@@ -197,6 +197,8 @@ struct State {
     acked: u64,
     settings_seq: u64,
     settings: Value,
+    /// The Settings window exists, so its states read this computer's privacy permissions.
+    settings_open: bool,
     meeting: Option<Meeting>,
     meetings_started: u32,
     script: Option<Script>,
@@ -274,6 +276,7 @@ impl FakeEngine {
                 acked: 0,
                 settings_seq: 0,
                 settings,
+                settings_open: false,
                 meeting: None,
                 meetings_started: 0,
                 script: None,
@@ -508,6 +511,12 @@ impl State {
     fn settings_changed(&mut self, out: &mut Vec<Out>) {
         self.settings_seq += 1;
         self.settings["seq"] = json!(self.settings_seq);
+        self.settings["permissions"] = if self.settings_open {
+            voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
         self.settings["speakers"] = self.speakers();
         out.push(Out::Settings(self.settings.clone()));
     }
@@ -753,9 +762,9 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
-        // The fake engine still reads this computer's privacy permissions: they are part of the
-        // machine, not of a scripted state. Windows and Linux have none (null).
-        "permissions": voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions),
+        // The fake engine still reads this computer's privacy permissions, but only when Settings
+        // asks or its window exists: a preflight read alone can list the app on macOS 27.
+        "permissions": Value::Null,
         // Every feature is in this Voice: screen recording, speaker labels and bucket sync.
         "features": { "screen": true, "speakers": true, "sync": true },
         "theme": "dark",
@@ -933,7 +942,28 @@ impl EngineApi for FakeEngine {
     }
 
     fn settings_state(&self) -> Value {
+        let mut state = self.lock();
+        if state.settings_open {
+            state.settings["permissions"] =
+                voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                    .unwrap_or(Value::Null);
+        }
+        state.settings.clone()
+    }
+
+    fn settings_state_quiet(&self) -> Value {
         self.lock().settings.clone()
+    }
+
+    fn settings_opened(&self) {
+        self.apply(|st, out| {
+            st.settings_open = true;
+            st.settings_changed(out);
+        });
+    }
+
+    fn settings_closed(&self) {
+        self.apply(|st, _| st.settings_open = false);
     }
 
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError> {
