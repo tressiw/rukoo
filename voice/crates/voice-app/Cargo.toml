@@ -29,6 +29,7 @@ voice-protocol = { path = "../voice-protocol" }
 # type. The app reads its language from AppKit, gives its windows an appearance, hears the system's theme change,
 # says in an NSAlert why it can't start and posts notifications through Notification Center.
 # `objc2-user-notifications` loses its default features so it doesn't bring in Core Location for nothing.
+# The same versions tauri 2.12.5, wry and tao use, so the Settings window's NSWindow is one type.
 block2 = "=0.6.2"
 objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
@@ -42,6 +43,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSNotification",
   "NSOperation",
   "NSString",
+  "NSURL",
   "block2",
 ] }
 objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
@@ -59,10 +61,14 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSAppearance",
   "NSApplication",
   "NSColor",
+  "NSOpenPanel",
+  "NSPanel",
   "NSResponder",
   "NSRunningApplication",
+  "NSSavePanel",
   "NSView",
   "NSWindow",
+  "block2",
 ] }
 
 [target.'cfg(unix)'.dependencies]

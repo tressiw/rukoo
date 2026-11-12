@@ -110,9 +110,9 @@ pub mod ops {
         purpose: &str,
         owner: Option<isize>,
     ) -> Result<Option<String>, ApiError> {
-        let title_key = match purpose {
-            "models" => keys::FOLDER_MODELS,
-            "recordings" => keys::FOLDER_RECORDINGS,
+        let (title_key, folder) = match purpose {
+            "models" => (keys::FOLDER_MODELS, Folder::Models),
+            "recordings" => (keys::FOLDER_RECORDINGS, Folder::Recordings),
             _ => {
                 return Err(ApiError::new(
                     "invalid_value",
@@ -121,8 +121,10 @@ pub mod ops {
             }
         };
         let title = catalog.text(engine.ui().locale, title_key);
+        // The picker opens where the folder is now, so a change starts from what the user sees.
+        let start = engine.folder_path(folder);
         let Some(path) = shell
-            .pick_folder(&title, owner)
+            .pick_folder(&title, start.as_deref(), owner)
             .map_err(|e| ApiError::new("failed", e))?
         else {
             return Ok(None);
@@ -219,7 +221,9 @@ pub async fn settings_choose_folder(
 ) -> Result<Option<String>, ApiError> {
     #[cfg(windows)]
     let owner = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let owner = window.ns_window().ok().map(|window| window as isize);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let owner = {
         let _ = &window;
         None
@@ -380,11 +384,14 @@ mod tests {
         dir
     }
 
+    /// What the fake shell heard: title, starting folder and owner window.
+    type PickedWith = (String, Option<PathBuf>, Option<isize>);
+
     #[derive(Default)]
     struct FakeShell {
         opened: Mutex<Vec<String>>,
         pick: Mutex<Option<PathBuf>>,
-        picked_with: Mutex<Option<(String, Option<isize>)>>,
+        picked_with: Mutex<Option<PickedWith>>,
     }
 
     impl Shell for FakeShell {
@@ -399,9 +406,11 @@ mod tests {
         fn pick_folder(
             &self,
             title: &str,
+            start: Option<&Path>,
             owner: Option<isize>,
         ) -> Result<Option<PathBuf>, String> {
-            *self.picked_with.lock().unwrap() = Some((title.to_string(), owner));
+            *self.picked_with.lock().unwrap() =
+                Some((title.to_string(), start.map(Path::to_path_buf), owner));
             Ok(self.pick.lock().unwrap().clone())
         }
     }
@@ -477,14 +486,24 @@ mod tests {
         assert_eq!(result, Some(chosen.to_string_lossy().into_owned()));
         assert_eq!(
             engine.settings_state()["config"]["local"]["modelFolder"],
-            json!(chosen)
+            json!(chosen.clone())
         );
-        let (title, owner) = shell.picked_with.lock().unwrap().clone().unwrap();
+        let (title, _first_start, owner) = shell.picked_with.lock().unwrap().clone().unwrap();
         assert_eq!(
             title,
             catalog.text(engine.ui().locale, crate::catalog::keys::FOLDER_MODELS)
         );
         assert_eq!(owner, Some(42));
+        // The next time, the panel opens in the folder the setting holds now.
+        *shell.pick.lock().unwrap() = None;
+        assert_eq!(
+            ops::choose_folder(&*engine, &shell, &catalog, "models", Some(42)).unwrap(),
+            None
+        );
+        assert_eq!(
+            shell.picked_with.lock().unwrap().as_ref().unwrap().1,
+            Some(chosen.clone())
+        );
         // The page hears about it through settings://state.
         let last = recorder.settings.lock().unwrap().last().cloned().unwrap();
         assert_eq!(last["config"]["local"]["modelFolder"], json!(chosen));
