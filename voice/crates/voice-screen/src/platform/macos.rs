@@ -1,7 +1,6 @@
 //! The macOS backend: Core Video pixel buffers, the synthetic screen for tests, VideoToolbox for
 //! video, Vision for text, ImageIO for JPEG and Core Graphics for the displays. The real screen is
-//! ScreenCaptureKit, which comes with its own change: until then only the synthetic screen has a
-//! source. The Screen Recording grant it will need is checked by `Displays::missing_permission`,
+//! ScreenCaptureKit; it needs the Screen Recording grant, which `Displays::missing_permission` checks
 //! without ever asking for it.
 
 use std::path::Path;
@@ -14,6 +13,7 @@ use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 
 use crate::args::TestSpec;
 use crate::capture::mac::PixelBuffer;
+use crate::capture::sck::{self, ScreenSource};
 use crate::capture::{monitors_mac, session_mac, synthetic_mac};
 use crate::clock_mac;
 use crate::frames::jpeg_mac;
@@ -135,7 +135,7 @@ impl Platform for MacPlatform {
     ) -> Box<dyn Source> {
         match &options.test {
             Some(spec) => Box::new(synthetic_mac::new(to_main, spec)),
-            None => Box::new(NoCapture),
+            None => Box::new(ScreenSource::new(to_main, options.exclude_pids.clone())),
         }
     }
 
@@ -162,20 +162,6 @@ impl Platform for MacPlatform {
     fn video_maker(&self, _device: &MacDevice) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
         Some(Box::new(MacVideoMaker::new()))
     }
-}
-
-/// The real screen until ScreenCaptureKit lands. It only answers if something asks for it
-/// without a test spec.
-struct NoCapture;
-
-impl Source for NoCapture {
-    fn start(&mut self, _monitor: &MonitorInfo, _generation: u64) -> Result<(), PlatformError> {
-        Err(PlatformError::new(
-            "capturing the real screen isn't available on macOS yet",
-        ))
-    }
-
-    fn stop(&mut self) {}
 }
 
 /// macOS' `mach_continuous_time` and wall clock, as `clock_mac` reads them.
@@ -221,7 +207,13 @@ impl Displays for MacDisplays {
     }
 
     fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo> {
-        monitors_mac::z_order(exclude_pids)
+        // The windows the recording leaves out are the ones the stream's filter leaves out: this
+        // process and Voice's, the pids named, and Rukoo by its bundle id when it's running.
+        let mut pids = ScreenSource::excluded_pids(exclude_pids);
+        if (self.granted)() {
+            pids.extend(sck::bundle_pids());
+        }
+        monitors_mac::z_order(&pids)
     }
 
     fn cursor_monitor(&self) -> Option<String> {
