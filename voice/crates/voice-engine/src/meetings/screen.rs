@@ -183,6 +183,9 @@ struct ScreenLive {
     /// lack of it. Retrying can't help, and the drops that follow aren't a graphics device.
     no_permission: bool,
     monitors: Option<usize>,
+    /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
+    /// its command line. Another process, or other pids, and the watchdog tells it again.
+    excluded: Option<(u32, Vec<u32>)>,
 }
 
 impl ScreenLive {
@@ -205,6 +208,7 @@ impl ScreenLive {
             gave_up: false,
             no_permission: false,
             monitors: None,
+            excluded: None,
         }
     }
 
@@ -414,9 +418,9 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
-    /// The pids the screen process leaves out of its capture. A launch reads them; a screen
-    /// process that already records learns nothing new (a Rukoo that reconnects mid-meeting with
-    /// another pid isn't followed yet).
+    /// The pids the screen process leaves out of its capture. A launch passes them on its
+    /// command line, and the watchdog sends the running process `exclude` when they change, as
+    /// when a Rukoo connects, reconnects with another pid or quits mid-meeting.
     pub fn set_exclude_pids(&self, pids: ExcludePids) {
         *lock(&self.exclude_pids) = Some(pids);
     }
@@ -428,9 +432,39 @@ impl ScreenSupervisor {
     }
 
     fn exclude_pids(&self) -> Vec<u32> {
-        lock(&self.exclude_pids)
+        let mut pids = lock(&self.exclude_pids)
             .as_ref()
-            .map_or_else(Vec::new, |pids| pids())
+            .map_or_else(Vec::new, |pids| pids());
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+
+    /// Tells the running screen process which pids to leave out. A process that doesn't know
+    /// the command, from an older Voice, keeps what its command line said; only a request that
+    /// didn't arrive is tried again on the next round.
+    fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
+        let reply = match request(
+            file,
+            json!({ "cmd": "exclude", "pids": pids }),
+            REQUEST_WAIT,
+        ) {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::warn!("screen: {id}: couldn't send the pids to leave out: {e}");
+                return;
+            }
+        };
+        if reply["ok"] != true {
+            log::warn!("screen: {id}: the screen process refused the pids to leave out: {reply}");
+        }
+        let mut slot = self.lock();
+        if let Some(live) = slot
+            .as_mut()
+            .filter(|l| l.id == id && l.file.as_ref() == Some(file))
+        {
+            live.excluded = Some((file.pid, pids));
+        }
     }
 
     pub fn ack_mode(&self, id: &str, request: &str, connection: u64) {
@@ -1507,6 +1541,8 @@ impl ScreenSupervisor {
     /// One watchdog round. The status request runs without the slot's lock, so a screen process
     /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
     fn check(&self) {
+        // Read before the slot's lock: the bridge answers it under a lock of its own.
+        let wanted = self.exclude_pids();
         let (id, file, exited, mut changes) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
@@ -1551,7 +1587,13 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
+            let exclude = file
+                .clone()
+                .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
             drop(slot);
+            if let Some(file) = exclude {
+                self.send_exclude(&id, &file, wanted);
+            }
             self.emit_all(changes);
             return;
         }

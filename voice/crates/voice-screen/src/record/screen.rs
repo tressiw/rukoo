@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
-use voice_screen_files::control::Request;
+use voice_screen_files::control::{self, Request};
 use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{JournalWriter, Line};
@@ -1541,6 +1541,21 @@ impl<P: Platform> Screen<P> {
                 self.request_stop(t, "meeting", Some(request.reply));
                 return;
             }
+            // Voice's connected Rukoo clients changed: their windows stay out from now on. The
+            // port checked the list.
+            Some("exclude") => match control::excluded_pids(&request.body) {
+                Some(pids) => {
+                    if pids != self.exclude_pids {
+                        log(format_args!("leaving out the windows of pids {pids:?}"));
+                    }
+                    if let Some(source) = self.source.as_mut() {
+                        source.exclude(&pids);
+                    }
+                    self.exclude_pids = pids;
+                    json!({ "ok": true })
+                }
+                None => error("bad_request"),
+            },
             Some(_) => error("unknown_command"),
             None => error("bad_request"),
         };

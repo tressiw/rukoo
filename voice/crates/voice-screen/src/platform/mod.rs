@@ -83,6 +83,9 @@ pub trait Source: Send {
     fn health(&mut self) -> Option<crate::record::CaptureStop> {
         None
     }
+    /// The processes whose windows stay out of the recording from now on, as when a Rukoo
+    /// connects to Voice mid-meeting. A platform that can't filter by process ignores it.
+    fn exclude(&mut self, _pids: &[u32]) {}
 }
 
 /// What a source needs besides the device it captures on.

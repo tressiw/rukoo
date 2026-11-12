@@ -77,6 +77,9 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 /// every 10 s, without a journal line; a restarted stream that delivers nothing either is
 /// reported as stopped.
 const STALL_AFTER: Duration = Duration::from_secs(10);
+/// How often the running stream's exclusions are read again: an app that starts, restarts or
+/// connects after the stream began must stay out of the recording too.
+const REFRESH_EVERY: Duration = Duration::from_secs(2);
 
 /// The real screen. `start` hands the work to a thread of its own, so the main thread, which
 /// answers the control port, never waits on ScreenCaptureKit to start a stream: the shareable
@@ -90,6 +93,8 @@ pub struct ScreenSource {
     shared: Arc<Mutex<Shared>>,
     /// The display and size of the last start, for starting a stalled stream again.
     last_start: Option<(u32, (u32, u32))>,
+    /// When the exclusions are read again next, on the awake clock.
+    next_refresh: u64,
 }
 
 /// What the main thread and a starting thread share.
@@ -99,8 +104,14 @@ struct Shared {
     /// another generation stops its stream again.
     wanted: u64,
     live: Option<Live>,
-    /// A start that failed, kept for `health` too: its event can be lost in a full queue.
+    /// A start that failed, kept for `health` too: its event can be lost in a full queue. A
+    /// re-read of the exclusions that ScreenCaptureKit refused for the permission puts its stop
+    /// here as well.
     failed: Option<(u64, CaptureStop)>,
+    /// A re-read of the exclusions runs.
+    refreshing: bool,
+    /// The last reason a re-read failed, so the log says it once.
+    refresh_error: Option<String>,
 }
 
 /// A running stream and what it needs to keep running.
@@ -110,6 +121,9 @@ struct Live {
     started: u64,
     /// The stream was started again after the one before it stalled.
     restarted: bool,
+    display: u32,
+    /// What the stream's filter leaves out.
+    applied: Matched,
     stream: Retained<SCStream>,
     /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
     /// stream retains its delegate isn't in the header.
@@ -130,6 +144,41 @@ impl ScreenSource {
             exclude_pids,
             shared: Arc::new(Mutex::new(Shared::default())),
             last_start: None,
+            next_refresh: 0,
+        }
+    }
+
+    /// Reads the shareable content again on a thread of its own, at most every `REFRESH_EVERY`
+    /// and one read at a time, and gives the running stream a new filter when what it must leave
+    /// out changed.
+    fn refresh(&mut self) {
+        let now = clock_mac::awake_100ns();
+        if now < self.next_refresh {
+            return;
+        }
+        self.next_refresh = now + REFRESH_EVERY.as_nanos() as u64 / 100;
+        let generation = {
+            let mut shared = lock(&self.shared);
+            let Some(live) = shared.live.as_ref() else {
+                return;
+            };
+            if shared.refreshing {
+                return;
+            }
+            let generation = live.generation;
+            shared.refreshing = true;
+            generation
+        };
+        let job = RefreshJob {
+            generation,
+            pids: ScreenSource::excluded_pids(&self.exclude_pids),
+            shared: self.shared.clone(),
+        };
+        let spawned = std::thread::Builder::new()
+            .name("screen-filter".into())
+            .spawn(move || job.run());
+        if spawned.is_err() {
+            lock(&self.shared).refreshing = false;
         }
     }
 
@@ -203,7 +252,14 @@ impl Source for ScreenSource {
         }
     }
 
+    fn exclude(&mut self, pids: &[u32]) {
+        self.exclude_pids = pids.to_vec();
+        // The next tick reads the exclusions again.
+        self.next_refresh = 0;
+    }
+
     fn health(&mut self) -> Option<CaptureStop> {
+        self.refresh();
         let mut shared = lock(&self.shared);
         let wanted = shared.wanted;
         if let Some((generation, stop)) = shared.failed.take() {
@@ -243,6 +299,110 @@ impl Source for ScreenSource {
                 why: e.to_string(),
                 permission_lost: false,
             }),
+        }
+    }
+}
+
+/// One re-read of the exclusions of a running stream.
+struct RefreshJob {
+    generation: u64,
+    pids: Vec<u32>,
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl RefreshJob {
+    fn run(self) {
+        self.refresh();
+        lock(&self.shared).refreshing = false;
+    }
+
+    fn refresh(&self) {
+        let content = match shareable() {
+            Ok(content) => content,
+            Err(e) => {
+                let mut shared = lock(&self.shared);
+                if e.permission && shared.wanted == self.generation {
+                    // The grant is gone: a running stream doesn't stop by itself when it is
+                    // revoked, so this ends it.
+                    shared.failed = Some((
+                        self.generation,
+                        CaptureStop {
+                            why: e.to_string(),
+                            permission_lost: true,
+                        },
+                    ));
+                } else if shared.refresh_error.as_deref() != Some(e.message.as_str()) {
+                    crate::log(format_args!(
+                        "can't read the screen's applications again: {e}"
+                    ));
+                    shared.refresh_error = Some(e.message.clone());
+                }
+                return;
+            }
+        };
+        let exclusions = Exclusions::of(&content, &self.pids);
+        let (stream, display) = {
+            let mut shared = lock(&self.shared);
+            shared.refresh_error = None;
+            let Some(live) = shared
+                .live
+                .as_ref()
+                .filter(|live| live.generation == self.generation)
+            else {
+                return;
+            };
+            if live.applied == exclusions.matched {
+                return;
+            }
+            (live.stream.clone(), live.display)
+        };
+        let Some(display) = unsafe { content.displays() }
+            .to_vec()
+            .into_iter()
+            .find(|d| unsafe { d.displayID() } == display)
+        else {
+            // The display went; the monitor rules take it from here.
+            return;
+        };
+        // SAFETY: as at the start: the objects live until the filter retained them.
+        let filter = unsafe {
+            SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+                SCContentFilter::alloc(),
+                &display,
+                &NSArray::from_retained_slice(&exclusions.applications),
+                &NSArray::<SCWindow>::from_slice(&[]),
+            )
+        };
+        let updated = wait_for("the capture's filter wasn't updated", ANSWER_WAIT, |done| {
+            // SAFETY: the handler is called once the filter is in place or refused.
+            unsafe { stream.updateContentFilter_completionHandler(&filter, Some(done)) };
+        });
+        match updated {
+            Ok(()) => {
+                crate::log(format_args!("the capture now {}", exclusions.describe()));
+                let mut shared = lock(&self.shared);
+                if let Some(live) = shared
+                    .live
+                    .as_mut()
+                    .filter(|live| live.generation == self.generation)
+                {
+                    live.applied = exclusions.matched;
+                }
+            }
+            Err(e) => {
+                let mut shared = lock(&self.shared);
+                if e.permission && shared.wanted == self.generation {
+                    shared.failed = Some((
+                        self.generation,
+                        CaptureStop {
+                            why: e.to_string(),
+                            permission_lost: true,
+                        },
+                    ));
+                } else {
+                    crate::log(format_args!("{e}"));
+                }
+            }
         }
     }
 }
@@ -397,6 +557,8 @@ impl StartJob {
             generation: self.generation,
             started: clock_mac::awake_100ns(),
             restarted: self.restarted,
+            display: self.display,
+            applied: exclusions.matched.clone(),
             stream,
             output,
             _queue: queue,

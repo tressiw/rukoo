@@ -320,6 +320,8 @@ struct FakeSource {
     /// The stop never reaches the queue, as when it is full; `health` has it.
     loses_notice: bool,
     kept: Arc<Mutex<Option<CaptureStop>>>,
+    /// The pids `exclude` gave the source.
+    excluded: Arc<Mutex<Option<Vec<u32>>>>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
@@ -393,6 +395,10 @@ impl Source for FakeSource {
     fn health(&mut self) -> Option<CaptureStop> {
         self.kept.lock().unwrap().take()
     }
+
+    fn exclude(&mut self, pids: &[u32]) {
+        *self.excluded.lock().unwrap() = Some(pids.to_vec());
+    }
 }
 
 impl Drop for FakeSource {
@@ -423,6 +429,8 @@ struct FakePlatform {
     loses_notice: bool,
     /// How many times a capture was started.
     starts: Arc<AtomicU32>,
+    /// What the source's `exclude` was last given.
+    excluded: Arc<Mutex<Option<Vec<u32>>>>,
 }
 
 impl FakePlatform {
@@ -444,6 +452,7 @@ impl FakePlatform {
             refuses_for_permission: false,
             starts: Arc::new(AtomicU32::new(0)),
             loses_notice: false,
+            excluded: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -571,6 +580,7 @@ impl Platform for FakePlatform {
             starts: self.starts.clone(),
             loses_notice: self.loses_notice,
             kept: Arc::new(Mutex::new(None)),
+            excluded: self.excluded.clone(),
             worker: None,
         })
     }
@@ -1126,6 +1136,34 @@ fn the_exclusions_reach_the_display_choice() {
     meeting.line(r#"{"kind":"stop","t":4000,"wall":1790000001000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
     assert_eq!(seen.load(Ordering::SeqCst), 2);
+}
+
+/// A Rukoo that connects to Voice mid-meeting: Voice sends its pid over the control port, and
+/// the capture leaves its windows out from then on. A bad list is refused by the port.
+#[test]
+fn exclusions_arrive_over_the_control_port() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("exclude-command");
+    let platform = FakePlatform::new(true);
+    let excluded = platform.excluded.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("capture", |lines| {
+        kinds(lines).iter().any(|k| k == "capture")
+    });
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let ask = |body: serde_json::Value| {
+        voice_screen_files::control::request(file.port, &file.token, body, Duration::from_secs(5))
+            .unwrap()
+    };
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [4821, 77] }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [0] }));
+    assert_eq!(reply["error"], "bad_request", "{reply}");
+    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
 }
 
 /// Without the Screen Recording permission the session refuses before it journal anything, with
