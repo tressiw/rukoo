@@ -126,6 +126,12 @@ jobs:
       - name: Tests that skipped themselves
         if: ${{ always() }}
         run: node scripts/skip-log.mjs report
+      # THIRD_PARTY_NOTICES.md lists the crates of both shipping builds, and package.ps1 and package-macos.mjs stop when
+      # it is stale, so a dependency change has to update it in the same PR. `cargo tree --target` reads the Windows
+      # and macOS dependency graphs from the lockfile on any host: it needs those crates' sources, which it downloads,
+      # and no toolchain for the targets. `node voice/scripts/notices.mjs --update` fixes a failure.
+      - name: Third-party notices match the lockfile
+        run: node scripts/notices.mjs --check
 
   macos:
     runs-on: macos-latest
