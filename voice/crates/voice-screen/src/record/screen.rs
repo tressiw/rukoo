@@ -564,6 +564,22 @@ impl<P: Platform> Screen<P> {
         }
     }
 
+    /// macOS doesn't stop a running stream when the user switches Screen Recording off: frames
+    /// of the current screen keep coming (seen at the Mac). So the grant is checked while
+    /// capturing, every second, and its loss ends the screen part as a stop for the permission
+    /// does. The preflight can lag behind a revoke in a running process; the source's own
+    /// re-read of the shareable content, refused for the permission, catches it too
+    /// (`Source::health`).
+    fn check_permission(&mut self) {
+        if !self.capturing || !self.permission_gone() {
+            return;
+        }
+        log("Screen Recording was switched off while capturing");
+        self.end_video("error");
+        self.stop_capture();
+        self.drop_for_permission();
+    }
+
     /// Whether a real screen can't be captured by this process any more. The synthetic screen
     /// never needs a grant.
     fn permission_gone(&self) -> bool {
@@ -1293,6 +1309,7 @@ impl<P: Platform> Screen<P> {
         }
         if self.test.is_none() && now >= self.next_lock_check {
             self.check_lock();
+            self.check_permission();
         }
         if self.rebuild_at.is_some_and(|at| now >= at) {
             self.rebuild_at = None;

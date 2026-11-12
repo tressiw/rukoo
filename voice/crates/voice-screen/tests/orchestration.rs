@@ -316,6 +316,8 @@ struct FakeSource {
     says_permission: bool,
     /// Every start fails, saying the permission is gone, while the preflight still says yes.
     refuses_for_permission: bool,
+    /// After this many frames the permission goes, and the frames keep coming, as macOS does.
+    revoke_after: Option<u32>,
     starts: Arc<AtomicU32>,
     /// The stop never reaches the queue, as when it is full; `health` has it.
     loses_notice: bool,
@@ -344,6 +346,7 @@ impl Source for FakeSource {
             self.says_permission,
         );
         let (loses, kept) = (self.loses_notice, self.kept.clone());
+        let revoke_after = self.revoke_after;
         let handle = std::thread::Builder::new()
             .name("fake-screen".into())
             .spawn(move || {
@@ -364,6 +367,9 @@ impl Source for FakeSource {
                             let _ = to_main.try_send(Ev::CaptureStopped(generation, stop));
                         }
                         return;
+                    }
+                    if revoke_after == Some(sent) {
+                        allowed.store(false, Ordering::SeqCst);
                     }
                     let frame = Frame {
                         picture: (),
@@ -427,6 +433,8 @@ struct FakePlatform {
     refuses_for_permission: bool,
     /// The capture's stop notice is lost; only `health` has it.
     loses_notice: bool,
+    /// The permission goes after this many frames, and the capture goes on.
+    revoke_after: Option<u32>,
     /// How many times a capture was started.
     starts: Arc<AtomicU32>,
     /// What the source's `exclude` was last given.
@@ -452,8 +460,15 @@ impl FakePlatform {
             refuses_for_permission: false,
             starts: Arc::new(AtomicU32::new(0)),
             loses_notice: false,
+            revoke_after: None,
             excluded: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The permission goes after `frames` frames while the capture keeps delivering.
+    fn revoking_silently(mut self, frames: u32) -> FakePlatform {
+        self.revoke_after = Some(frames);
+        self
     }
 
     /// The capture's stop notice never reaches the queue.
@@ -577,6 +592,7 @@ impl Platform for FakePlatform {
             revoke_on_stop: self.revoke_on_stop,
             says_permission: self.says_permission,
             refuses_for_permission: self.refuses_for_permission,
+            revoke_after: self.revoke_after,
             starts: self.starts.clone(),
             loses_notice: self.loses_notice,
             kept: Arc::new(Mutex::new(None)),
@@ -1090,6 +1106,40 @@ fn a_monitor_that_changes_its_size_is_captured_again() {
         .position(|line| line["reason"] == "resize" && line["kind"] == "monitor")
         .unwrap();
     assert!(at("capture", resized).is_some(), "{kinds:?}");
+}
+
+/// Screen Recording switched off mid-meeting while the stream goes on delivering, as macOS lets
+/// it: the session notices the grant is gone by itself, stops capturing and ends the screen part
+/// with `no_permission`, and no frame after that is saved.
+#[test]
+fn a_grant_revoked_under_a_running_capture_ends_it() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("silent-revoke");
+    let platform = FakePlatform::new(true).revoking_silently(5);
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never noticed the revoke: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    let revoked = at("no_permission").expect("no no_permission line");
+    assert!(revoked < at("dropped").unwrap(), "{kinds:?}");
+    assert!(
+        !kinds[revoked..]
+            .iter()
+            .any(|k| k == "frame" || k == "capture"),
+        "{kinds:?}"
+    );
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
 }
 
 /// A stop whose notice the queue lost is still noticed: the tick reads the source's health, so
