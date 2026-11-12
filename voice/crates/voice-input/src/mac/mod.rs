@@ -116,10 +116,17 @@ pub(crate) trait Selection {
 /// though: Electron apps without the attribute, terminals, and apps whose
 /// selection isn't text at all. Cmd+C still works there, as it does on
 /// Windows.
-fn capture_with(source: &mut dyn Selection) -> Result<Option<String>, InputError> {
+///
+/// Only Cmd+C takes the clipboard's turn (`gate`): the Accessibility read
+/// never touches the pasteboard, so it doesn't wait for a paste's restore.
+fn capture_with(
+    source: &mut dyn Selection,
+    gate: &dyn Fn() -> clipboard::Turn,
+) -> Result<Option<String>, InputError> {
     if let Some(text) = source.accessibility().filter(|text| !text.is_empty()) {
         return Ok(Some(text));
     }
+    let _turn = gate();
     source.copy()
 }
 
@@ -151,14 +158,13 @@ pub(crate) fn capture_selection(
     before_keys: BeforeKeys,
 ) -> Result<Option<String>, InputError> {
     check()?;
-    let _turn = pasteboard::enter_gate();
     let mut keys = events::Keys;
     let mut guarded = Guarded::new(&mut keys, before_keys);
     let mut desktop = Desktop {
         timeout,
         keyboard: &mut guarded,
     };
-    capture_with(&mut desktop)
+    capture_with(&mut desktop, &pasteboard::enter_gate)
 }
 
 /// The app in front, as AppKit names it.
@@ -234,6 +240,13 @@ mod tests {
         copied: bool,
     }
 
+    /// The clipboard's turn for these tests alone.
+    static GATE: clipboard::Gate = clipboard::Gate::new();
+
+    fn capture_with(source: &mut Fake) -> Result<Option<String>, InputError> {
+        super::capture_with(source, &|| GATE.enter())
+    }
+
     impl Fake {
         fn new(accessibility: Option<&str>) -> Fake {
             Fake {
@@ -281,6 +294,23 @@ mod tests {
         let mut fake = Fake::new(None);
         assert_eq!(capture_with(&mut fake), Ok(Some("copied".to_string())));
         assert!(fake.copied);
+    }
+
+    /// A selection the Accessibility API reads doesn't wait for a paste's restore; Cmd+C does.
+    #[test]
+    fn only_cmd_c_waits_for_the_clipboard() {
+        let entered = std::cell::Cell::new(0);
+        let gate = || {
+            entered.set(entered.get() + 1);
+            GATE.enter()
+        };
+        let mut answered = Fake::new(Some("selected words"));
+        super::capture_with(&mut answered, &gate).unwrap();
+        assert_eq!(entered.get(), 0, "the Accessibility read took no turn");
+        let mut copies = Fake::new(None);
+        super::capture_with(&mut copies, &gate).unwrap();
+        assert_eq!(entered.get(), 1);
+        assert!(copies.copied);
     }
 
     #[test]
