@@ -31,7 +31,7 @@ impl Thumbnailer {
         let (width, height) = (self.width as usize, self.height as usize);
         let (thumb_width, thumb_height) = ((width / 8).max(1), (height / 8).max(1));
         let locked = picture
-            .lock()
+            .lock_read()
             .ok_or_else(|| PlatformError::new("can't read the frame for a thumbnail"))?;
         let row = locked.bytes_per_row();
         let base = locked.base();

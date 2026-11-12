@@ -2,8 +2,10 @@
 //! ScreenCaptureKit hands over and VideoToolbox takes. The synthetic screen makes BGRA ones;
 //! ScreenCaptureKit sends `420f`, bi-planar full-range YCbCr, which the encoder takes as it is and
 //! the JPEG and OCR paths convert to BGRA from. It travels from the capture's thread to the main
-//! thread and on to the encoder's, so it is declared sendable: a pixel buffer is only read after
-//! it was handed over, and Core Video's locks serialize the accesses anyway.
+//! thread and on to the encoder's, so it is declared sendable: a pixel buffer is only written
+//! before it is handed over and only read after. Core Video's lock pins the memory for the CPU;
+//! it isn't a mutex. Readers take it read-only, which leaves the surface's caches valid while the
+//! encoder reads the same IOSurface.
 
 use std::ptr::NonNull;
 
@@ -121,23 +123,36 @@ impl PixelBuffer {
         CVPixelBufferGetPixelFormatType(&self.buffer)
     }
 
-    /// Locks the buffer's memory for reading and writing until the guard drops.
+    /// Locks the buffer's memory for reading and writing until the guard drops. Only a buffer
+    /// that hasn't been handed over yet is written.
     pub fn lock(&self) -> Option<Locked<'_>> {
-        // SAFETY: the lock is balanced by the guard's `Drop`.
-        if unsafe { CVPixelBufferLockBaseAddress(&self.buffer, CVPixelBufferLockFlags(0)) } != 0 {
+        self.lock_with(CVPixelBufferLockFlags(0))
+    }
+
+    /// Locks the buffer's memory for reading only until the guard drops. `CVPixelBuffer.h`: a
+    /// reader should say so, "to avoid potentially invalidating any existing caches of the buffer
+    /// contents".
+    pub fn lock_read(&self) -> Option<Locked<'_>> {
+        self.lock_with(CVPixelBufferLockFlags::ReadOnly)
+    }
+
+    fn lock_with(&self, flags: CVPixelBufferLockFlags) -> Option<Locked<'_>> {
+        // SAFETY: the lock is balanced by the guard's `Drop`, with the same flags.
+        if unsafe { CVPixelBufferLockBaseAddress(&self.buffer, flags) } != 0 {
             return None;
         }
         // A bi-planar buffer has no single base address: its planes are read one by one.
         let base = CVPixelBufferGetBaseAddress(&self.buffer) as *mut u8;
         if base.is_null() && CVPixelBufferGetPlaneCount(&self.buffer) == 0 {
-            // SAFETY: the buffer is locked above.
-            unsafe { CVPixelBufferUnlockBaseAddress(&self.buffer, CVPixelBufferLockFlags(0)) };
+            // SAFETY: the buffer is locked above, with these flags.
+            unsafe { CVPixelBufferUnlockBaseAddress(&self.buffer, flags) };
             return None;
         }
         Some(Locked {
             buffer: &self.buffer,
             base,
             bytes_per_row: CVPixelBufferGetBytesPerRow(&self.buffer),
+            flags,
         })
     }
 
@@ -156,7 +171,7 @@ impl PixelBuffer {
     /// The picture's pixels, BGRA and rows top-down without padding. A bi-planar picture is
     /// converted, with the BT.709 matrix the capture asks the stream to use.
     pub fn pixels(&self) -> Option<Pixels> {
-        let locked = self.lock()?;
+        let locked = self.lock_read()?;
         let (width, height) = (self.width(), self.height());
         let row = width as usize * 4;
         let mut bgra = vec![0u8; row * height as usize];
@@ -235,6 +250,8 @@ pub struct Locked<'a> {
     buffer: &'a CVPixelBuffer,
     base: *mut u8,
     bytes_per_row: usize,
+    /// The lock's flags, which the unlock must repeat.
+    flags: CVPixelBufferLockFlags,
 }
 
 impl Locked<'_> {
@@ -242,7 +259,12 @@ impl Locked<'_> {
         self.base
     }
 
+    /// The memory to write, under a lock taken with `lock`.
     pub fn base_mut(&mut self) -> *mut u8 {
+        debug_assert!(
+            !self.flags.contains(CVPixelBufferLockFlags::ReadOnly),
+            "a write under a read-only lock"
+        );
         self.base
     }
 
@@ -269,8 +291,8 @@ impl Locked<'_> {
 
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
-        // SAFETY: the buffer is locked until this drop, and the flags match the lock's.
-        unsafe { CVPixelBufferUnlockBaseAddress(self.buffer, CVPixelBufferLockFlags(0)) };
+        // SAFETY: the buffer is locked until this drop, and the flags are the lock's.
+        unsafe { CVPixelBufferUnlockBaseAddress(self.buffer, self.flags) };
     }
 }
 
