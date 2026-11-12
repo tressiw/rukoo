@@ -20,6 +20,7 @@
 //! from the permission whether to record again or to end the screen part.
 
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -69,6 +70,13 @@ const ANSWER_WAIT: Duration = Duration::from_secs(5);
 const LATE_START_WAIT: Duration = Duration::from_secs(60);
 /// How long a stopping stream may take before its frames are dropped by their generation anyway.
 const STOP_WAIT: Duration = Duration::from_secs(2);
+/// A running stream that hasn't called its output for this long, idle samples included, counts
+/// as stalled and is started again. The header promises nothing about idle samples: a real
+/// capture at the Mac has to confirm how often they arrive on a still screen and across display
+/// sleep. If a still screen sends none at all, this only restarts the stream inside the source
+/// every 10 s, without a journal line; a restarted stream that delivers nothing either is
+/// reported as stopped.
+const STALL_AFTER: Duration = Duration::from_secs(10);
 
 /// The real screen. `start` hands the work to a thread of its own, so the main thread, which
 /// answers the control port, never waits on ScreenCaptureKit to start a stream: the shareable
@@ -80,6 +88,8 @@ pub struct ScreenSource {
     /// The pids from `--exclude-pid`.
     exclude_pids: Vec<u32>,
     shared: Arc<Mutex<Shared>>,
+    /// The display and size of the last start, for starting a stalled stream again.
+    last_start: Option<(u32, (u32, u32))>,
 }
 
 /// What the main thread and a starting thread share.
@@ -89,11 +99,17 @@ struct Shared {
     /// another generation stops its stream again.
     wanted: u64,
     live: Option<Live>,
+    /// A start that failed, kept for `health` too: its event can be lost in a full queue.
+    failed: Option<(u64, CaptureStop)>,
 }
 
 /// A running stream and what it needs to keep running.
 struct Live {
     generation: u64,
+    /// When the stream started, on the awake clock.
+    started: u64,
+    /// The stream was started again after the one before it stalled.
+    restarted: bool,
     stream: Retained<SCStream>,
     /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
     /// stream retains its delegate isn't in the header.
@@ -113,7 +129,33 @@ impl ScreenSource {
             to_main,
             exclude_pids,
             shared: Arc::new(Mutex::new(Shared::default())),
+            last_start: None,
         }
+    }
+
+    /// Starts `generation`'s stream on a thread of its own.
+    fn spawn(
+        &mut self,
+        display: u32,
+        fallback: (u32, u32),
+        generation: u64,
+        restarted: bool,
+    ) -> Result<(), PlatformError> {
+        self.last_start = Some((display, fallback));
+        let job = StartJob {
+            display,
+            fallback,
+            pids: ScreenSource::excluded_pids(&self.exclude_pids),
+            generation,
+            restarted,
+            to_main: self.to_main.clone(),
+            shared: self.shared.clone(),
+        };
+        std::thread::Builder::new()
+            .name("screen-start".into())
+            .spawn(move || job.run())
+            .map(|_| ())
+            .map_err(|e| PlatformError::new(format!("can't start the capture's thread: {e}")))
     }
 
     /// The pids whose windows stay out of the recording: this process, its parent (the Voice app
@@ -146,31 +188,69 @@ impl Source for ScreenSource {
             ))
         })?;
         lock(&self.shared).wanted = generation;
-        let job = StartJob {
-            display,
-            fallback: (monitor.width, monitor.height),
-            pids: ScreenSource::excluded_pids(&self.exclude_pids),
-            generation,
-            to_main: self.to_main.clone(),
-            shared: self.shared.clone(),
-        };
-        std::thread::Builder::new()
-            .name("screen-start".into())
-            .spawn(move || job.run())
-            .map_err(|e| PlatformError::new(format!("can't start the capture's thread: {e}")))?;
-        Ok(())
+        self.spawn(display, (monitor.width, monitor.height), generation, false)
     }
 
     fn stop(&mut self) {
         let live = {
             let mut shared = lock(&self.shared);
             shared.wanted = 0;
+            shared.failed = None;
             shared.live.take()
         };
         if let Some(live) = live {
             close(live);
         }
     }
+
+    fn health(&mut self) -> Option<CaptureStop> {
+        let mut shared = lock(&self.shared);
+        let wanted = shared.wanted;
+        if let Some((generation, stop)) = shared.failed.take() {
+            if generation == wanted {
+                return Some(stop);
+            }
+        }
+        let live = shared.live.as_ref()?;
+        if let Some(stop) = live.output.take_stop() {
+            return Some(stop);
+        }
+        let seen = live.output.last_callback();
+        if !stalled(seen.max(live.started), clock_mac::awake_100ns()) {
+            return None;
+        }
+        let live = shared.live.take()?;
+        drop(shared);
+        let (generation, restarted) = (live.generation, live.restarted);
+        close(live);
+        if restarted && seen == 0 {
+            return Some(CaptureStop {
+                why: format!(
+                    "the stream was started again after {} s without a sample and sent none either",
+                    STALL_AFTER.as_secs()
+                ),
+                permission_lost: false,
+            });
+        }
+        crate::log(format_args!(
+            "the stream sent nothing for {} s; starting it again",
+            STALL_AFTER.as_secs()
+        ));
+        let (display, fallback) = self.last_start?;
+        match self.spawn(display, fallback, generation, true) {
+            Ok(()) => None,
+            Err(e) => Some(CaptureStop {
+                why: e.to_string(),
+                permission_lost: false,
+            }),
+        }
+    }
+}
+
+/// Whether a stream whose last callback, or start, was at `last` on the awake clock has gone
+/// quiet for longer than `STALL_AFTER` at `now`.
+fn stalled(last: u64, now: u64) -> bool {
+    now.saturating_sub(last) > STALL_AFTER.as_nanos() as u64 / 100
 }
 
 impl Drop for ScreenSource {
@@ -186,6 +266,8 @@ struct StartJob {
     fallback: (u32, u32),
     pids: Vec<u32>,
     generation: u64,
+    /// A stream started again after the one before it stalled.
+    restarted: bool,
     to_main: SyncSender<Ev<PixelBuffer>>,
     shared: Arc<Mutex<Shared>>,
 }
@@ -214,11 +296,16 @@ impl StartJob {
     /// A start that failed, for the main thread to decide on. A start nobody wants any more
     /// says nothing.
     fn report(&self, stop: CaptureStop) {
-        if lock(&self.shared).wanted != self.generation {
+        let mut shared = lock(&self.shared);
+        if shared.wanted != self.generation {
             return;
         }
-        // Blocking: the main thread drains the queue, and it must hear of the failure.
-        let _ = self.to_main.send(Ev::CaptureStopped(self.generation, stop));
+        shared.failed = Some((self.generation, stop.clone()));
+        drop(shared);
+        // `health` hands it over too when the queue is full; the main thread takes it once.
+        let _ = self
+            .to_main
+            .try_send(Ev::CaptureStopped(self.generation, stop));
     }
 
     fn open(&self) -> Opened {
@@ -308,6 +395,8 @@ impl StartJob {
         unsafe { stream.startCaptureWithCompletionHandler(Some(&block)) };
         let live = Live {
             generation: self.generation,
+            started: clock_mac::awake_100ns(),
+            restarted: self.restarted,
             stream,
             output,
             _queue: queue,
@@ -668,6 +757,11 @@ struct OutputIvars {
     /// The dirty regions of frames that never reached the main thread; they go with the next one,
     /// so a change is never lost.
     carried: Mutex<f32>,
+    /// When the stream last called the output, idle samples included, on the awake clock; 0
+    /// before the first call.
+    seen: AtomicU64,
+    /// The delegate's stop, kept besides the event that may be lost in a full queue.
+    stop: Mutex<Option<CaptureStop>>,
 }
 
 define_class!(
@@ -696,14 +790,10 @@ define_class!(
         #[unsafe(method(stream:didStopWithError:))]
         unsafe fn stopped(&self, _stream: &SCStream, error: &NSError) {
             // The ivars live as long as the object, which `Live` holds until the stream stopped.
-            let ivars = self.ivars();
-            let _ = ivars.to_main.try_send(Ev::CaptureStopped(
-                ivars.generation,
-                CaptureStop {
-                    why: describe(error),
-                    permission_lost: permission_lost(error.code()),
-                },
-            ));
+            self.on_stop(CaptureStop {
+                why: describe(error),
+                permission_lost: permission_lost(error.code()),
+            });
         }
     }
 );
@@ -721,14 +811,44 @@ impl Output {
             width,
             height,
             carried: Mutex::new(0.0),
+            seen: AtomicU64::new(0),
+            stop: Mutex::new(None),
         });
         // SAFETY: the ivars are set, and NSObject's `init` takes no arguments.
         unsafe { msg_send![super(this), init] }
     }
 
-    /// One delivered sample. Idle frames, which say that nothing changed, are not frames.
+    /// The stream stopped by itself: kept for `health`, and sent to the main thread when the
+    /// queue has room.
+    fn on_stop(&self, stop: CaptureStop) {
+        let ivars = self.ivars();
+        *ivars.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
+        let _ = ivars
+            .to_main
+            .try_send(Ev::CaptureStopped(ivars.generation, stop));
+    }
+
+    /// The stop the delegate kept, once.
+    fn take_stop(&self) -> Option<CaptureStop> {
+        self.ivars()
+            .stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// When the stream last called the output, on the awake clock; 0 before the first call.
+    fn last_callback(&self) -> u64 {
+        self.ivars().seen.load(Ordering::Relaxed)
+    }
+
+    /// One delivered sample. Idle frames, which say that nothing changed, are not frames, but
+    /// they show that the stream lives.
     fn on_sample(&self, sample: &CMSampleBuffer) {
         let ivars = self.ivars();
+        ivars
+            .seen
+            .store(clock_mac::awake_100ns().max(1), Ordering::Relaxed);
         // A sample whose attachments can't be read counts as a frame with new content, of which
         // nothing is known about what changed.
         let info = info(sample, ivars.width, ivars.height).unwrap_or(Info {
@@ -1106,6 +1226,44 @@ mod tests {
         let ahead =
             unsafe { CMTime::new(clock_mac::awake_100ns() as i64 + 50_000_000, 10_000_000) };
         assert!(ahead.boot_time().unwrap() <= clock_mac::boot_100ns());
+    }
+
+    /// A stream is stalled once it called nothing for longer than `STALL_AFTER`.
+    #[test]
+    fn a_quiet_stream_is_stalled_after_ten_seconds() {
+        let ten_s = 100_000_000;
+        assert!(!stalled(5_000, 5_000 + ten_s));
+        assert!(stalled(5_000, 5_000 + ten_s + 1));
+        // A clock read before the callback's own time is no stall.
+        assert!(!stalled(5_000, 4_000));
+    }
+
+    /// The delegate's stop reaches the main thread through the queue, and is kept for `health`
+    /// when the queue is full, as when the main thread is busy finishing a video file.
+    #[test]
+    fn a_stop_is_kept_when_the_queue_is_full() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let output = Output::new(sender.clone(), 3, 64, 48);
+        let stop = CaptureStop {
+            why: "-3821 the system stopped the stream".into(),
+            permission_lost: false,
+        };
+        output.on_stop(stop.clone());
+        assert!(matches!(receiver.try_recv(), Ok(Ev::CaptureStopped(3, s)) if s == stop));
+        assert_eq!(output.take_stop(), Some(stop.clone()));
+        assert_eq!(output.take_stop(), None, "taken once");
+        // A full queue loses the event; `health` still finds the stop.
+        sender
+            .try_send(Ev::DeviceLost(0))
+            .expect("room for one event");
+        output.on_stop(stop.clone());
+        assert_eq!(output.take_stop(), Some(stop));
+        assert!(matches!(receiver.try_recv(), Ok(Ev::DeviceLost(0))));
+        assert!(receiver.try_recv().is_err());
+        // Any sample, an idle one too, shows the stream lives.
+        assert_eq!(output.last_callback(), 0);
+        output.on_sample(&sample(&picture(), host_time(5), &[]));
+        assert!(output.last_callback() > 0);
     }
 
     /// The codes that end the screen part, and two that don't by themselves.

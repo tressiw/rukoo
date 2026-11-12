@@ -317,6 +317,9 @@ struct FakeSource {
     /// Every start fails, saying the permission is gone, while the preflight still says yes.
     refuses_for_permission: bool,
     starts: Arc<AtomicU32>,
+    /// The stop never reaches the queue, as when it is full; `health` has it.
+    loses_notice: bool,
+    kept: Arc<Mutex<Option<CaptureStop>>>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
@@ -338,6 +341,7 @@ impl Source for FakeSource {
             self.revoke_on_stop,
             self.says_permission,
         );
+        let (loses, kept) = (self.loses_notice, self.kept.clone());
         let handle = std::thread::Builder::new()
             .name("fake-screen".into())
             .spawn(move || {
@@ -348,13 +352,15 @@ impl Source for FakeSource {
                         if revoke {
                             allowed.store(false, Ordering::SeqCst);
                         }
-                        let _ = to_main.try_send(Ev::CaptureStopped(
-                            generation,
-                            CaptureStop {
-                                why: "the capture stopped".into(),
-                                permission_lost: says,
-                            },
-                        ));
+                        let stop = CaptureStop {
+                            why: "the capture stopped".into(),
+                            permission_lost: says,
+                        };
+                        if loses {
+                            *kept.lock().unwrap() = Some(stop);
+                        } else {
+                            let _ = to_main.try_send(Ev::CaptureStopped(generation, stop));
+                        }
                         return;
                     }
                     let frame = Frame {
@@ -381,6 +387,11 @@ impl Source for FakeSource {
             stop.store(true, Ordering::SeqCst);
             let _ = handle.join();
         }
+        *self.kept.lock().unwrap() = None;
+    }
+
+    fn health(&mut self) -> Option<CaptureStop> {
+        self.kept.lock().unwrap().take()
     }
 }
 
@@ -408,6 +419,8 @@ struct FakePlatform {
     says_permission: bool,
     /// Every start is refused for the permission.
     refuses_for_permission: bool,
+    /// The capture's stop notice is lost; only `health` has it.
+    loses_notice: bool,
     /// How many times a capture was started.
     starts: Arc<AtomicU32>,
 }
@@ -430,7 +443,14 @@ impl FakePlatform {
             says_permission: false,
             refuses_for_permission: false,
             starts: Arc::new(AtomicU32::new(0)),
+            loses_notice: false,
         }
+    }
+
+    /// The capture's stop notice never reaches the queue.
+    fn losing_the_notice(mut self) -> FakePlatform {
+        self.loses_notice = true;
+        self
     }
 
     /// A capture whose every start is refused for the permission while the preflight says yes.
@@ -549,6 +569,8 @@ impl Platform for FakePlatform {
             says_permission: self.says_permission,
             refuses_for_permission: self.refuses_for_permission,
             starts: self.starts.clone(),
+            loses_notice: self.loses_notice,
+            kept: Arc::new(Mutex::new(None)),
             worker: None,
         })
     }
@@ -1058,6 +1080,33 @@ fn a_monitor_that_changes_its_size_is_captured_again() {
         .position(|line| line["reason"] == "resize" && line["kind"] == "monitor")
         .unwrap();
     assert!(at("capture", resized).is_some(), "{kinds:?}");
+}
+
+/// A stop whose notice the queue lost is still noticed: the tick reads the source's health, so
+/// a capture that ended doesn't leave a recording that looks live. Here the permission went with
+/// it, and the screen part ends as it does when the notice arrives.
+#[test]
+fn a_stop_whose_notice_was_lost_is_noticed() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("lost-notice");
+    let platform = FakePlatform::new(true)
+        .stopping_for_permission(3)
+        .losing_the_notice();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never noticed the stop: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    assert!(lines.iter().any(|line| line["kind"] == "no_permission"));
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
 }
 
 /// The exclusions the command line names reach the display choice, so a meeting started from

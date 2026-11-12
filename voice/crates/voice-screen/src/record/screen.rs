@@ -1339,6 +1339,14 @@ impl<P: Platform> Screen<P> {
         if self.capturing {
             self.check_monitor_size();
         }
+        // The capture's own stop notice shares the queue with frames and is lost when it is
+        // full, and a stream can go quiet without one: the source keeps what it noticed.
+        if self.capturing {
+            let stop = self.source.as_mut().and_then(|source| source.health());
+            if let Some(stop) = stop {
+                self.on_capture_stopped(&stop);
+            }
+        }
         if let Some(video) = &self.video {
             video.tick(self.platform.clocks().boot_100ns());
         }

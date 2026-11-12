@@ -77,6 +77,12 @@ pub trait Source: Send {
     fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError>;
     /// Stops capturing. Frames already sent may still arrive; their generation is old.
     fn stop(&mut self);
+    /// Read on every tick while capturing: a stop the capture noticed that the event queue may
+    /// have lost, or a capture that went quiet for longer than it should. A source that sends
+    /// every stop through the queue says nothing.
+    fn health(&mut self) -> Option<crate::record::CaptureStop> {
+        None
+    }
 }
 
 /// What a source needs besides the device it captures on.
