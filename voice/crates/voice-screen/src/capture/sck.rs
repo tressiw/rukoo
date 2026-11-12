@@ -507,8 +507,9 @@ impl Output {
         } else {
             info.dirty.map(|d| (carried + d).min(1.0))
         };
-        // The buffer's own size, which differs from the configured one when the display's mode
-        // changed since the stream started; the orchestration ends the video file on a change.
+        // The buffer has the configured size: `SCStream.h` says a screen sample's width and height
+        // are the configuration's. A display whose mode changes keeps it, with the new picture
+        // scaled in, until the orchestration sees the monitor's new size and starts again.
         let picture = PixelBuffer::from_image(image);
         let frame = Frame {
             width: picture.width() & !1,

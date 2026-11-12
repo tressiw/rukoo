@@ -593,8 +593,9 @@ impl<P: Platform> Screen<P> {
 
     fn on_monitor_lost(&mut self) {
         let list = self.monitors(true);
-        if list.iter().any(|m| m.id == self.monitor.id) {
-            // Still there, as after a mode change: capture it again.
+        if let Some(listed) = list.iter().find(|m| m.id == self.monitor.id) {
+            // Still there, as after a mode change: capture it again, at its size now.
+            self.monitor = listed.clone();
             self.end_video("resize");
             self.stop_capture();
             self.start_capture();
@@ -628,6 +629,32 @@ impl<P: Platform> Screen<P> {
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
         }
+    }
+
+    /// The recorded monitor changed its size: the user picked another scaling, rotated it, or
+    /// macOS switched its mode for a projector. A capture keeps the size it started with, and
+    /// ScreenCaptureKit scales the new picture into it, so the capture starts again at the new
+    /// size, in a new video file, after a `monitor` line with reason `resize`.
+    fn check_monitor_size(&mut self) {
+        let Some(listed) = self
+            .monitors(false)
+            .into_iter()
+            .find(|m| m.id == self.monitor.id)
+        else {
+            return;
+        };
+        if (listed.width, listed.height) == (self.monitor.width, self.monitor.height) {
+            return;
+        }
+        log(format_args!(
+            "{} is {}x{} now, was {}x{}",
+            listed.id, listed.width, listed.height, self.monitor.width, self.monitor.height
+        ));
+        self.end_video("resize");
+        self.stop_capture();
+        self.monitor = listed;
+        self.write_monitor("resize");
+        self.start_capture();
     }
 
     fn on_device_lost(&mut self) {
@@ -1273,7 +1300,16 @@ impl<P: Platform> Screen<P> {
         }
         if self.capture_retry_at.is_some_and(|at| now >= at) {
             self.capture_retry_at = None;
-            if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
+            let listed = self
+                .monitors(true)
+                .into_iter()
+                .find(|m| m.id == self.monitor.id);
+            if let Some(listed) = listed {
+                // Its size now, which may have changed while capture was down.
+                if (listed.width, listed.height) != (self.monitor.width, self.monitor.height) {
+                    self.monitor = listed;
+                    self.write_monitor("resize");
+                }
                 self.start_capture();
             } else {
                 // The monitor went away while capture was down: choose again.
@@ -1299,6 +1335,9 @@ impl<P: Platform> Screen<P> {
         if self.capturing && !self.monitors(false).iter().any(|m| m.id == self.monitor.id) {
             log(format_args!("{} left the monitor list", self.monitor.id));
             self.on_monitor_lost();
+        }
+        if self.capturing {
+            self.check_monitor_size();
         }
         if let Some(video) = &self.video {
             video.tick(self.platform.clocks().boot_100ns());

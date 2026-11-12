@@ -74,17 +74,20 @@ struct FakeDisplays {
     allowed: Arc<AtomicBool>,
     /// How many exclusions `z_order` was given, so a test can tell they reach it.
     windows: Arc<AtomicU32>,
+    /// The monitor's size; a test changes it as a display's mode changes.
+    size: Arc<Mutex<(u32, u32)>>,
 }
 
 impl Displays for FakeDisplays {
     fn list(&self, _test: Option<&voice_screen::args::TestSpec>) -> Vec<MonitorInfo> {
+        let (width, height) = *self.size.lock().unwrap();
         vec![MonitorInfo {
             id: MONITOR.into(),
             name: "Fake".into(),
             x: 0,
             y: 0,
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
             primary: true,
         }]
     }
@@ -419,6 +422,7 @@ impl FakePlatform {
             displays: FakeDisplays {
                 allowed: allowed.clone(),
                 windows: Arc::new(AtomicU32::new(0)),
+                size: Arc::new(Mutex::new((WIDTH, HEIGHT))),
             },
             allowed,
             stop_after: None,
@@ -1008,6 +1012,52 @@ fn a_capture_that_stops_with_its_permission_starts_again() {
     );
     assert!(!lines.iter().any(|line| line["kind"] == "no_permission"));
     assert_eq!(lines.last().unwrap()["reason"], "meeting");
+}
+
+/// A display that changes its mode mid-meeting is captured again at its new size: a `monitor`
+/// line with reason `resize`, the video file ended for it, and a new capture.
+#[test]
+fn a_monitor_that_changes_its_size_is_captured_again() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("resized");
+    let platform = FakePlatform::new(true);
+    let size = platform.displays.size.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("a video file", |lines| {
+        lines.iter().any(|line| line["kind"] == "video")
+    });
+    *size.lock().unwrap() = (WIDTH * 2, HEIGHT * 2);
+    let lines = meeting.wait_for("a second capture", |lines| {
+        kinds(lines).iter().filter(|k| *k == "capture").count() >= 2
+    });
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+    let resize = lines
+        .iter()
+        .find(|line| line["kind"] == "monitor" && line["reason"] == "resize")
+        .expect("no monitor line for the new size");
+    assert_eq!(
+        (resize["width"].as_u64(), resize["height"].as_u64()),
+        (Some(u64::from(WIDTH * 2)), Some(u64::from(HEIGHT * 2)))
+    );
+    let ended = lines
+        .iter()
+        .find(|line| line["kind"] == "video_end")
+        .expect("the video file didn't end");
+    assert_eq!(ended["reason"], "resize");
+    let kinds = kinds(&lines);
+    let at = |kind: &str, from: usize| {
+        kinds[from..]
+            .iter()
+            .position(|k| k == kind)
+            .map(|n| n + from)
+    };
+    let resized = lines
+        .iter()
+        .position(|line| line["reason"] == "resize" && line["kind"] == "monitor")
+        .unwrap();
+    assert!(at("capture", resized).is_some(), "{kinds:?}");
 }
 
 /// The exclusions the command line names reach the display choice, so a meeting started from
