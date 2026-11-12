@@ -65,10 +65,18 @@ fn modifier_mask(code: u16) -> Option<CGEventFlags> {
 /// `flagsChanged` events do. Nothing of what the user physically holds leaks
 /// in, so Cmd+V stays Cmd+V.
 pub(crate) fn events(batch: &[Stroke]) -> Vec<KeyEvent> {
+    events_of(batch)
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// [`events`], each with the index of the stroke it posts.
+fn events_of(batch: &[Stroke]) -> Vec<(usize, KeyEvent)> {
     let mut held = CGEventFlags::empty();
     let mut events = Vec::with_capacity(batch.len());
-    for stroke in batch {
-        match *stroke {
+    for (index, stroke) in batch.iter().enumerate() {
+        let event = match *stroke {
             Stroke::MacKey { code, up } => {
                 let mask = modifier_mask(code).unwrap_or_else(CGEventFlags::empty);
                 if up {
@@ -76,28 +84,40 @@ pub(crate) fn events(batch: &[Stroke]) -> Vec<KeyEvent> {
                 } else {
                     held.insert(mask);
                 }
-                events.push(KeyEvent {
+                KeyEvent {
                     code,
                     down: !up,
                     flags: held,
                     text: None,
-                });
+                }
             }
             // macOS types text with `send_text`; a lone code unit can still
             // arrive here from the Windows-shaped typing strokes, and an app
             // gets it as text either way.
-            Stroke::Unicode { unit, up } => events.push(KeyEvent {
+            Stroke::Unicode { unit, up } => KeyEvent {
                 code: UNICODE_KEY,
                 down: !up,
                 flags: held,
                 text: Some(String::from_utf16_lossy(&[unit])),
-            }),
+            },
             // A Windows virtual key means nothing to macOS, and nothing here
             // builds one: `strokes::typing` is the Windows typing path.
-            Stroke::Key { .. } => {}
-        }
+            Stroke::Key { .. } => continue,
+        };
+        events.push((index, event));
     }
     events
+}
+
+/// The events that let go of what a batch cut off before stroke `failed` still holds down, so a
+/// Cmd+V that stopped halfway can't leave Command down, as `win.rs` does after a short
+/// `SendInput`.
+fn cut_off(batch: &[Stroke], failed: usize) -> Vec<KeyEvent> {
+    let sent = &batch[..failed];
+    // Built after what went out, so each release carries the modifiers still down at that point.
+    let mut whole = sent.to_vec();
+    whole.extend(strokes::release_after(sent));
+    events(&whole).split_off(events(sent).len())
 }
 
 /// What one batch of typing posts.
@@ -178,8 +198,13 @@ pub(crate) struct Keys;
 impl Keyboard for Keys {
     fn send(&mut self, batch: &[Stroke]) -> Result<(), InputError> {
         let source = private_source()?;
-        for event in events(batch) {
-            post(&source, &event)?;
+        for (index, event) in events_of(batch) {
+            if let Err(err) = post(&source, &event) {
+                for undo in cut_off(batch, index) {
+                    let _ = post(&source, &undo);
+                }
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -315,6 +340,26 @@ mod tests {
             assert!(!event.flags.contains(Flags::MaskControl));
             assert!(!event.flags.contains(Flags::MaskShift));
         }
+    }
+
+    /// Cmd+V stopped after Command and V went down: both come up again, V first, and the
+    /// Command key's release carries no flag.
+    #[test]
+    fn a_cut_off_chord_lets_go_of_what_it_held() {
+        let paste = strokes::paste();
+        let undo: Vec<(u16, bool, Flags)> = cut_off(&paste, 2)
+            .into_iter()
+            .map(|e| (e.code, e.down, e.flags))
+            .collect();
+        assert_eq!(
+            undo,
+            [
+                (0x09, false, Flags::MaskCommand),
+                (0x37, false, Flags::empty())
+            ]
+        );
+        assert!(cut_off(&paste, 0).is_empty(), "nothing went down");
+        assert_eq!(cut_off(&paste, 1).len(), 1, "only Command");
     }
 
     #[test]
