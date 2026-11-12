@@ -537,6 +537,10 @@ fn worker_command(exe: &Path) -> Command {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The worker ends with Voice, also when Voice is hard-killed. Windows does that with the job
+    // object instead.
+    #[cfg(unix)]
+    command.env(super::parent::PARENT_PID, std::process::id().to_string());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
