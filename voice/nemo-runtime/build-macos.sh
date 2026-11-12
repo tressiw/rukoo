@@ -61,7 +61,7 @@ SOURCE=$(absolute "$SOURCE")
 WORK=$(dirname "$OUT")
 mkdir -p "$WORK"
 
-# Voice ships Apple Silicon only (plan D1); an Intel runner would quietly produce x86_64 dylibs.
+# Voice ships Apple Silicon only, so an Intel runner would quietly produce x86_64 dylibs.
 if [ "$(uname -m)" != "arm64" ]; then
   echo "[nemo-runtime] this builds the arm64 runtime and needs an Apple Silicon machine, not $(uname -m)" >&2
   exit 1
