@@ -880,16 +880,18 @@ impl Pill {
     }
 }
 
-/// Which native button window took the pointer.
+/// Which native button window took the pointer. Only Windows has those windows; the pill's tests cover
+/// this on every platform until the macOS panels exist.
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Stop,
     Screen,
 }
 
+#[cfg(any(windows, test))]
 impl Target {
     /// `pill://pointer`'s `target`.
-    #[cfg_attr(not(windows), allow(dead_code))]
     fn as_str(self) -> &'static str {
         match self {
             Target::Stop => "stop",

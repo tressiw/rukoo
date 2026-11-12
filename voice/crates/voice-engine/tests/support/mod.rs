@@ -857,6 +857,19 @@ pub const BUCKET: &str = "test";
 pub const ACCESS_KEY: &str = "test";
 pub const BUCKET_SECRET: &str = "test-secret-4711";
 
+/// True, after printing why, when CI's host probe found the host too stalled for timing windows
+/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
+/// tight window on a late tick returns early on it. Windows and Linux CI never set it.
+pub fn skip_on_slow_host(test: &str) -> bool {
+    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    if slow {
+        eprintln!(
+            "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
+        );
+    }
+    slow
+}
+
 /// A fake S3 on a free port of this computer, objects in memory.
 pub fn fake_s3() -> voice_s3_fake::FakeS3 {
     voice_s3_fake::FakeS3::start(BUCKET, ACCESS_KEY, None).expect("the fake S3 starts")

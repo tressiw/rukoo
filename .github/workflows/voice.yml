@@ -111,3 +111,47 @@ jobs:
       # the transcript pipeline, the screen folder format and bucket sync must behave the same on Linux, so their tests
       # run here too. Bucket sync's tests run against voice-s3-fake; only its DPAPI cases are Windows-only.
       - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files -p voice-sync -p voice-s3-fake
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: voice
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup component add rustfmt clippy
+      # The local speech worker links sherpa-onnx statically. sherpa-onnx-sys' build script downloads the pinned
+      # archive into target/sherpa-onnx-prebuilt and unpacks it there, once per target folder; a restored cache
+      # already holds the unpacked lib/ folder, which is what makes it skip both the download and the unpacking.
+      # The key names what pins the archive's version (voice-local's dependency), so a new version downloads once.
+      - name: Cache the prebuilt sherpa-onnx libraries
+        uses: actions/cache@v6
+        with:
+          path: voice/target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-${{ runner.arch }}-${{ hashFiles('voice/crates/voice-local/Cargo.toml') }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Hosted macOS runners wake sleeping threads up to 100 ms late, which fails tests whose windows are 20 to 300 ms.
+      # This prints what the host looks like (model, CPUs, priority, 20 timed sleeps with both mach counters) and, when
+      # the worst sleep is more than 50 ms late, sets RUKOO_VOICE_SLOW_HOST=1: the tests that read it skip themselves and
+      # a warning names them. Windows and Linux never set it, so they stay the gate for those behaviours.
+      - name: Probe how well this host keeps time
+        run: node scripts/host-probe.mjs
+      # Unlike Windows, this job fetches no speaker label assets: the NeMo runtime those tests need is a Windows
+      # build until the arm64 one is published, so they skip. The screen process's tests wait for its macOS port.
+      - run: cargo test --workspace --no-fail-fast
+      # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
+      - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
+      # It needs Node's global WebSocket (Node 22 or later) and no npm packages.
+      - name: Bridge interop between Rukoo and Voice
+        working-directory: .
+        env:
+          RUKOO_VOICE_INTEROP: '1'
+        run: node --test test/voice-interop.test.js

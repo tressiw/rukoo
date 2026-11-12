@@ -45,12 +45,13 @@ fn the_state_has_every_part_api_md_lists() {
     ] {
         assert!(state.get(field).is_some(), "{field} is missing");
     }
-    // Every feature is in this Voice; bucket sync shows where its store opened (`sync.available`).
+    // Every feature is in this Voice; bucket sync shows only where this platform can keep its keys
+    // safe, which Settings report as `sync.available` (voice-sync's protector decides both).
     assert_eq!(
         state["features"],
         json!({"screen": true, "speakers": true, "sync": state["sync"]["available"]})
     );
-    assert_eq!(state["features"]["sync"], cfg!(windows));
+    assert_eq!(state["features"]["sync"], voice_sync::protect::SUPPORTED);
     // No screen program here, so no probe answered.
     assert_eq!(state["screen"], Value::Null);
     assert_eq!(state["config"]["meetings"]["screen"], "off");

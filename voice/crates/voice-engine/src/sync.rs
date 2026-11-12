@@ -198,6 +198,12 @@ pub(crate) fn sync_view(core: &Core) -> Value {
     if paused {
         view["state"] = json!("paused");
     }
+    // A platform whose protector can't keep the keys from other users offers no bucket sync, whatever
+    // store opened here: Settings show the sync card only where this is true (voice/ui/API.md,
+    // `sync.available` and `features.sync`).
+    if !voice_sync::protect::SUPPORTED {
+        view["available"] = json!(false);
+    }
     // API.md shows the key's first 8 hex characters, enough to tell keys apart.
     if let Some(id) = view["key"]["id"].as_str() {
         view["key"]["id"] = json!(short_id(id));

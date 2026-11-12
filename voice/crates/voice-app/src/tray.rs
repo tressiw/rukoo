@@ -118,7 +118,9 @@ pub fn cut(text: &str, max: usize) -> String {
     out
 }
 
-/// Copies `text` into a fixed, NUL-terminated UTF-16 field such as NOTIFYICONDATAW's.
+/// Copies `text` into a fixed, NUL-terminated UTF-16 field such as NOTIFYICONDATAW's. Windows' balloon
+/// is its only caller; the test that pins the cutting runs on every platform.
+#[cfg(any(windows, test))]
 pub fn fill_wide(field: &mut [u16], text: &str) {
     let text = cut(text, field.len().saturating_sub(1));
     field.fill(0);
@@ -131,6 +133,8 @@ pub struct Tray {
     app: AppHandle,
     catalog: Arc<Catalog>,
     state: Mutex<(TrayState, Locale)>,
+    /// The tray icon's window, which a Windows balloon needs.
+    #[cfg(windows)]
     icon_window: Mutex<isize>,
 }
 
@@ -140,6 +144,7 @@ impl Tray {
             app: app.clone(),
             catalog,
             state: Mutex::new((TrayState::default(), locale)),
+            #[cfg(windows)]
             icon_window: Mutex::new(0),
         })
     }

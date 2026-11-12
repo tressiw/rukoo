@@ -102,6 +102,8 @@ fn foreground() -> Value {
 fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, String> {
     let pill = pill.clone();
     on_main(app, move || {
+        // Only Windows has the stop and screen windows, so elsewhere nothing changes this value.
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut styles =
             json!({ "pill": pill.window().and_then(|w| crate::pill::window::styles(&w)) });
         #[cfg(windows)]
@@ -112,6 +114,8 @@ fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, St
     })
 }
 
+/// The PNG a capture wrote, as the self-test reports it. Only Windows can capture a window here.
+#[cfg(windows)]
 fn png_info(path: &Path) -> Value {
     let bytes = fs::read(path).unwrap_or_default();
     let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() > 24;

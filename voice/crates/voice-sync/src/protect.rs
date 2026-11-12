@@ -241,6 +241,13 @@ impl Protector for Unsupported {
     }
 }
 
+/// Whether this platform has a protector that keeps sync's keys from other users: DPAPI on Windows,
+/// and nothing yet on macOS (its Keychain protector comes with the port) or on Linux.
+///
+/// Settings read this to decide whether to offer bucket sync at all (`features.sync` and
+/// `sync.available` in voice/ui/API.md), so it changes in the same place as the protector does.
+pub const SUPPORTED: bool = cfg!(windows);
+
 /// Dpapi on Windows; elsewhere a protector that refuses ("Bucket sync needs Windows.").
 pub fn system() -> Arc<dyn Protector> {
     #[cfg(windows)]

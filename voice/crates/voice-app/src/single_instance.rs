@@ -4,6 +4,9 @@
 use std::path::Path;
 
 /// The mutex and event names for a data folder. Windows paths ignore case and both slashes.
+///
+/// Windows only, plus the test that pins the names on every platform.
+#[cfg(any(windows, test))]
 pub fn names(data_dir: &Path) -> (String, String) {
     let path = data_dir.to_string_lossy().replace('/', "\\").to_lowercase();
     let path = path.trim_end_matches('\\');
@@ -19,6 +22,9 @@ pub fn names(data_dir: &Path) -> (String, String) {
 
 pub enum Instance {
     First(Guard),
+    /// Only a Windows launch finds another Voice on the same data folder; macOS waits for its lock
+    /// file and socket. `main.rs` matches it on every platform, so the variant stays.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Running,
 }
 
