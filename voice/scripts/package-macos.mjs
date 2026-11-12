@@ -35,6 +35,7 @@
 // The checks, all of which fail the script, are the macOS counterparts of package.ps1's:
 //   - the Info.plist keys (LSUIElement, the two usage strings, the category, the development region, the minimum
 //     system version) with `plutil -extract`, and the English and Dutch InfoPlist.strings;
+//   - the app icon: Contents/Resources/icon.icns is voice-app/icons/icon.icns, and CFBundleIconFile names it;
 //   - the helpers' and the dylibs' placement, and that the app and dylibs carry exactly the entitlements above with
 //     `codesign -d --entitlements`;
 //   - every Mach-O's imports with `otool -L`: only /usr/lib, /System/Library and, for the NeMo dylibs, each other
@@ -445,6 +446,7 @@ function assertPlist(appDir, version) {
     ['CFBundleIdentifier', BUNDLE_ID],
     ['CFBundleExecutable', PROGRAM],
     ['CFBundleShortVersionString', version],
+    ['CFBundleIconFile', 'icon.icns'],
     ['LSUIElement', 'true'],
     ['CFBundleDevelopmentRegion', 'en'],
     ['LSApplicationCategoryType', 'public.app-category.productivity'],
@@ -461,6 +463,17 @@ function assertPlist(appDir, version) {
   }
   ok('Info.plist', `${expected.length} keys and both usage strings`);
   return { mic, audio };
+}
+
+// The app icon Tauri copies in from `bundle.icon` (tauri.macos.conf.json names voice-app/icons/icon.icns, which
+// make-icons.js writes). Tauri puts it in Resources and names it in CFBundleIconFile, which assertPlist checks; this
+// checks that the file is the one in the repository.
+function assertIcon(appDir) {
+  const shipped = path.join(appDir, 'Contents', 'Resources', 'icon.icns');
+  if (!fs.existsSync(shipped)) throw new Error(`the bundle has no ${shipped}`);
+  const source = path.join(APP, 'icons', 'icon.icns');
+  if (sha256File(shipped) !== sha256File(source)) throw new Error(`${shipped} differs from ${source}`);
+  ok('icon', 'Contents/Resources/icon.icns is voice-app/icons/icon.icns');
 }
 
 // The English and Dutch texts macOS uses for the permission prompts. plutil reads .strings files as plists.
@@ -562,6 +575,7 @@ function assertBundle(appDir, version, runtime, signer) {
 
   const english = assertPlist(appDir, version);
   assertLocalizedStrings(appDir, english);
+  assertIcon(appDir);
 
   assertSignature(appDir, BUNDLE, { signer, entitlements: [AUDIO_INPUT], identifier: BUNDLE_ID });
   ok('entitlements', `${APP_NAME}: ${AUDIO_INPUT}`);
