@@ -14,7 +14,8 @@
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
+    NSPasteboard, NSPasteboardContentsOptions, NSPasteboardItem, NSPasteboardType,
+    NSPasteboardTypeString, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
@@ -127,10 +128,16 @@ impl Clipboard for Pasteboard {
         })
     }
 
+    /// Voice's own text stays on this Mac: with Handoff on, Universal Clipboard would offer it to
+    /// the user's other devices, where the Concealed and Transient markers mean nothing. The
+    /// count `prepareForNewContentsWithOptions` returns is the one this text keeps; the writes
+    /// after it don't change it, and a count read at the end could be someone else's copy.
     fn set_text(&mut self, text: &str) -> Result<u32, InputError> {
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
-            board.clearContents();
+            let ours = board
+                .prepareForNewContentsWithOptions(NSPasteboardContentsOptions::CurrentHostOnly)
+                as u32;
             let string = NSString::from_str(text);
             if !board.setString_forType(&string, string_type()) {
                 return Err(InputError::Clipboard(
@@ -148,7 +155,7 @@ impl Clipboard for Pasteboard {
                     )));
                 }
             }
-            Ok(count(&board))
+            Ok(ours)
         })
     }
 
