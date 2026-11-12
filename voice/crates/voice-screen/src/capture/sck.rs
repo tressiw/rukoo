@@ -131,8 +131,7 @@ impl Source for ScreenSource {
             .into_iter()
             .filter(|application| {
                 let pid = unsafe { application.processID() };
-                let bundle = unsafe { application.bundleIdentifier() }.to_string();
-                excludes(pid, &bundle, &pids)
+                excludes(pid, &bundle_id(application), &pids)
             })
             .collect();
         // SAFETY: every object lives until the filter has retained what it needs, and the empty
@@ -234,6 +233,15 @@ fn excludes(pid: i32, bundle: &str, exclude_pids: &[u32]) -> bool {
     pid > 0 && (exclude_pids.contains(&(pid as u32)) || EXCLUDED_BUNDLES.contains(&bundle))
 }
 
+/// An application's bundle id, or `""` for a process without one. The generated binding says the
+/// property is never nil and panics when it is, which a window of a process without a bundle (a
+/// Python or Java window, a binary run from a terminal) may well be: read it as optional.
+fn bundle_id(application: &SCRunningApplication) -> String {
+    // SAFETY: `bundleIdentifier` takes no arguments and returns an `NSString` or nil.
+    let bundle: Option<Retained<NSString>> = unsafe { msg_send![application, bundleIdentifier] };
+    bundle.map(|bundle| bundle.to_string()).unwrap_or_default()
+}
+
 /// The pids of the running applications that the bundle ids name, for the display choice: the
 /// windows of Rukoo and Voice don't count as the window in front. Empty when the shareable
 /// content can't be read.
@@ -244,10 +252,7 @@ pub fn bundle_pids() -> Vec<u32> {
     unsafe { content.applications() }
         .to_vec()
         .into_iter()
-        .filter(|application| {
-            let bundle = unsafe { application.bundleIdentifier() }.to_string();
-            EXCLUDED_BUNDLES.contains(&bundle.as_str())
-        })
+        .filter(|application| EXCLUDED_BUNDLES.contains(&bundle_id(application).as_str()))
         .map(|application| unsafe { application.processID() } as u32)
         .collect()
 }
@@ -672,7 +677,7 @@ mod tests {
             .filter(|application| {
                 excludes(
                     unsafe { application.processID() },
-                    &unsafe { application.bundleIdentifier() }.to_string(),
+                    &bundle_id(application),
                     &pids,
                 )
             })
