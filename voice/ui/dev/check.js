@@ -59,7 +59,12 @@ check('the Permissions group shows each macOS state and opens its pane', async (
   assert.match(await rows.nth(0).innerText(), /Records your voice for dictation and meetings\.[\s\S]*On/, 'the microphone is on');
   assert.match(await rows.nth(1).innerText(), /Unknown/, 'System Audio Recording has no preflight');
   assert.match(await rows.nth(2).innerText(), /Off/, 'Input Monitoring is off');
-  assert.match(await rows.nth(2).innerText(), /switch on Input Monitoring; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./);
+  assert.match(
+    await rows.nth(2).innerText(),
+    /Rukoo Voice reads the dictation key without it/,
+    'the row says Voice does not need Input Monitoring'
+  );
+  assert.doesNotMatch(await rows.nth(2).innerText(), /switch on Input Monitoring/, 'and never asks for it');
   assert.match(await rows.nth(3).innerText(), /On/, 'Accessibility is on');
   assert.match(await rows.nth(4).innerText(), /Not asked yet/, 'Screen Recording is not an error');
   await rows.nth(3).locator('[data-a="permission:accessibility"]').click();

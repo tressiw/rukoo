@@ -89,7 +89,7 @@
   "settings.permissions.systemAudio": "Alleen systeemaudio-opname",
   "settings.permissions.systemAudioWhy": "Neemt de andere kant van een vergadering op.",
   "settings.permissions.inputMonitoring": "Invoer vastleggen",
-  "settings.permissions.inputMonitoringWhy": "Laat Voice de dicteertoets zien terwijl een andere app vooraan staat.",
+  "settings.permissions.inputMonitoringWhy": "Andere apps kunnen erom vragen. Rukoo Voice ziet de dicteertoets zonder deze toestemming.",
   "settings.permissions.accessibility": "Apparaatbeheer en gegevenstoegang",
   "settings.permissions.accessibilityWhy": "Laat Voice tekst typen en je selectie lezen.",
   "settings.permissions.screenRecording": "Scherm- en systeemaudio-opname",

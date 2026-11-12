@@ -336,8 +336,8 @@
     "description": "Settings > Permissions: name of the Input Monitoring permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.inputMonitoringWhy": {
-    "message": "Lets Voice see the dictation key while another app is in front.",
-    "description": "Settings > Permissions: one line why Voice may need Input Monitoring. voice/ui/settings.js (PERMISSIONS)."
+    "message": "Other apps may ask for it. Rukoo Voice reads the dictation key without it.",
+    "description": "Settings > Permissions: why Input Monitoring is listed although Voice never needs it. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.accessibility": {
     "message": "Accessibility",

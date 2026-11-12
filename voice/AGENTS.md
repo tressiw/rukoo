@@ -140,7 +140,7 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
   - `voice-core`: Settings, the Ownkey import, text cleanup, providers, the local model client and the update check.
   - `voice-local`: the local speech worker, `rukoo-voice-local`, which runs Orukeet in its own process.
   - `voice-speakers`: the speaker worker, `rukoo-voice-speakers`, which loads NeMo-Speech.cpp and turns call audio into speaker probabilities. The labels themselves are made in `voice-meetings`.
-  - `voice-input`: Windows hotkeys, text insertion and selection capture.
+  - `voice-input`: hotkeys on Windows and macOS (polled key state, no hook and no Input Monitoring on a Mac), text insertion and selection capture.
   - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API, and the media Rukoo's links serve (`media.rs`).
   - `voice-sync`: bucket sync: the encryption format, the keys, the upload queue and restore. `voice-s3-fake`: the fake S3 server its tests use.
   - `voice-app`: the Tauri app, `rukoo-voice`: windows, tray and the native stop button.

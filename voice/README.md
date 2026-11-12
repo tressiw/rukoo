@@ -94,7 +94,7 @@ On its first start, Voice imports Ownkey's settings and uses the speech models O
 
 The Mac build is ad-hoc signed and not notarized, as Rukoo Mail's Mac builds are. The first time you open it, macOS says it can't check the app for malicious software. Open System Settings › Privacy & Security, find Rukoo Voice and choose Open Anyway, then open it again.
 
-macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on.
+macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on. Voice doesn't need Input Monitoring: it reads the dictation key without it.
 
 ## How it's built
 
