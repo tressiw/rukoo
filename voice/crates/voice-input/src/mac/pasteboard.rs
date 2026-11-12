@@ -13,9 +13,11 @@
 
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
+use std::sync::{Mutex, PoisonError};
+
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardContentsOptions, NSPasteboardItem, NSPasteboardType,
-    NSPasteboardTypeString, NSPasteboardWriting,
+    NSPasteboard, NSPasteboardAccessBehavior, NSPasteboardContentsOptions, NSPasteboardItem,
+    NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
@@ -96,6 +98,24 @@ pub(crate) fn plan_restore(current: u32, expected: Option<u32>) -> RestorePlan {
     }
 }
 
+/// The general pasteboard's access setting, `None` before macOS 15.4, which has no such setting.
+fn access_behavior() -> Option<NSPasteboardAccessBehavior> {
+    if objc2::available!(macos = 15.4) {
+        Some(autoreleasepool(|_| {
+            NSPasteboard::generalPasteboard().accessBehavior()
+        }))
+    } else {
+        None
+    }
+}
+
+/// Whether Voice may read what another app copied without macOS asking the user. The general
+/// pasteboard's default from macOS 15.4 is to ask at a programmatic read, and Voice's snapshot
+/// is one, so only the user's "Always allow" counts, or a system without the setting.
+pub(crate) fn reads_allowed(behavior: Option<NSPasteboardAccessBehavior>) -> bool {
+    behavior.is_none_or(|behavior| behavior == NSPasteboardAccessBehavior::AlwaysAllow)
+}
+
 /// The general pasteboard. Its methods take `&mut self` only to fit
 /// [`Clipboard`]; the pasteboard is process-wide.
 pub(crate) struct Pasteboard;
@@ -105,6 +125,10 @@ impl Clipboard for Pasteboard {
 
     fn sequence(&self) -> u32 {
         autoreleasepool(|_| count(&NSPasteboard::generalPasteboard()))
+    }
+
+    fn may_read(&self) -> bool {
+        reads_allowed(access_behavior())
     }
 
     fn snapshot(&mut self) -> Result<PasteboardSnapshot, InputError> {
@@ -301,22 +325,53 @@ pub(crate) fn wait_for_clipboard_restore() {
     drop(CLIPBOARD_GATE.enter());
 }
 
+/// The last text [`copy_hidden`] wrote, by a hash rather than the secret itself, with the change
+/// count it got. While the count is still that one, the pasteboard holds exactly that text, and
+/// [`clear_if`] needs no read to know it.
+static HIDDEN: Mutex<Option<(u64, u32)>> = Mutex::new(None);
+
+fn fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Whether the pasteboard still holds Voice's hidden text, from the change counts alone: `None`
+/// when Voice didn't write `text` itself in this run, and only a read can tell.
+pub(crate) fn still_hidden(current: u32, written: Option<u32>) -> Option<bool> {
+    written.map(|written| current == written)
+}
+
 pub(crate) fn copy_hidden(text: &str) -> Result<(), InputError> {
     // After a pending paste restore, which would otherwise put the user's old
     // clipboard back over this text.
     let _turn = CLIPBOARD_GATE.enter();
     let mut pasteboard = Pasteboard;
-    pasteboard.set_text(text).map(|_| ())
+    let written = pasteboard.set_text(text)?;
+    *HIDDEN.lock().unwrap_or_else(PoisonError::into_inner) = Some((fingerprint(text), written));
+    Ok(())
 }
 
 pub(crate) fn clear_if(text: &str) -> Result<bool, InputError> {
     let _turn = CLIPBOARD_GATE.enter();
+    let written = HIDDEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .filter(|(hash, _)| *hash == fingerprint(text))
+        .map(|(_, written)| written);
     autoreleasepool(|_| {
         let board = NSPasteboard::generalPasteboard();
         let before = count(&board);
-        let holds = board
-            .stringForType(string_type())
-            .is_some_and(|current| current.to_string() == text);
+        let holds = match still_hidden(before, written) {
+            Some(holds) => holds,
+            // Reading it would make macOS ask the user, and an alert about a code Voice copied
+            // minutes ago helps nobody: it stays.
+            None if !reads_allowed(access_behavior()) => false,
+            None => board
+                .stringForType(string_type())
+                .is_some_and(|current| current.to_string() == text),
+        };
         // Only touch the pasteboard while it still holds what Voice put there:
         // a copy that lands during this check wins, as on Windows, where the
         // clipboard stays open between the read and the empty.
@@ -352,6 +407,30 @@ mod tests {
             !may_restore(TargetState::Hung),
             "a hung app in front may still paste"
         );
+    }
+
+    #[test]
+    fn only_always_allow_lets_voice_read_unasked() {
+        assert!(reads_allowed(None), "before macOS 15.4 nothing asks");
+        assert!(reads_allowed(Some(NSPasteboardAccessBehavior::AlwaysAllow)));
+        for behavior in [
+            NSPasteboardAccessBehavior::Default,
+            NSPasteboardAccessBehavior::Ask,
+            NSPasteboardAccessBehavior::AlwaysDeny,
+        ] {
+            assert!(!reads_allowed(Some(behavior)), "{behavior:?}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_copy_is_known_by_its_change_count() {
+        assert_eq!(still_hidden(7, Some(7)), Some(true));
+        assert_eq!(
+            still_hidden(8, Some(7)),
+            Some(false),
+            "the user copied since"
+        );
+        assert_eq!(still_hidden(7, None), None, "not written in this run");
     }
 
     #[test]

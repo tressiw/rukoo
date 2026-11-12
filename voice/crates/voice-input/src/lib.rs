@@ -137,6 +137,10 @@ impl std::error::Error for InputError {}
 /// dictation stays on the clipboard then. The next paste or
 /// [`capture_selection`] waits for that restore, and so does
 /// [`wait_for_clipboard_restore`], which the app should call before quitting.
+/// On macOS 15.4 and later Voice reads nothing of the user's clipboard unless
+/// its pasteboard access is set to Always Allow, because a read would make
+/// macOS ask: it takes no snapshot then, and the dictation stays on the
+/// clipboard, as in Ownkey.
 ///
 /// [`InsertMode::Type`] sends each character as a Unicode key event, 5 ms
 /// apart, and a newline as Shift+Enter. It doesn't touch the clipboard.
