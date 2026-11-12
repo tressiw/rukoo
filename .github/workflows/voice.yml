@@ -134,6 +134,12 @@ jobs:
           key: sherpa-onnx-${{ runner.arch }}-${{ hashFiles('voice/crates/voice-local/Cargo.toml') }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Hosted macOS runners wake sleeping threads up to 100 ms late, which fails tests whose windows are 20 to 300 ms.
+      # This prints what the host looks like (model, CPUs, priority, 20 timed sleeps with both mach counters) and, when
+      # the worst sleep is more than 50 ms late, sets RUKOO_VOICE_SLOW_HOST=1: the tests that read it skip themselves and
+      # a warning names them. Windows and Linux never set it, so they stay the gate for those behaviours.
+      - name: Probe how well this host keeps time
+        run: node scripts/host-probe.mjs
       # Unlike Windows, this job fetches no speaker label assets: the NeMo runtime those tests need is a Windows
       # build until the arm64 one is published, so they skip. The screen process's tests wait for its macOS port.
       - run: cargo test --workspace --no-fail-fast

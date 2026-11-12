@@ -155,6 +155,9 @@ pub enum Locale {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiOptions {
     pub theme: Theme,
+    /// The Theme setting is System: `theme` is what the system shows now, and the windows follow
+    /// the system's changes instead of being given a fixed appearance.
+    pub theme_follows_system: bool,
     pub locale: Locale,
     pub pill_edge: Edge,
     pub hide_pill_from_capture: bool,
@@ -275,6 +278,10 @@ pub trait EngineApi: Send + Sync + 'static {
 
     // The shell.
     fn ui(&self) -> UiOptions;
+    /// The system's theme or language changed. A setting that follows the system shows the new one
+    /// in the pill and Settings, and the app re-reads [`EngineApi::ui`] when something changed. Safe
+    /// to call when nothing did.
+    fn system_looks_changed(&self);
     fn tray_state(&self) -> TrayState;
     /// Stops dictation, transcription and the bridge, and waits for the clipboard to come back.
     /// Never stops a recorder that is recording: the meeting goes on and the next start reattaches.

@@ -677,11 +677,11 @@ pub type FreeSpace = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// Plenty of room: more than every free-space floor (bucket sync holds media above 10 GiB).
 pub const ROOMY: u64 = 500 << 30;
 
-pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>);
+pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>, pub Arc<Mutex<Theme>>);
 
 impl System for FakeSystem {
     fn theme(&self) -> Theme {
-        Theme::Dark
+        *lock(&self.1)
     }
 
     fn locale(&self) -> Locale {
@@ -721,6 +721,8 @@ pub struct Harness {
     pub test_sources: Option<String>,
     /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
     pub free: Arc<Mutex<FreeSpace>>,
+    /// The theme the system shows: dark unless a test changes it with [`Harness::set_system_theme`].
+    pub system_theme: Arc<Mutex<Theme>>,
     pub screen_files: Arc<dyn ScreenFiles>,
     pub screen_media: Arc<dyn ScreenMedia>,
     pub sync_timing: SyncTiming,
@@ -739,6 +741,7 @@ impl Harness {
         let screen = Arc::new(RecordedScreen::default());
         Harness {
             free: Arc::new(Mutex::new(roomy)),
+            system_theme: Arc::new(Mutex::new(Theme::Dark)),
             screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
             screen_media: screen,
             sync_timing: SyncTiming::default(),
@@ -801,7 +804,10 @@ impl Harness {
             chime: Arc::new(ChimeHandle(Arc::clone(&self.chime))),
             autostart: Arc::new(AutostartHandle(Arc::clone(&self.autostart))),
             updates: Arc::new(UpdatesHandle(Arc::clone(&self.updates))),
-            system: Arc::new(FakeSystem(Arc::clone(&self.free))),
+            system: Arc::new(FakeSystem(
+                Arc::clone(&self.free),
+                Arc::clone(&self.system_theme),
+            )),
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
@@ -817,6 +823,10 @@ impl Harness {
     }
 
     /// Sets the free space the engine sees from now on.
+    pub fn set_system_theme(&self, theme: Theme) {
+        *lock(&self.system_theme) = theme;
+    }
+
     pub fn set_free(&self, free: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) {
         *lock(&self.free) = Arc::new(free);
     }
@@ -856,6 +866,19 @@ impl Harness {
 pub const BUCKET: &str = "test";
 pub const ACCESS_KEY: &str = "test";
 pub const BUCKET_SECRET: &str = "test-secret-4711";
+
+/// True, after printing why, when CI's host probe found the host too stalled for timing windows
+/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
+/// tight window on a late tick returns early on it. Windows and Linux CI never set it.
+pub fn skip_on_slow_host(test: &str) -> bool {
+    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    if slow {
+        eprintln!(
+            "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
+        );
+    }
+    slow
+}
 
 /// A fake S3 on a free port of this computer, objects in memory.
 pub fn fake_s3() -> voice_s3_fake::FakeS3 {
