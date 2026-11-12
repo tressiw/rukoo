@@ -1,5 +1,5 @@
 //! The client for the `rukoo-voice-speakers` worker: one process per stream, in the kill-on-close
-//! job, at below-normal priority.
+//! job on Windows and watching its parent on Unix, at below-normal priority.
 //!
 //! The protocol is voice-local's framing: one JSON request per line on stdin, raw audio bytes
 //! after a request that names `bytes`, one JSON reply line per request on stdout, and the
@@ -325,6 +325,25 @@ impl Worker {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // The worker ends with Voice, also when Voice is hard-killed.
+            command.env(
+                crate::local::parent::PARENT_PID,
+                std::process::id().to_string(),
+            );
+            // Below normal, like the Windows priority class: recognition and dictation come first
+            // when the processor is busy. A refused call keeps the default priority.
+            // SAFETY: setpriority is async-signal-safe, which is all a child may do between fork
+            // and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    let _ = libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                    Ok(())
+                });
+            }
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

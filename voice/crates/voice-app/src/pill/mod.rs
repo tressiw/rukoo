@@ -104,7 +104,7 @@ pub struct Pill {
     app: AppHandle,
     engine: EngineSlot,
     catalog: Arc<Catalog>,
-    webview_dir: PathBuf,
+    webview_dir: Option<PathBuf>,
     inner: Mutex<Inner>,
     screen_actions: Mutex<HashMap<String, ScreenChoice>>,
     screen_menu: Mutex<Option<Menu<tauri::Wry>>>,
@@ -159,7 +159,7 @@ impl Pill {
         app: AppHandle,
         engine: EngineSlot,
         catalog: Arc<Catalog>,
-        webview_dir: PathBuf,
+        webview_dir: Option<PathBuf>,
         ui: UiOptions,
     ) -> Arc<Pill> {
         let pill = Arc::new(Pill {
@@ -331,7 +331,7 @@ impl Pill {
     /// event loop's: building a WebView2 window from inside an event handler deadlocks.
     pub fn create(self: &Arc<Self>) -> tauri::Result<()> {
         let label = self.label();
-        let window =
+        let mut builder =
             WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::App("pill.html".into()))
                 .title("Rukoo Voice")
                 .inner_size(place::WINDOW_W, place::WINDOW_H)
@@ -347,9 +347,11 @@ impl Pill {
                 .focusable(false)
                 .focused(false)
                 .visible(false)
-                .disable_drag_drop_handler()
-                .data_directory(self.webview_dir.clone())
-                .build()?;
+                .disable_drag_drop_handler();
+        if let Some(dir) = &self.webview_dir {
+            builder = builder.data_directory(dir.clone());
+        }
+        let window = builder.build()?;
         let this = self.clone();
         self.app.run_on_main_thread(move || {
             window::prepare(&window);
