@@ -24,6 +24,76 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The objc2 family Tauri 2.12.5 and wry 0.57.1 build against, so the WKWebView handle is one type.
+# The same objc2 0.6 and framework versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 use, so their classes are one
+# type. The app reads its language from AppKit, gives its windows an appearance, hears the system's theme change,
+# says in an NSAlert why it can't start and posts notifications through Notification Center.
+# `objc2-user-notifications` loses its default features so it doesn't bring in Core Location for nothing.
+# The same versions tauri 2.12.5, wry and tao use, so the Settings window's NSWindow is one type.
+objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSAlert",
+  "NSAppearance",
+  "NSApplication",
+  "NSBitmapImageRep",
+  "NSColor",
+  "NSImage",
+  "NSImageRep",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSSavePanel",
+  "NSView",
+  "NSWindow",
+  "block2",
+  "objc2-core-foundation",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGSession"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSBundle",
+  "NSData",
+  "NSDictionary",
+  "NSDistributedNotificationCenter",
+  "NSError",
+  "NSGeometry",
+  "NSLocale",
+  "NSNotification",
+  "NSOperation",
+  "NSString",
+  "NSURL",
+  "block2",
+] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "WKWebView",
+  "WKSnapshotConfiguration",
+] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationSound",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # The same versions tauri 2.12.5, wry and tao use, so HWNDs and WebView2 interfaces are one type.
 webview2-com = "=0.39.1"
@@ -45,3 +115,4 @@ windows = { version = "=0.62.2", features = [
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
 ] }
+

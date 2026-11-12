@@ -20,6 +20,23 @@ voice-screen-files = { path = "../voice-screen-files" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The objc2 crates follow Tauri's and Rukoo's macOS dependencies (objc2 0.6.5, the framework
+# crates at 0.3.2), so the process shares one objc2 with the app's WebView stack.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-core-text = "=0.3.2"
+objc2-core-media = "=0.3.2"
+objc2-core-video = "=0.3.2"
+objc2-video-toolbox = "=0.3.2"
+objc2-vision = "=0.3.2"
+objc2-image-io = "=0.3.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
   "Foundation",

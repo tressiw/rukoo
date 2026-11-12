@@ -4,12 +4,15 @@
 
 mod common;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod tests {
     use std::time::{Duration, Instant};
 
     use serde_json::json;
-    use voice_screen::clockwin;
+    #[cfg(target_os = "macos")]
+    use voice_screen::clock_mac as platform_clock;
+    #[cfg(windows)]
+    use voice_screen::clockwin as platform_clock;
     use voice_screen_files::clock::{Now, ScreenClock};
     use voice_screen_files::timeline::{TimelineFollower, TimelineLine};
 
@@ -47,7 +50,7 @@ mod tests {
                     }
                     _ => {}
                 }
-                clock.feed(&line, clockwin::now());
+                clock.feed(&line, platform_clock::now());
             }
             assert!(
                 Instant::now() < deadline,
@@ -63,13 +66,13 @@ mod tests {
         let (mut follower, mut clock) = anchored(m, session);
         for _ in 0..READINGS {
             for line in follower.poll().unwrap() {
-                clock.feed(&line, clockwin::now());
+                clock.feed(&line, platform_clock::now());
             }
-            let b0 = clockwin::boot_100ns();
+            let b0 = platform_clock::boot_100ns();
             let status = m.recorder_request(json!({ "cmd": "status" }));
-            let b1 = clockwin::boot_100ns();
+            let b1 = platform_clock::boot_100ns();
             let recorder_t = status["t"].as_u64().unwrap();
-            let wall = clockwin::wall_ms();
+            let wall = platform_clock::wall_ms();
             let early = clock
                 .at(Now {
                     boot: Some(b0),
@@ -109,7 +112,7 @@ mod tests {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() {
     common::play_role();
     common::run_tests(&[common::Test {
@@ -119,8 +122,8 @@ fn main() {
     }]);
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     common::play_role();
-    println!("the clock test needs Windows; skipped");
+    println!("the clock test needs Windows or macOS; skipped");
 }

@@ -51,8 +51,9 @@ pub fn resumed_start(first_wall: u64, now_wall: u64, latest_t: u64) -> u64 {
     now_wall.saturating_sub(first_wall).max(latest_t)
 }
 
-/// Windows interrupt time in 100 ns units: counts sleep, shared by every process, read with the
-/// same counter as `Instant`. `None` elsewhere.
+/// A clock that counts sleep, in 100 ns units, shared by every process. On Windows the interrupt
+/// time; on macOS `mach_continuous_time`. `None` on Linux, whose monotonic clock stops while the
+/// computer sleeps.
 ///
 /// The recorder writes it next to `t` in its `session` and `heartbeat` lines, so another process,
 /// such as the screen recorder, can map any moment to meeting time exactly:
@@ -64,11 +65,95 @@ pub fn boot_100ns() -> Option<u64> {
     Some(unsafe { QueryInterruptTimePrecise() })
 }
 
-/// Windows interrupt time in 100 ns units: counts sleep, shared by every process, read with the
-/// same counter as `Instant`. `None` elsewhere.
-#[cfg(not(windows))]
+/// A clock that counts sleep, in 100 ns units, shared by every process: `mach_continuous_time`,
+/// the macOS counterpart of the Windows interrupt time.
+#[cfg(target_os = "macos")]
+pub fn boot_100ns() -> Option<u64> {
+    Some(mach::continuous_100ns())
+}
+
+/// `None` on Linux: its monotonic clock stops while the computer sleeps, so there is no shared
+/// counter that counts the sleep.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn boot_100ns() -> Option<u64> {
     None
+}
+
+/// macOS's `mach_timebase_info`: one tick of `mach_absolute_time` and `mach_continuous_time` is
+/// `numer / denom` nanoseconds. Apple Silicon reports 125/3, Intel Macs 1/1. Its layout is the C
+/// struct the call fills in.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timebase {
+    pub numer: u32,
+    pub denom: u32,
+}
+
+impl Timebase {
+    /// `ticks` in 100 ns units, the unit of `boot` and of the Windows interrupt time. Whole units
+    /// are dropped. An absurd tick count saturates instead of wrapping.
+    pub fn to_100ns(self, ticks: u64) -> u64 {
+        self.scale(ticks, 100)
+    }
+
+    /// `ticks` in whole milliseconds. An absurd tick count saturates instead of wrapping.
+    pub fn to_ms(self, ticks: u64) -> u64 {
+        self.scale(ticks, 1_000_000)
+    }
+
+    /// `ticks * numer / denom` nanoseconds, cut down to units of `unit` nanoseconds. The product
+    /// needs more than 64 bits for a long uptime on a fast clock, so it is taken in 128.
+    fn scale(self, ticks: u64, unit: u128) -> u64 {
+        let denom = (self.denom as u128 * unit).max(1);
+        let units = ticks as u128 * self.numer as u128 / denom;
+        units.min(u64::MAX as u128) as u64
+    }
+}
+
+/// The two macOS counters that tell sleep apart. Both count ticks since boot; the timebase turns
+/// them into time.
+#[cfg(target_os = "macos")]
+mod mach {
+    use std::sync::OnceLock;
+
+    use super::Timebase;
+
+    extern "C" {
+        /// Ticks since boot, counting the time the computer slept.
+        fn mach_continuous_time() -> u64;
+        /// Ticks since boot, stopping while the computer sleeps.
+        fn mach_absolute_time() -> u64;
+        /// The timebase in nanoseconds per tick; it never changes during a boot.
+        fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+
+    fn timebase() -> Timebase {
+        static TIMEBASE: OnceLock<Timebase> = OnceLock::new();
+        *TIMEBASE.get_or_init(|| {
+            let mut info = Timebase { numer: 1, denom: 1 };
+            // SAFETY: the call only writes the two u32 fields of `info`. Should it fail, 1/1 is
+            // what its result then stands for: nanoseconds per tick.
+            unsafe { mach_timebase_info(&mut info) };
+            info
+        })
+    }
+
+    pub(super) fn continuous_100ns() -> u64 {
+        // SAFETY: it only reads the counter.
+        let ticks = unsafe { mach_continuous_time() };
+        timebase().to_100ns(ticks)
+    }
+
+    /// `(awake, elapsed)` for [`Stamp`]: `mach_absolute_time` stops while the computer sleeps and
+    /// `mach_continuous_time` keeps counting, as the unbiased and interrupt times do on Windows.
+    /// The continuous one is read second, so it is never behind.
+    pub(super) fn sleep_clocks() -> (u64, u64) {
+        let timebase = timebase();
+        // SAFETY: they only read the counters.
+        let awake = unsafe { mach_absolute_time() };
+        let elapsed = unsafe { mach_continuous_time() };
+        (timebase.to_ms(awake), timebase.to_ms(elapsed))
+    }
 }
 
 /// Heartbeats are written this often.
@@ -118,10 +203,17 @@ fn sleep_clocks() -> (u64, u64) {
     (awake, elapsed)
 }
 
-/// Elsewhere the monotonic clock stops during sleep on Linux and macOS, and the wall clock stands
-/// in for the time that passed, so a wall-clock step counts as sleep there. Voice 0.1 records
-/// devices only on Windows.
-#[cfg(not(windows))]
+/// macOS has the same pair of counters as Windows under other names: `mach_absolute_time` stops
+/// while the computer sleeps and `mach_continuous_time` counts it, so the difference is exactly
+/// the sleep.
+#[cfg(target_os = "macos")]
+fn sleep_clocks() -> (u64, u64) {
+    mach::sleep_clocks()
+}
+
+/// Elsewhere the monotonic clock stops during sleep on Linux, and the wall clock stands in for the
+/// time that passed, so a wall-clock step counts as sleep there.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn sleep_clocks() -> (u64, u64) {
     use std::sync::OnceLock;
     static BASE: OnceLock<Instant> = OnceLock::new();
@@ -225,17 +317,107 @@ mod tests {
     }
 
     #[test]
-    fn boot_time_is_there_on_windows_only() {
+    fn boot_time_is_there_where_the_clock_counts_sleep() {
         let a = boot_100ns();
         std::thread::sleep(Duration::from_millis(30));
         let b = boot_100ns();
-        if cfg!(windows) {
+        if cfg!(windows) || cfg!(target_os = "macos") {
             let (a, b) = (a.unwrap(), b.unwrap());
             // 30 ms is 300,000 units; allow for a slow scheduler but not for a wrong unit.
             assert!(b - a >= 250_000 && b - a < 50_000_000, "{a} {b}");
         } else {
             assert_eq!((a, b), (None, None));
         }
+    }
+
+    /// A second of ticks for the timebase a Mac reports: Apple Silicon counts 24 MHz.
+    const SECOND: u64 = 24_000_000;
+
+    fn apple_silicon() -> Timebase {
+        Timebase {
+            numer: 125,
+            denom: 3,
+        }
+    }
+
+    /// A [`Stamp`] built the way [`sleep_clocks`] builds one on macOS: two tick counts through
+    /// one timebase.
+    fn mach_stamp(timebase: Timebase, awake: u64, elapsed: u64, wall: u64) -> Stamp {
+        Stamp {
+            awake: timebase.to_ms(awake),
+            elapsed: timebase.to_ms(elapsed),
+            wall,
+        }
+    }
+
+    #[test]
+    fn the_timebase_turns_ticks_into_time() {
+        // Apple Silicon: a tick is 125/3 ns, so a second is 24,000,000 ticks.
+        let apple = apple_silicon();
+        assert_eq!(apple.to_100ns(24_000_000), 10_000_000);
+        assert_eq!(apple.to_ms(SECOND), 1_000);
+        // Intel Macs and the simulator count nanoseconds.
+        let intel = Timebase { numer: 1, denom: 1 };
+        assert_eq!(intel.to_100ns(10_000), 100);
+        assert_eq!(intel.to_ms(2_500_000), 2);
+        // Whole units are dropped, never rounded up.
+        assert_eq!(apple.to_100ns(2), 0);
+        assert_eq!(intel.to_ms(999_999), 0);
+    }
+
+    #[test]
+    fn a_huge_tick_count_saturates_instead_of_wrapping() {
+        // A long uptime on a fast clock needs more than 64 bits for ticks * numer.
+        let apple = apple_silicon();
+        let exact = u64::MAX as u128 * 125 / 300;
+        assert!(exact < u64::MAX as u128);
+        assert_eq!(apple.to_100ns(u64::MAX), exact as u64);
+        // A timebase that makes every tick more than a second can't fit at all.
+        let coarse = Timebase {
+            numer: u32::MAX,
+            denom: 1,
+        };
+        assert_eq!(coarse.to_100ns(u64::MAX), u64::MAX);
+        assert_eq!(coarse.to_ms(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn two_awake_seconds_are_not_a_sleep() {
+        let timebase = apple_silicon();
+        let before = mach_stamp(timebase, SECOND, SECOND, 1_793_000_001_000);
+        let after = mach_stamp(timebase, 3 * SECOND, 3 * SECOND, 1_793_000_003_000);
+        assert_eq!((before.awake, before.elapsed), (1_000, 1_000));
+        assert_eq!((after.awake, after.elapsed), (3_000, 3_000));
+        assert_eq!(slept(&before, &after), None);
+    }
+
+    #[test]
+    fn thirty_seconds_asleep_move_the_continuous_clock_only() {
+        let timebase = apple_silicon();
+        let before = mach_stamp(timebase, SECOND, SECOND, 1_793_000_001_000);
+        // One second awake, then thirty asleep: 31 s on the continuous clock.
+        let after = mach_stamp(timebase, 2 * SECOND, 32 * SECOND, 1_793_000_032_000);
+        assert_eq!((after.awake, after.elapsed), (2_000, 32_000));
+        assert_eq!(slept(&before, &after), Some(30_000));
+        // The meeting clock jumps to what the continuous clock says, 36 s after the heartbeat.
+        assert_eq!(after_sleep(5_000, 6_000, &before, &after), 36_000);
+    }
+
+    /// The macOS counters are real: both move forward and, while the computer is awake, they move
+    /// together.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_mac_reads_both_mach_clocks() {
+        let a = Stamp::now();
+        std::thread::sleep(Duration::from_millis(30));
+        let b = Stamp::now();
+        assert!(b.awake >= a.awake && b.elapsed >= a.elapsed, "{a:?} {b:?}");
+        assert!(b.elapsed - a.elapsed >= 10, "{a:?} {b:?}");
+        // They differ by the time this Mac has slept, which doesn't change while it's awake.
+        assert!(
+            (a.elapsed - a.awake).abs_diff(b.elapsed - b.awake) <= 20,
+            "{a:?} {b:?}"
+        );
     }
 
     #[test]

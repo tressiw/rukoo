@@ -204,6 +204,14 @@ jobs:
             fi
             echo "::warning::Speaker label assets missing: ${missing[*]}. The AMI label cases and the runtime tests skip, and the test output reports them as passed."
           fi
+      # Hosted macOS runners wake sleeping threads up to 100 ms late, which fails tests whose windows are 20 to 300 ms.
+      # This prints what the host looks like (model, CPUs, priority, 20 timed sleeps with both mach counters) and, when
+      # the worst sleep is more than 50 ms late, sets RUKOO_VOICE_SLOW_HOST=1: the tests that read it skip themselves and
+      # a warning names them. Windows and Linux never set it, so they stay the gate for those behaviours.
+      - name: Probe how well this host keeps time
+        run: node scripts/host-probe.mjs
+      # The screen process's crash and clock tests run here on the synthetic screen with VideoToolbox's software
+      # encoder and Vision; its real-screen and Windows sink writer spikes stay on Windows.
       - run: cargo test --workspace --no-fail-fast
       # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
       - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen

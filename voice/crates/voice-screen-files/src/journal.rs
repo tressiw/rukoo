@@ -158,14 +158,22 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
-    /// Exclusive writer: on Windows share READ | DELETE only; cuts a last line without a newline.
-    /// `Busy` when another writer holds it. Creates `screen/` and the journal when missing.
+    /// Exclusive writer: on Windows share READ | DELETE only, elsewhere a lock on the open file.
+    /// Cuts a last line without a newline. `Busy` when another writer holds it. Creates `screen/`
+    /// and the journal when missing. Readers take no lock, so `JournalReader` keeps following it.
     pub fn open(meeting: &Path) -> Result<JournalWriter, OpenError> {
         std::fs::create_dir_all(paths::screen_dir(meeting)).map_err(OpenError::Io)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         exclusive_writer(&mut options);
         let mut file = options.open(paths::journal_path(meeting)).map_err(|e| {
+            if held_by_another_writer(&e) {
+                OpenError::Busy
+            } else {
+                OpenError::Io(e)
+            }
+        })?;
+        lock_writer(&file).map_err(|e| {
             if held_by_another_writer(&e) {
                 OpenError::Busy
             } else {
@@ -208,10 +216,38 @@ fn exclusive_writer(options: &mut OpenOptions) {
 #[cfg(not(windows))]
 fn exclusive_writer(_options: &mut OpenOptions) {}
 
-/// Windows refuses a second writer with a sharing violation.
+/// Keeps a second writer off the journal. Windows refused it at open through the share mode;
+/// elsewhere an exclusive `flock` on the open file does it, which every process sees and which
+/// ends with the process that holds it, also after a hard kill. Readers take no lock.
+///
+/// `WouldBlock`, what EWOULDBLOCK reads as, means another screen process holds the journal.
+#[cfg(unix)]
+fn lock_writer(file: &File) -> Result<(), io::Error> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: `flock` only reads the descriptor; the lock belongs to the file, not to memory.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // A signal in the call changes nothing, so try again.
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_writer(_file: &File) -> Result<(), io::Error> {
+    Ok(())
+}
+
+/// Windows refuses a second writer with a sharing violation at open; Unix with a lock it can't
+/// take ([`io::ErrorKind::WouldBlock`]).
 fn held_by_another_writer(e: &io::Error) -> bool {
     const ERROR_SHARING_VIOLATION: i32 = 32;
-    cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+    let sharing_violation = cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION);
+    sharing_violation || (cfg!(unix) && e.kind() == io::ErrorKind::WouldBlock)
 }
 
 #[derive(Debug)]
@@ -563,7 +599,6 @@ mod tests {
         assert_eq!(reader.poll().unwrap(), vec![Line::Lock { t: 4 }]);
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_second_writer_is_busy_but_readers_can_read() {
         let dir = TestDir::new("journal-busy");
