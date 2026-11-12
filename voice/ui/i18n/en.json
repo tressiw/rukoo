@@ -316,8 +316,8 @@
     "description": "Settings > Permissions: one line why Voice needs the microphone. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.systemAudio": {
-    "message": "System Audio Recording",
-    "description": "Settings > Permissions: name of the System Audio Recording permission, for the other side of a meeting. voice/ui/settings.js (PERMISSIONS)."
+    "message": "System Audio Recording Only",
+    "description": "Settings > Permissions: name of the system audio permission, as System Settings on macOS 27 shows the section of its Screen & System Audio Recording pane. macOS 26 and earlier said \"System Audio Recording\". For the other side of a meeting. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.systemAudioWhy": {
     "message": "Records the other side of a meeting.",
@@ -332,16 +332,16 @@
     "description": "Settings > Permissions: one line why Voice may need Input Monitoring. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.accessibility": {
-    "message": "Accessibility",
-    "description": "Settings > Permissions: name of the Accessibility permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+    "message": "Device Control and Data Access",
+    "description": "Settings > Permissions: name of the accessibility permission's pane in System Settings, as macOS 27 shows it. macOS 26 and earlier called it \"Accessibility\". voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.accessibilityWhy": {
     "message": "Lets Voice type the text and read your selection.",
     "description": "Settings > Permissions: one line why Voice needs Accessibility. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.screenRecording": {
-    "message": "Screen Recording",
-    "description": "Settings > Permissions: name of the Screen Recording permission, as System Settings shows it. voice/ui/settings.js (PERMISSIONS)."
+    "message": "Screen & System Audio Recording",
+    "description": "Settings > Permissions: name of the screen recording permission's pane in System Settings, as macOS 27 shows it. macOS 26 and earlier called it \"Screen Recording\", which stays Voice's own name for the meeting feature. voice/ui/settings.js (PERMISSIONS)."
   },
   "settings.permissions.screenRecordingWhy": {
     "message": "Records the screen when a meeting asks for frames or video.",
@@ -361,7 +361,7 @@
   },
   "settings.permissions.state.unknown": {
     "message": "Unknown",
-    "description": "Settings > Permissions: status pill when there is no way to tell, such as System Audio Recording before a tap can be checked. Not an error. voice/ui/settings.js (permissionStatus)."
+    "description": "Settings > Permissions: status pill when there is no way to tell, such as system audio before a tap can be checked. Not an error. voice/ui/settings.js (permissionStatus)."
   },
   "settings.permissions.denied": {
     "message": "Open System Settings and switch on {name}; if Rukoo Voice is already switched on there, remove it with the minus button and add it again.",
@@ -373,7 +373,7 @@
   },
   "settings.permissions.systemAudioUnknown": {
     "message": "macOS doesn't let Voice check this one; it asks when a meeting records the call.",
-    "description": "Settings > Permissions: note under System Audio Recording, which has no public preflight call. Not an error. voice/ui/settings.js (permissionsCard)."
+    "description": "Settings > Permissions: note under the system audio row, which has no public preflight call. Not an error. voice/ui/settings.js (permissionsCard)."
   },
   "settings.permissions.open": {
     "message": "Open",

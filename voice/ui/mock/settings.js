@@ -6,7 +6,7 @@
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
 //   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
-//   or mixed (the default) picks the states the five rows show. System Audio Recording stays unknown, as it has no
+//   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
 //   public preflight.
 //   later=1 turns every feature in state.features on; features=screen,speakers,sync turns on the ones listed.
 //   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|key|consent|mistral|stopped: Speaker labels

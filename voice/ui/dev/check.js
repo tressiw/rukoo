@@ -53,19 +53,31 @@ check('the Permissions group shows each macOS state and opens its pane', async (
   assert.equal(await page.locator('#group-permissions').count(), 0, 'no permission rows on Windows');
   await open('settings.html?mock=1&lang=en&platform=macos');
   const section = page.locator('[data-section="permissions"]');
-  assert.match(await section.innerText(), /Microphone[\s\S]*System Audio Recording[\s\S]*Input Monitoring[\s\S]*Accessibility[\s\S]*Screen Recording/);
+  assert.match(
+    await section.innerText(),
+    /Microphone[\s\S]*System Audio Recording Only[\s\S]*Input Monitoring[\s\S]*Device Control and Data Access[\s\S]*Screen & System Audio Recording/,
+    'the English rows use the macOS 27 pane names'
+  );
   const rows = section.locator('.row');
   assert.equal(await rows.count(), 5);
   assert.match(await rows.nth(0).innerText(), /Records your voice for dictation and meetings\.[\s\S]*On/, 'the microphone is on');
-  assert.match(await rows.nth(1).innerText(), /Unknown/, 'System Audio Recording has no preflight');
+  assert.match(await rows.nth(1).innerText(), /Unknown/, 'the system audio section has no preflight');
   assert.match(await rows.nth(2).innerText(), /Off/, 'Input Monitoring is off');
   assert.match(await rows.nth(2).innerText(), /switch on Input Monitoring; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./);
-  assert.match(await rows.nth(3).innerText(), /On/, 'Accessibility is on');
-  assert.match(await rows.nth(4).innerText(), /Not asked yet/, 'Screen Recording is not an error');
+  assert.match(await rows.nth(3).innerText(), /On/, 'device control and data access is on');
+  assert.match(await rows.nth(4).innerText(), /Not asked yet/, 'screen recording is not an error');
   await rows.nth(3).locator('[data-a="permission:accessibility"]').click();
   assert.ok(
     (await calls()).some(([command, args]) => command === 'settings_open_permission' && args.permission === 'accessibility'),
-    'the app opens the Accessibility pane'
+    'the app opens the Device Control and Data Access pane'
+  );
+  // The action sentence names the same pane the row does.
+  await open('settings.html?mock=1&lang=en&platform=macos&permissions=denied');
+  const english = await page.locator('[data-section="permissions"]').innerText();
+  assert.match(
+    english,
+    /switch on Device Control and Data Access; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./,
+    'the English off note names the macOS 27 pane'
   );
   // Dutch keeps the group and the action sentence whole, and names the panes as macOS 27 does.
   await open('settings.html?mock=1&lang=nl&platform=macos&permissions=denied');
