@@ -301,6 +301,13 @@ impl Pill {
         });
     }
 
+    /// A recording dropped without a word: the pill goes away at once.
+    pub fn dropped(&mut self, recording: u64) {
+        if self.current_dictation(recording).is_some() {
+            self.dictation = None;
+        }
+    }
+
     /// Whether level ticks may go out for this recording now.
     pub fn listening_to(&self, recording: u64) -> bool {
         recording == self.latest && self.sent.phase == PillPhase::Listening

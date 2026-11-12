@@ -607,6 +607,33 @@ fn a_press_away_from_the_console_is_ignored() {
     engine.shutdown();
 }
 
+/// Right Option held with a letter types a character such as é or @. A key that went down during
+/// the hold drops the recording: nothing is sent or inserted, and the pill goes away. The next hold
+/// without typing dictates.
+#[test]
+fn a_key_typed_during_the_hold_drops_the_recording() {
+    let mut h = Harness::new("typed");
+    h.dev_mode = false;
+    h.config(json!({"hotkey": "right alt", "rewrite_hotkey": "off"}));
+    let engine = h.start();
+    h.speech.say("typed");
+    h.keys.down(Key::RightAlt);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    *lock(&h.typed) = Some(Instant::now());
+    std::thread::sleep(Duration::from_millis(100));
+    h.keys.up(Key::RightAlt);
+    wait_for("the microphone to close", || {
+        h.mic.streams.load(Ordering::SeqCst) == 0
+    });
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(h.speech.heard().is_empty(), "nothing was sent");
+    assert!(h.input.texts().is_empty());
+    h.hold(Key::RightAlt);
+    wait_for("the next insertion", || h.input.texts() == ["typed"]);
+    engine.shutdown();
+}
+
 #[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");

@@ -787,6 +787,8 @@ pub struct Harness {
     pub dictation_timing: DictationTiming,
     /// Whether the session is at the console; true unless a test locks it.
     pub at_console: Arc<AtomicBool>,
+    /// When a key that isn't a hotkey last went down; `None` is a platform that doesn't say.
+    pub typed: Arc<Mutex<Option<Instant>>>,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
     /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
@@ -839,6 +841,7 @@ impl Harness {
             dev_mode: true,
             dictation_timing: DictationTiming::default(),
             at_console: Arc::new(AtomicBool::new(true)),
+            typed: Arc::new(Mutex::new(None)),
             import_from: None,
             test_sources: None,
             test_screen: None,
@@ -879,6 +882,10 @@ impl Harness {
             at_console: {
                 let at_console = Arc::clone(&self.at_console);
                 Arc::new(move || at_console.load(Ordering::SeqCst))
+            },
+            key_activity: {
+                let typed = Arc::clone(&self.typed);
+                Arc::new(move || lock(&typed).map(|at| at.elapsed()))
             },
             input: self.input.clone(),
             microphone: self.mic.clone(),

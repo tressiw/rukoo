@@ -50,6 +50,11 @@ pub(crate) fn is_key_down(key: Key) -> bool {
     keys::is_key_down(key)
 }
 
+/// How long ago any key that isn't a modifier went down.
+pub(crate) fn since_key_down() -> Option<std::time::Duration> {
+    keys::since_key_down()
+}
+
 /// Types the text with Cmd+V, keeping the clipboard as `win.rs` does: the
 /// user's snapshot goes back 2 s later unless someone copied meanwhile.
 pub(crate) fn paste_text(text: &str, before_keys: BeforeKeys) -> Result<(), InputError> {

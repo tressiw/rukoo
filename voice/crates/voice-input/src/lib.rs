@@ -227,6 +227,21 @@ pub fn is_key_down(key: Key) -> bool {
     sys::is_key_down(key)
 }
 
+/// How long ago any key that isn't a modifier went down, anywhere in the
+/// session. Dictation uses it to tell a held Right Option that types a
+/// character from one held to speak. `None` where the platform doesn't say,
+/// which is everywhere but macOS.
+pub fn since_key_down() -> Option<Duration> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::since_key_down()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Whether macOS lets Voice post keys into other apps and read their accessibility objects: the
 /// Accessibility grant. It reads the grant without prompting. Settings shows the same reading,
 /// so the row and the error that names the switch can't disagree.

@@ -30,6 +30,10 @@ use crate::permissions::Permissions;
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
 
+/// How long ago a key that isn't a modifier went down anywhere, `None` where the platform
+/// doesn't say (voice-input's `since_key_down`).
+pub type KeyActivity = Arc<dyn Fn() -> Option<Duration> + Send + Sync>;
+
 /// Whether someone is at this computer's console: on a Mac, the session is the one on the
 /// console and its screen isn't locked. Voice ignores hotkey presses otherwise.
 pub type AtConsole = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -178,6 +182,7 @@ pub struct Services {
     /// The app passes the Mac's session state in; Windows has no such check yet, so the
     /// default is always at the console.
     pub at_console: AtConsole,
+    pub key_activity: KeyActivity,
     pub input: Arc<dyn TextInput>,
     pub microphone: Arc<dyn Microphone>,
     pub speech: Arc<dyn Speech>,
@@ -230,6 +235,7 @@ impl Services {
             hotkey_interval: voice_input::POLL_INTERVAL,
             dictation_timing: DictationTiming::default(),
             at_console: Arc::new(|| true),
+            key_activity: Arc::new(voice_input::since_key_down),
             input: Arc::new(SystemInput),
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {

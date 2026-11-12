@@ -51,6 +51,10 @@ const MARK_RETRY: Duration = Duration::from_millis(100);
 /// a press whose microphone is still opening is handled first.
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
 
+/// A key-down this soon before the release was seen may have come right after it: the poll
+/// sees a release up to one interval late.
+const TYPED_MARGIN: Duration = voice_input::POLL_INTERVAL;
+
 pub(crate) struct Dictation {
     ptt: Mutex<PushToTalk>,
     stop_key: Mutex<Option<Key>>,
@@ -65,6 +69,11 @@ pub(crate) struct Dictation {
 
 struct Recording {
     id: u64,
+    /// The key that started it, and when the press was seen.
+    key: Key,
+    pressed: Instant,
+    /// Voice posted Cmd+C or Ctrl+C during the hold, for the selection.
+    posted_keys: bool,
     mode: Mode,
     cfg: Arc<Config>,
     stream: Option<Box<dyn MicStream>>,
@@ -305,11 +314,13 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
     let this = &core.dictation;
     let cfg = core.config();
     let id = this.next_id.fetch_add(1, Ordering::SeqCst);
+    let pressed = Instant::now();
     // The local model loads while the user speaks (ownkey-dictation.md 4.2, step 3).
     if cfg.audio_provider == "orukeet" {
         core.svc.speech.local_preload();
     }
-    let selection = if mode == Mode::Rewrite && key.can_copy_while_held() {
+    let posted_keys = mode == Mode::Rewrite && key.can_copy_while_held();
+    let selection = if posted_keys {
         let pending = Selection::pending();
         let (input, slot) = (Arc::clone(&core.svc.input), Arc::clone(&pending));
         let _ = thread::Builder::new()
@@ -351,6 +362,9 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             let recovered = lock(&this.mic_error).take().is_some();
             *lock(&this.recording) = Some(Recording {
                 id,
+                key,
+                pressed,
+                posted_keys,
                 mode,
                 cfg,
                 stream: Some(stream),
@@ -670,6 +684,14 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     };
     // Keeps the meter calibrated to this microphone for the next press.
     *lock(&this.meter) = meter;
+    let held = recording.pressed.elapsed();
+    if !recording.posted_keys && typed_during(recording.key, held, (core.svc.key_activity)()) {
+        // Right Option with a letter types é or @, and Right Command with one is a shortcut:
+        // the key was held to type, not to talk.
+        log::info!("dictation: another key went down during the hold; dropped");
+        core.pill.update(|p, _| p.dropped(recording.id));
+        return;
+    }
     let phase = match recording.mode {
         Mode::Dictate => PillPhase::Transcribing,
         Mode::Rewrite => PillPhase::Rewriting,
@@ -688,6 +710,18 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     if let Some(queue) = lock(&this.queue).as_ref() {
         let _ = queue.send(job);
     }
+}
+
+/// Whether a key that isn't a modifier went down while `key` was held for `held`, from how long
+/// ago the last one went down. Only a modifier hotkey can be part of a chord that types or runs a
+/// shortcut; an F key's own press and its repeats are key-downs themselves. A key-down within
+/// [`TYPED_MARGIN`] of the release may have followed it, so it doesn't count.
+fn typed_during(key: Key, held: Duration, since_key_down: Option<Duration>) -> bool {
+    let modifier = matches!(
+        key,
+        Key::RightAlt | Key::RightCommand | Key::RightCtrl | Key::RightShift
+    );
+    modifier && since_key_down.is_some_and(|since| since > TYPED_MARGIN && since < held)
 }
 
 fn work(core: Weak<Core>, jobs: Receiver<Job>) {
@@ -1071,6 +1105,22 @@ mod tests {
         );
         let (keys, _) = hotkeys(&cfg, false);
         assert_eq!(keys.dictate, Key::RightAlt);
+    }
+
+    #[test]
+    fn a_key_typed_during_a_modifier_hold_drops_the_recording() {
+        let held = Duration::from_secs(2);
+        let ago = |ms| Some(Duration::from_millis(ms));
+        // Right Option and a letter, a second before the release.
+        assert!(typed_during(Key::RightAlt, held, ago(1000)));
+        assert!(typed_during(Key::RightCommand, held, ago(1000)));
+        assert!(typed_during(Key::RightShift, held, ago(500)));
+        // Before the press, or right at the release, it doesn't count.
+        assert!(!typed_during(Key::RightAlt, held, ago(2500)));
+        assert!(!typed_during(Key::RightAlt, held, ago(20)));
+        // An F key's own press is a key-down; a platform that can't say drops nothing.
+        assert!(!typed_during(Key::F13, held, ago(1000)));
+        assert!(!typed_during(Key::RightAlt, held, None));
     }
 
     #[test]
