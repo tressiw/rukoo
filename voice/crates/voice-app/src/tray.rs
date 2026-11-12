@@ -1,5 +1,5 @@
 //! The tray icon: its menu and tooltip follow the engine's [`TrayState`] and the catalogs, and it shows the
-//! engine's notifications as balloons, which Windows turns into toasts.
+//! engine's notifications, as balloons on Windows and in Notification Center on macOS (notify_mac.rs).
 
 use std::sync::{Arc, Mutex};
 
@@ -181,6 +181,9 @@ impl Tray {
                     on_action(TrayAction::Settings);
                 }
             })
+            // A menu bar icon is a template image: macOS draws it from its alpha in black or white to match
+            // the menu bar, so it stays readable in both themes. The mark's outline becomes the glyph.
+            .icon_as_template(cfg!(target_os = "macos"))
             .build(&self.app)?;
         #[cfg(windows)]
         {
@@ -275,6 +278,8 @@ impl Tray {
                 log::warn!("tray: could not show the notification");
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::notify_mac::notify(&title, &notification.body);
     }
 }
 
