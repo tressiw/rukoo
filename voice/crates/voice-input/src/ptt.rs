@@ -259,35 +259,27 @@ mod tests {
         );
     }
 
-    /// The four session events that can swallow a key-up: the session resigns
-    /// (fast user switch), the screen locks, the Mac sleeps, the screens sleep.
-    /// Each one releases the held key and leaves nothing for the real release
-    /// to stop a second time.
+    /// A session event that can swallow a key-up (a fast user switch, the
+    /// lock screen, sleep) releases the held key once and leaves nothing for
+    /// the real release to stop a second time. Which event it was doesn't
+    /// reach push-to-talk; the app's tests cover the observers.
     #[test]
-    fn every_session_event_releases_a_held_key_once() {
-        for event in [
-            "the session resigned",
-            "the screen locked",
-            "the Mac slept",
-            "the screens slept",
-        ] {
-            let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
-            assert_eq!(
-                ptt.handle(Pressed(Key::RightAlt)),
-                Some(Action::Start(Mode::Dictate)),
-                "{event}: the key started a recording"
-            );
-            assert!(ptt.release_all(), "{event}: the recording is stopped");
-            assert!(!ptt.is_down() && !ptt.is_recording(), "{event}");
-            // The key-up arrives after the session came back: nothing runs twice.
-            assert_eq!(ptt.handle(Released(Key::RightAlt)), None, "{event}");
-            assert!(!ptt.release_all(), "{event}: no second stop");
-            assert_eq!(
-                ptt.handle(Pressed(Key::RightAlt)),
-                Some(Action::Start(Mode::Dictate)),
-                "{event}: the next hold works"
-            );
-        }
+    fn release_all_stops_a_held_recording_once() {
+        let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate))
+        );
+        assert!(ptt.release_all(), "the recording is stopped");
+        assert!(!ptt.is_down() && !ptt.is_recording());
+        // The key-up arrives after the session came back: nothing runs twice.
+        assert_eq!(ptt.handle(Released(Key::RightAlt)), None);
+        assert!(!ptt.release_all(), "no second stop");
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate)),
+            "the next hold works"
+        );
     }
 
     #[test]

@@ -310,19 +310,24 @@ mod tests {
         );
     }
 
-    /// macOS reads the physical keyboard through Core Graphics and posts keys.
-    /// Nothing here reads a hotkey or posts a key, so a desktop someone uses
-    /// is fine.
+    /// macOS reads the physical keyboard through Core Graphics. F15 has a Mac
+    /// key code, so every read here asks Core Graphics' HID state, which needs
+    /// no grant and posts nothing; whether F15 is held doesn't matter, so a
+    /// desktop someone uses is fine.
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_os_reads_the_physical_keyboard_without_a_grant() {
-        // A key a Mac keyboard doesn't have is answered without asking macOS.
-        assert!(!is_key_down(Key::Pause));
-        // Polling starts: no permission is involved, so it can't say Unsupported.
+        assert!(Key::F15.mac_code().is_some(), "the read reaches macOS");
+        let _ = is_key_down(Key::F15);
+        // Polling starts and keeps reading: no permission is involved, so it
+        // can't say Unsupported, and a read that failed would end the thread.
         let (tx, _rx) = std::sync::mpsc::channel();
-        let poller = HotkeyPoller::spawn(vec![Key::Pause], tx).expect("macOS polls the keyboard");
+        let poller = HotkeyPoller::spawn(vec![Key::F15], tx).expect("macOS polls the keyboard");
+        std::thread::sleep(POLL_INTERVAL * 3);
         assert!(poller.is_running());
         poller.join();
+        // A key a Mac keyboard doesn't have is answered without asking macOS.
+        assert!(!is_key_down(Key::Pause));
         // The reason a Mac without the grant gets says what to switch on.
         let message = InputError::Accessibility.to_string();
         assert!(message.contains("Accessibility"), "{message}");

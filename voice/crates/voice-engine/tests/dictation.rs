@@ -486,7 +486,9 @@ fn the_copy_after_the_release_waits_for_the_next_key_too() {
 
 /// The session resigned, the screen locked or the Mac slept while the key was held. The app hears
 /// that from the system and releases the hotkey, so the recording stops although the key-up never
-/// arrived. When the real release does arrive, it stops nothing a second time.
+/// arrived. When the real release does arrive, it stops nothing a second time. This release comes
+/// once audio arrived; `a_release_while_the_microphone_opens_stops_the_recording` covers one that
+/// comes while the microphone is still opening.
 #[test]
 fn a_lost_key_up_stops_the_recording_once() {
     let h = Harness::new("session-release");
