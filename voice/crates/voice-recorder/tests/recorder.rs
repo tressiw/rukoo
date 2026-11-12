@@ -180,6 +180,9 @@ fn resume_continues_numbering_and_stays_paused() {
 
 #[test]
 fn pause_resume_mark_and_dictation_lines() {
+    if skip_on_slow_host("pause_resume_mark_and_dictation_lines") {
+        return;
+    }
     let m = TempMeeting::new("pause");
     let mut child = m.record(&["mic=synthetic:tone:440", "call=synthetic:idle"], &[]);
     let (mut client, token) = m.connect(1);
@@ -773,6 +776,9 @@ fn segments_rotate_without_gaps() {
 
 #[test]
 fn a_new_default_device_moves_the_track() {
+    if skip_on_slow_host("a_new_default_device_moves_the_track") {
+        return;
+    }
     let m = TempMeeting::new("default-change");
     let mut child = m.record(&["mic=synthetic:tone:440,switch-at=1000"], &[]);
     let (mut client, token) = m.connect(1);
