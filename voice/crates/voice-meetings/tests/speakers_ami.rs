@@ -183,6 +183,42 @@ fn speakers_exe() -> &'static Path {
     EXE.get_or_init(|| workspace_exe("voice-speakers", "rukoo-voice-speakers"))
 }
 
+/// How many times faster than real time the speaker worker labels the excerpt's first 20 s on this
+/// host, from its own `--self-test`, measured once. The tests below play audio in real time and
+/// would only time out on a host under the factor `min_realtime_factor` names, so they ask first.
+/// Call it holding `one_at_a_time`, so no other test loads the host while it measures.
+fn realtime_factor(assets: &Assets) -> f64 {
+    static FACTOR: OnceLock<f64> = OnceLock::new();
+    *FACTOR.get_or_init(|| {
+        let clip = TempDir::new("self-test");
+        let wav = clip.path().join("clip.wav");
+        let pcm = read_wav(&assets.ami.wav);
+        let pcm = &pcm[..pcm.len().min(20 * RATE)];
+        let mut bytes = voice_audio::segment_header(pcm.len() as u64).to_vec();
+        bytes.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+        fs::write(&wav, bytes).unwrap();
+        let output = Command::new(speakers_exe())
+            .arg("--self-test")
+            .arg("--runtime")
+            .arg(&assets.runtime)
+            .arg("--model")
+            .arg(&assets.model)
+            .arg("--wav")
+            .arg(&wav)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "the speaker worker's self-test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let factor = report["realtimeFactor"].as_f64().unwrap();
+        eprintln!("speaker worker self-test: {factor} times real time");
+        factor
+    })
+}
+
 /// The excerpt's samples, after the canonical 44-byte header.
 fn read_wav(path: &Path) -> Vec<i16> {
     fs::read(path).unwrap()[44..]
@@ -518,6 +554,12 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
         return;
     };
     let _one = one_at_a_time();
+    if too_slow_for_live_labels(
+        "ami_three_speakers_live_and_ninety_percent_right",
+        realtime_factor(&assets),
+    ) {
+        return;
+    }
     let mut run = Run::start("ami-score", &assets.ami, false, Some(&assets));
     run.wait_for(EXCERPT_MS + 4_000);
     let reference = reference(&assets.ami.rttm, run.call_start(), 1);
@@ -557,6 +599,9 @@ fn ami_ids_survive_a_killed_worker() {
         return;
     };
     let _one = one_at_a_time();
+    if too_slow_for_live_labels("ami_ids_survive_a_killed_worker", realtime_factor(&assets)) {
+        return;
+    }
     let mut run = Run::start("ami-kill", &assets.ami, true, Some(&assets));
     let kill_at = EXCERPT_MS + 30_000;
     run.wait_for(kill_at);
