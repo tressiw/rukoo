@@ -29,6 +29,8 @@ pub const DONE_MEETING: &str = "m-20261030-090000-00ff";
 pub const NEW_MEETING: &str = "m-20261030-171203-4f2a";
 /// The id the fake gives every audio or frame it opens.
 pub const FAKE_MEDIA: &str = "md-a1B2c3D4e5F6g7H8i9J0kL";
+/// The pid the test client's `hello` sends, as a development Rukoo does.
+pub const RUKOO_PID: u32 = 4821;
 /// The length of the fake's media: two full reads and a short third one.
 pub const FAKE_MEDIA_SIZE: u64 = (2 << 20) + 100;
 
@@ -491,7 +493,7 @@ impl Client {
     }
 
     pub fn hello(&mut self, token: &str, instance: Option<&str>, after: u64) {
-        self.send(json!({ "type": "hello", "protocol": voice_protocol::PROTOCOL, "token": token, "client": "rukoo", "clientVersion": "2.3.0", "instance": instance, "after": after }));
+        self.send(json!({ "type": "hello", "protocol": voice_protocol::PROTOCOL, "token": token, "client": "rukoo", "clientVersion": "2.3.0", "pid": RUKOO_PID, "instance": instance, "after": after }));
     }
 
     pub fn command(&mut self, id: &str, command: &str, args: Value) {

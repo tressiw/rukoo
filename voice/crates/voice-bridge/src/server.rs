@@ -80,6 +80,9 @@ pub struct Client {
     /// `client` from its hello, such as `rukoo`.
     pub client: String,
     pub client_version: Option<String>,
+    /// Rukoo's process id from its hello, when it sent one: the process that owns its windows,
+    /// which Voice leaves out of its screen recording.
+    pub pid: Option<u64>,
     /// The protocol version the connection speaks.
     pub protocol: u32,
     /// `after` from its hello: the last event it had seen.
@@ -296,6 +299,27 @@ impl Handle {
             .map(|(id, _)| *id)
             .collect()
     }
+
+    /// The process ids of the `rukoo` clients that completed their `hello` and sent a pid,
+    /// oldest connection first, without repeats: the processes whose windows a screen recording
+    /// leaves out.
+    pub fn rukoo_pids(&self) -> Vec<u32> {
+        let registry = lock(&self.registry);
+        let mut pids: Vec<u32> = Vec::new();
+        for entry in registry.connected.values() {
+            if entry.client.client != "rukoo" || !entry.welcomed.load(Ordering::SeqCst) {
+                continue;
+            }
+            let pid = entry.client.pid.and_then(|pid| u32::try_from(pid).ok());
+            if let Some(pid) = pid.filter(|&pid| pid != 0) {
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+        pids
+    }
+
     /// The clients connected now, and the newest hello refused for its token or version.
     pub fn clients(&self) -> Clients {
         let registry = lock(&self.registry);
@@ -371,6 +395,7 @@ impl Shared {
             client: Client {
                 client: hello.client.clone(),
                 client_version: hello.client_version.clone(),
+                pid: hello.pid,
                 protocol: hello.protocol,
                 after: hello.after,
                 sent: hello.after,
