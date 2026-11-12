@@ -7,12 +7,9 @@
 //! `voice_recorder::run` and `voice_screen::run` as the two programs' mains.
 //!
 //! The screen process only ever records its synthetic source here (`--test synthetic:...`), and
-//! video uses Microsoft's software encoder (`no-hardware,software-encoder`): nothing of the real
-//! desktop is captured and no hardware encoder runs.
-//!
-//! The screen process records on Windows only until its macOS port, so the tests that start it run
-//! there. This binary still lists every test everywhere: the two that never start a screen process
-//! run on the other platforms too.
+//! video uses the platform's software encoder (`no-hardware,software-encoder`: Microsoft's on
+//! Windows, VideoToolbox's on macOS): nothing of the real desktop is captured and no hardware
+//! encoder runs.
 
 mod support;
 
@@ -39,7 +36,8 @@ use voice_screen_files::{control, screenfile};
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 /// What the screen process records here: a synthetic screen whose text changes every second.
 const SCREEN: &str = "synthetic:1280x720,change-every=1000,text=Slide";
-/// Video without a hardware encoder: the software MFT on the system-memory path.
+/// Video without a hardware encoder: the software MFT on the system-memory path on Windows,
+/// VideoToolbox's software encoder on macOS.
 const VIDEO: &str = "no-hardware,software-encoder";
 /// How soon after the start a screen process that waits for nobody is launched (RUK-108 4.3:
 /// under 100 ms). It takes a thread, a read of meeting.json and a file open.
@@ -136,30 +134,6 @@ fn main() {
             a_screen_without_permission_says_so_and_is_not_retried,
         ),
     ];
-    // The screen process records on Windows only until its macOS port, so the tests that start one
-    // run there. These three run everywhere: turning the screen off starts nothing, the slow-screen
-    // case answers through a stand-in process of its own, and the permission case's stand-in is a
-    // script that refuses the way the screen process does without a Screen Recording grant.
-    #[cfg(not(windows))]
-    let tests: Vec<(&str, fn())> = tests
-        .into_iter()
-        .filter(|(name, _)| {
-            matches!(
-                *name,
-                "screen_off_sends_no_meeting_starting"
-                    | "screen_select_answers_by_its_deadline_when_the_screen_is_slow"
-                    | "a_screen_without_permission_says_so_and_is_not_retried"
-            )
-        })
-        .collect();
-    // A renamed test would slip out of that filter without a word.
-    #[cfg(not(windows))]
-    assert_eq!(
-        tests.len(),
-        3,
-        "the filter in main() keeps the three tests that start no real screen process; a rename dropped one out, so \
-         update its name there"
-    );
     let filters: Vec<String> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))

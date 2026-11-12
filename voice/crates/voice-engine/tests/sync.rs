@@ -418,16 +418,32 @@ fn a_meeting_uploads_while_it_records() {
     fake.stop();
 }
 
-/// Every heartbeat within 1,300 ms of the one before, no lost device or crash, each segment
-/// closed and following the one before, and a stop.
+/// Heartbeats come every second. A recorder a failing bucket slows is late again and again (the
+/// bucket is retried for the whole meeting), so every heartbeat but a couple must be within
+/// 1,300 ms of the one before and none over 3,000 ms. One late tick on a busy runner is not the
+/// bucket: a hosted Windows runner measured 1,389 ms once in 26 heartbeats, 89 ms over.
+const LATE_HEARTBEAT_MS: u64 = 1300;
+const LATE_HEARTBEATS_ALLOWED: usize = 2;
+const HEARTBEAT_HARD_LIMIT_MS: u64 = 3000;
+
+/// Heartbeats on time (see above), no lost device or crash, each segment closed and following the
+/// one before, and a stop.
 fn assert_steady(data: &Path, id: &str) {
     let lines = lines(data, id);
     let mut last: Option<u64> = None;
+    let mut late = Vec::new();
     for line in &lines {
         match line {
             Line::Heartbeat { t, .. } => {
                 if let Some(before) = last {
-                    assert!(t - before <= 1300, "{id}: heartbeats {before} and {t}");
+                    let gap = t - before;
+                    assert!(
+                        gap <= HEARTBEAT_HARD_LIMIT_MS,
+                        "{id}: heartbeats {before} and {t}"
+                    );
+                    if gap > LATE_HEARTBEAT_MS {
+                        late.push((before, *t));
+                    }
                 }
                 last = Some(*t);
             }
@@ -435,6 +451,11 @@ fn assert_steady(data: &Path, id: &str) {
             _ => {}
         }
     }
+    assert!(
+        late.len() <= LATE_HEARTBEATS_ALLOWED,
+        "{id}: {} heartbeats later than {LATE_HEARTBEAT_MS} ms: {late:?}",
+        late.len()
+    );
     assert!(
         matches!(lines.last(), Some(Line::Stop { .. })),
         "{id} has no stop"
@@ -463,7 +484,7 @@ fn assert_steady(data: &Path, id: &str) {
 }
 
 fn a_failing_bucket_never_slows_the_recorder() {
-    // Its heartbeat limit (1,300 ms for a 1 s heartbeat) is a timing window.
+    // Its heartbeat limits (see `assert_steady`) are timing windows.
     if skip_on_slow_host("a_failing_bucket_never_slows_the_recorder") {
         return;
     }
@@ -1331,10 +1352,6 @@ fn record_with_pause(engine: &Engine, data: &Path, before: u64, paused: u64, aft
 /// its `video_end`; the journal after its own `stop`; the clips and `screen.json` never (contract
 /// 2.1, spec RUK-110 2.8).
 fn screen_files_upload_by_their_rules() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("sync-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
@@ -1442,10 +1459,6 @@ fn screen_files_upload_by_their_rules() {
 /// again after retention removed them and sync fetched them back. A range across a pause gives
 /// one stretch, with the shorter end (contract 2.3).
 fn media_open_serves_a_frame_and_a_clip() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("media-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1544,10 +1557,6 @@ fn media_open_serves_a_frame_and_a_clip() {
 /// A meeting whose video hasn't reached the bucket keeps `screen/video`, with its frames and audio,
 /// past its retention; once it uploaded, the sweep removes them and keeps the journal (contract 2.6).
 fn retention_holds_screen_media() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("retention-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1703,10 +1712,6 @@ fn a_restored_meeting_keeps_its_speakers() {
 /// says so in `sync.screenRecording` (spec RUK-110 D18, contract 2.7): by the screen supervisor's
 /// mode for the meeting that records, not by Voice's default.
 fn the_key_dialogs_wait_while_the_screen_records() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("key-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
