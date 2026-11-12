@@ -1,10 +1,12 @@
 //! The real screen on macOS: ScreenCaptureKit's `SCStream` on one display.
 //!
-//! The stream is set up once per capture session from `SCShareableContent`: the display with the
-//! id the monitor list chose, and every running application that stays out of the recording
-//! (Voice's own app, Rukoo, and the pids the command line names). Its filter is
-//! `initWithDisplay:excludingApplications:exceptingWindows:`, so those applications' windows are
-//! not in the frames and the desktop behind them is.
+//! The stream is set up once per capture session, on a thread of its own, from one read of
+//! `SCShareableContent`: the display with the id the monitor list chose, and every running
+//! application that stays out of the recording (Voice's own app, Rukoo, and the pids the command
+//! line names). Its filter is `initWithDisplay:excludingApplications:exceptingWindows:`, so those
+//! applications' windows are not in the frames and the desktop behind them is. The stream's size
+//! is the filter's content in pixels. The main thread, which answers the control port, never
+//! waits for a stream to start.
 //!
 //! Frames arrive on a dispatch queue as `CMSampleBuffer`s backed by an IOSurface in `420f`
 //! (bi-planar full-range YCbCr), which is the format VideoToolbox encodes without a conversion.
@@ -19,7 +21,7 @@
 
 use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -62,28 +64,47 @@ pub const EXCLUDED_BUNDLES: [&str; 3] = [
 
 /// How long the shareable content and a starting stream may take.
 const ANSWER_WAIT: Duration = Duration::from_secs(5);
+/// How long a start that gave no answer within `ANSWER_WAIT` is still waited for, off the main
+/// thread, so a stream that starts late is stopped instead of capturing with nobody holding it.
+const LATE_START_WAIT: Duration = Duration::from_secs(60);
 /// How long a stopping stream may take before its frames are dropped by their generation anyway.
 const STOP_WAIT: Duration = Duration::from_secs(2);
 
+/// The real screen. `start` hands the work to a thread of its own, so the main thread, which
+/// answers the control port, never waits on ScreenCaptureKit to start a stream: the shareable
+/// content, the filter and the stream's start all happen there, from one read of the shareable
+/// content. A start that fails reaches the main thread as `Ev::CaptureStopped`, as a stream that
+/// stops by itself does.
 pub struct ScreenSource {
     to_main: SyncSender<Ev<PixelBuffer>>,
     /// The pids from `--exclude-pid`.
     exclude_pids: Vec<u32>,
+    shared: Arc<Mutex<Shared>>,
+}
+
+/// What the main thread and a starting thread share.
+#[derive(Default)]
+struct Shared {
+    /// The generation whose capture is wanted; 0 once it was stopped. A start that finishes for
+    /// another generation stops its stream again.
+    wanted: u64,
     live: Option<Live>,
 }
 
+/// A running stream and what it needs to keep running.
 struct Live {
+    generation: u64,
     stream: Retained<SCStream>,
+    /// The stream's output and delegate. `Live` holds it until the stream stopped: whether a
+    /// stream retains its delegate isn't in the header.
     output: Retained<Output>,
-    /// The filter the stream captures with, kept for a later `updateContentFilter`.
-    filter: Retained<SCContentFilter>,
     /// The queue the output is called on; it must outlive the stream's output.
     _queue: DispatchRetained<DispatchQueue>,
 }
 
-// SAFETY: ScreenCaptureKit's objects may be called from any thread, and this one is only used by
-// the thread that owns the source: it starts and stops the stream. Frames and the stop notice
-// reach the main thread through the channel, never through these objects.
+// SAFETY: ScreenCaptureKit's objects may be called from any thread. A `Live` is made on a
+// starting thread and from then on used under the `Shared` lock or by the one thread that took it
+// out to stop it. Frames and the stop notice reach the main thread through the channel.
 unsafe impl Send for Live {}
 
 impl ScreenSource {
@@ -91,7 +112,7 @@ impl ScreenSource {
         ScreenSource {
             to_main,
             exclude_pids,
-            live: None,
+            shared: Arc::new(Mutex::new(Shared::default())),
         }
     }
 
@@ -111,41 +132,133 @@ impl ScreenSource {
     }
 }
 
+fn lock(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
+    shared.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl Source for ScreenSource {
     fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError> {
         self.stop();
-        let display_id: u32 = monitor.id.parse().map_err(|_| {
+        let display: u32 = monitor.id.parse().map_err(|_| {
             PlatformError::new(format!(
                 "display {} isn't a display this Mac has",
                 monitor.id
             ))
         })?;
-        let content = shareable()?;
-        let displays = unsafe { content.displays() }.to_vec();
-        let display = displays
-            .into_iter()
-            .find(|display| unsafe { display.displayID() } == display_id)
-            .ok_or_else(|| PlatformError::new(format!("display {} isn't there", monitor.id)))?;
-        let pids = ScreenSource::excluded_pids(&self.exclude_pids);
-        let applications: Vec<Retained<SCRunningApplication>> = unsafe { content.applications() }
+        lock(&self.shared).wanted = generation;
+        let job = StartJob {
+            display,
+            fallback: (monitor.width, monitor.height),
+            pids: ScreenSource::excluded_pids(&self.exclude_pids),
+            generation,
+            to_main: self.to_main.clone(),
+            shared: self.shared.clone(),
+        };
+        std::thread::Builder::new()
+            .name("screen-start".into())
+            .spawn(move || job.run())
+            .map_err(|e| PlatformError::new(format!("can't start the capture's thread: {e}")))?;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        let live = {
+            let mut shared = lock(&self.shared);
+            shared.wanted = 0;
+            shared.live.take()
+        };
+        if let Some(live) = live {
+            close(live);
+        }
+    }
+}
+
+impl Drop for ScreenSource {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// One start of the stream, on a thread of its own.
+struct StartJob {
+    display: u32,
+    /// The monitor's pixels, for a filter that doesn't say its own size.
+    fallback: (u32, u32),
+    pids: Vec<u32>,
+    generation: u64,
+    to_main: SyncSender<Ev<PixelBuffer>>,
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl StartJob {
+    fn run(self) {
+        match self.open() {
+            Opened::Running(live) => {
+                let mut shared = lock(&self.shared);
+                if shared.wanted == self.generation {
+                    shared.live = Some(live);
+                } else {
+                    // Stopped, or started again, while this start ran.
+                    drop(shared);
+                    close(live);
+                }
+            }
+            Opened::Failed(stop) => self.report(stop),
+            Opened::Late(stop, pending) => {
+                self.report(stop);
+                pending.clean_up();
+            }
+        }
+    }
+
+    /// A start that failed, for the main thread to decide on. A start nobody wants any more
+    /// says nothing.
+    fn report(&self, stop: CaptureStop) {
+        if lock(&self.shared).wanted != self.generation {
+            return;
+        }
+        // Blocking: the main thread drains the queue, and it must hear of the failure.
+        let _ = self.to_main.send(Ev::CaptureStopped(self.generation, stop));
+    }
+
+    fn open(&self) -> Opened {
+        let failed = |e: PlatformError| {
+            Opened::Failed(CaptureStop {
+                why: e.to_string(),
+                permission_lost: e.permission,
+            })
+        };
+        // One read of the shareable content serves the display and the filter.
+        let content = match shareable() {
+            Ok(content) => content,
+            Err(e) => return failed(e),
+        };
+        let Some(display) = unsafe { content.displays() }
             .to_vec()
             .into_iter()
-            .filter(|application| {
-                let pid = unsafe { application.processID() };
-                excludes(pid, &bundle_id(application), &pids)
-            })
-            .collect();
+            .find(|display| unsafe { display.displayID() } == self.display)
+        else {
+            return failed(PlatformError::new(format!(
+                "display {} isn't there",
+                self.display
+            )));
+        };
+        let exclusions = Exclusions::of(&content, &self.pids);
+        crate::log(format_args!("the capture {}", exclusions.describe()));
         // SAFETY: every object lives until the filter has retained what it needs, and the empty
         // windows array is an exception list of none.
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
                 SCContentFilter::alloc(),
                 &display,
-                &NSArray::from_retained_slice(&applications),
+                &NSArray::from_retained_slice(&exclusions.applications),
                 &NSArray::<SCWindow>::from_slice(&[]),
             )
         };
-        let (width, height) = stream_size(monitor.width, monitor.height);
+        // The display's pixels as the filter sees them, at its current mode; the monitor list's
+        // only when the filter doesn't say.
+        let (width, height) = filter_pixels(&filter).unwrap_or(self.fallback);
+        let (width, height) = stream_size(width, height);
         let configuration = unsafe { SCStreamConfiguration::new() };
         // SAFETY: the configuration is a fresh object, and the pixel format is one
         // ScreenCaptureKit documents for it.
@@ -164,7 +277,7 @@ impl Source for ScreenSource {
             // frames, the OCR input and the video agree.
             configuration.setColorSpaceName(kCGColorSpaceSRGB);
         }
-        let output = Output::new(self.to_main.clone(), generation, width, height);
+        let output = Output::new(self.to_main.clone(), self.generation, width, height);
         let queue = DispatchQueue::new("nl.bvdm.rukoo.voice.screen", None);
         // SAFETY: the delegate and the output outlive the stream, which `Live` holds.
         let stream = unsafe {
@@ -175,52 +288,126 @@ impl Source for ScreenSource {
                 Some(ProtocolObject::from_ref(&*output)),
             )
         };
-        unsafe {
+        if let Err(error) = unsafe {
             stream.addStreamOutput_type_sampleHandlerQueue_error(
                 ProtocolObject::from_ref(&*output),
                 SCStreamOutputType::Screen,
                 Some(&queue),
             )
+        } {
+            return failed(sc_error("the screen output wasn't taken", &error));
         }
-        .map_err(|error| sc_error("the screen output wasn't taken", &error))?;
-        wait_for("the screen capture didn't start", ANSWER_WAIT, |done| {
-            // SAFETY: the handler is called once the stream started or gave up.
-            unsafe { stream.startCaptureWithCompletionHandler(Some(done)) };
-        })?;
-        self.live = Some(Live {
+        let (sender, answer) = mpsc::channel();
+        let block: RcBlock<dyn Fn(*mut NSError)> = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: the error is a live `NSError` for the length of the call, or null.
+            let error = unsafe { Retained::retain(error) }
+                .map(|error| (describe(&error), permission_lost(error.code())));
+            let _ = sender.send(error);
+        });
+        // SAFETY: the handler is called once the stream started or gave up.
+        unsafe { stream.startCaptureWithCompletionHandler(Some(&block)) };
+        let live = Live {
+            generation: self.generation,
             stream,
             output,
-            filter,
             _queue: queue,
-        });
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        let Some(live) = self.live.take() else {
-            return;
         };
-        // SAFETY: the output was added for the screen, and removing it twice never happens.
-        let _ = unsafe {
-            live.stream.removeStreamOutput_type_error(
-                ProtocolObject::from_ref(&*live.output),
-                SCStreamOutputType::Screen,
-            )
-        };
-        let _ = wait_for("the screen capture didn't stop", STOP_WAIT, |done| {
-            // SAFETY: the handler is called once the stream stopped.
-            unsafe { live.stream.stopCaptureWithCompletionHandler(Some(done)) };
-        });
-        // The filter is the last thing `Live` holds, after the stream; dropping it here keeps
-        // that order explicit.
-        drop(live.filter);
+        match answer.recv_timeout(ANSWER_WAIT) {
+            Ok(None) => {
+                crate::log(format_args!(
+                    "capturing display {} at {width}x{height}",
+                    self.display
+                ));
+                Opened::Running(live)
+            }
+            Ok(Some((why, permission))) => {
+                remove_output(&live);
+                Opened::Failed(CaptureStop {
+                    why: format!("the screen capture didn't start: {why}"),
+                    permission_lost: permission,
+                })
+            }
+            Err(_) => Opened::Late(
+                CaptureStop {
+                    why: format!(
+                        "the screen capture didn't start: no answer within {} s",
+                        ANSWER_WAIT.as_secs()
+                    ),
+                    permission_lost: false,
+                },
+                Pending { live, answer },
+            ),
+        }
     }
 }
 
-impl Drop for ScreenSource {
-    fn drop(&mut self) {
-        self.stop();
+/// How a start ended.
+enum Opened {
+    Running(Live),
+    Failed(CaptureStop),
+    /// No answer in time; the stream may still start.
+    Late(CaptureStop, Pending),
+}
+
+/// A start that gave no answer in time.
+struct Pending {
+    live: Live,
+    answer: Receiver<Option<(String, bool)>>,
+}
+
+impl Pending {
+    /// Takes the output off, waits a while longer for the start's answer and stops the stream
+    /// if it did start, so no capture runs that nobody holds.
+    fn clean_up(self) {
+        remove_output(&self.live);
+        match self.answer.recv_timeout(LATE_START_WAIT) {
+            Ok(None) => {
+                crate::log("a late capture start answered; stopping it");
+                close(self.live);
+            }
+            Ok(Some(_)) => {}
+            Err(_) => crate::log(format_args!(
+                "a capture start never answered within {} s",
+                (ANSWER_WAIT + LATE_START_WAIT).as_secs()
+            )),
+        }
     }
+}
+
+/// Takes the output off a stream, so its frames stop reaching the main thread.
+fn remove_output(live: &Live) {
+    // SAFETY: the output was added for the screen; a second removal fails and is ignored.
+    let _ = unsafe {
+        live.stream.removeStreamOutput_type_error(
+            ProtocolObject::from_ref(&*live.output),
+            SCStreamOutputType::Screen,
+        )
+    };
+}
+
+/// Stops a running stream and waits a moment for it.
+fn close(live: Live) {
+    remove_output(&live);
+    if let Err(e) = wait_for("the screen capture didn't stop", STOP_WAIT, |done| {
+        // SAFETY: the handler is called once the stream stopped.
+        unsafe { live.stream.stopCaptureWithCompletionHandler(Some(done)) };
+    }) {
+        crate::log(format_args!("generation {}: {e}", live.generation));
+    }
+}
+
+/// The pixels the filter's content has: its rectangle in points times its point-to-pixel scale
+/// (macOS 14), which follows the display's current mode. `None` when the filter gives no size.
+fn filter_pixels(filter: &SCContentFilter) -> Option<(u32, u32)> {
+    // SAFETY: both are plain getters of the filter.
+    let (rect, scale) = unsafe { (filter.contentRect(), filter.pointPixelScale()) };
+    pixels_of(rect.size.width, rect.size.height, f64::from(scale))
+}
+
+fn pixels_of(width: f64, height: f64, scale: f64) -> Option<(u32, u32)> {
+    let (width, height) = ((width * scale).round(), (height * scale).round());
+    (width.is_finite() && height.is_finite() && width >= 2.0 && height >= 2.0)
+        .then_some((width as u32, height as u32))
 }
 
 /// The size the stream delivers for a display of `width` x `height` pixels: the display's own
@@ -229,6 +416,7 @@ impl Drop for ScreenSource {
 /// is the size `caps::video_size` gives the video, a 5K display's 5120 x 2880 becoming 4096 x
 /// 2304. ScreenCaptureKit scales on the GPU, so no frame is converted and scaled on the CPU to
 /// reach the video's size; the frames' own 2560 pixel limit is below every size that gets here.
+/// Both sides are even, so an odd one, rare on a Mac, is scaled by less than a pixel.
 pub fn stream_size(width: u32, height: u32) -> (u32, u32) {
     video_size(width, height)
 }
@@ -238,6 +426,84 @@ fn excludes(pid: i32, bundle: &str, exclude_pids: &[u32]) -> bool {
     pid > 0 && (exclude_pids.contains(&(pid as u32)) || EXCLUDED_BUNDLES.contains(&bundle))
 }
 
+/// What a filter leaves out, from one read of the shareable content.
+struct Exclusions {
+    applications: Vec<Retained<SCRunningApplication>>,
+    /// The pids and bundle ids that matched, and the pids asked for that no shareable
+    /// application has, such as a process without a window.
+    matched: Matched,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Matched {
+    /// Sorted.
+    pids: Vec<u32>,
+    bundles: Vec<String>,
+    unmatched: Vec<u32>,
+}
+
+impl Exclusions {
+    fn of(content: &SCShareableContent, pids: &[u32]) -> Exclusions {
+        let all = unsafe { content.applications() }.to_vec();
+        let listed: Vec<(i32, String)> = all
+            .iter()
+            .map(|application| (unsafe { application.processID() }, bundle_id(application)))
+            .collect();
+        let (chosen, matched) = matching(&listed, pids);
+        Exclusions {
+            applications: chosen.into_iter().map(|n| all[n].clone()).collect(),
+            matched,
+        }
+    }
+
+    fn describe(&self) -> String {
+        self.matched.describe()
+    }
+}
+
+impl Matched {
+    /// For the log: pids and bundle ids only, never window titles.
+    fn describe(&self) -> String {
+        let mut line = format!(
+            "leaves out pids {:?} (bundles {:?})",
+            self.pids, self.bundles
+        );
+        if !self.unmatched.is_empty() {
+            line.push_str(&format!(
+                "; no shareable application has pids {:?}",
+                self.unmatched
+            ));
+        }
+        line
+    }
+}
+
+/// Which of the `listed` applications (pid, bundle id) a filter leaves out for `pids`, by index,
+/// and what matched.
+fn matching(listed: &[(i32, String)], pids: &[u32]) -> (Vec<usize>, Matched) {
+    let mut chosen = Vec::new();
+    let mut matched = Matched::default();
+    for (n, (pid, bundle)) in listed.iter().enumerate() {
+        if !excludes(*pid, bundle, pids) {
+            continue;
+        }
+        chosen.push(n);
+        matched.pids.push(*pid as u32);
+        if EXCLUDED_BUNDLES.contains(&bundle.as_str()) && !matched.bundles.contains(bundle) {
+            matched.bundles.push(bundle.clone());
+        }
+    }
+    matched.pids.sort_unstable();
+    matched.pids.dedup();
+    matched.bundles.sort();
+    matched.unmatched = pids
+        .iter()
+        .copied()
+        .filter(|pid| !matched.pids.contains(pid))
+        .collect();
+    (chosen, matched)
+}
+
 /// An application's bundle id, or `""` for a process without one. The generated binding says the
 /// property is never nil and panics when it is, which a window of a process without a bundle (a
 /// Python or Java window, a binary run from a terminal) may well be: read it as optional.
@@ -245,21 +511,6 @@ fn bundle_id(application: &SCRunningApplication) -> String {
     // SAFETY: `bundleIdentifier` takes no arguments and returns an `NSString` or nil.
     let bundle: Option<Retained<NSString>> = unsafe { msg_send![application, bundleIdentifier] };
     bundle.map(|bundle| bundle.to_string()).unwrap_or_default()
-}
-
-/// The pids of the running applications that the bundle ids name, for the display choice: the
-/// windows of Rukoo and Voice don't count as the window in front. Empty when the shareable
-/// content can't be read.
-pub fn bundle_pids() -> Vec<u32> {
-    let Ok(content) = shareable() else {
-        return Vec::new();
-    };
-    unsafe { content.applications() }
-        .to_vec()
-        .into_iter()
-        .filter(|application| EXCLUDED_BUNDLES.contains(&bundle_id(application).as_str()))
-        .map(|application| unsafe { application.processID() } as u32)
-        .collect()
 }
 
 /// The shareable content, waited for: ScreenCaptureKit only answers through its completion
@@ -444,7 +695,7 @@ define_class!(
     unsafe impl SCStreamDelegate for Output {
         #[unsafe(method(stream:didStopWithError:))]
         unsafe fn stopped(&self, _stream: &SCStream, error: &NSError) {
-            // SAFETY: the ivars live as long as the object, which the stream holds.
+            // The ivars live as long as the object, which `Live` holds until the stream stopped.
             let ivars = self.ivars();
             let _ = ivars.to_main.try_send(Ev::CaptureStopped(
                 ivars.generation,
@@ -583,7 +834,7 @@ mod tests {
         // Over what the encoder takes: a 5K display, and a 5K ultrawide.
         assert_eq!(stream_size(5120, 2880), (4096, 2304));
         assert_eq!(stream_size(5120, 1440), (4096, 1152));
-        // An odd size loses its last row or column.
+        // An odd size is scaled into the even one below it.
         assert_eq!(stream_size(1441, 901), (1440, 900));
         // The video writer sizes its file from the frame, so a frame at the stream's size must be
         // a video of that same size.
@@ -597,6 +848,47 @@ mod tests {
             let (sw, sh) = stream_size(w, h);
             assert_eq!(video_size(sw, sh), (sw, sh), "{w}x{h}");
         }
+    }
+
+    /// The filter leaves out the applications with the pids asked for and Voice's and Rukoo's
+    /// bundles, and says which asked-for pids no application has.
+    #[test]
+    fn the_filter_leaves_out_pids_and_bundles() {
+        let listed = vec![
+            (10, "com.apple.finder".to_string()),
+            (20, "nl.bvdm.rukoo-mail".to_string()),
+            (30, String::new()),
+            (40, "nl.bvdm.rukoo.voice.dev".to_string()),
+            (50, "com.github.Electron".to_string()),
+            (0, "nl.bvdm.rukoo.voice".to_string()),
+        ];
+        let (chosen, matched) = matching(&listed, &[50, 30, 77]);
+        assert_eq!(chosen, [1, 2, 3, 4]);
+        assert_eq!(matched.pids, [20, 30, 40, 50]);
+        assert_eq!(
+            matched.bundles,
+            ["nl.bvdm.rukoo-mail", "nl.bvdm.rukoo.voice.dev"]
+        );
+        assert_eq!(matched.unmatched, [77]);
+        assert!(
+            matched.describe().contains("[77]"),
+            "{}",
+            matched.describe()
+        );
+        // A restarted Voice is a new pid with the same bundle: the set the filter needs changes.
+        let mut restarted = listed.clone();
+        restarted[3].0 = 41;
+        assert_ne!(matching(&restarted, &[50, 30, 77]).1, matched);
+    }
+
+    /// The stream's size is the filter's content in pixels: points times the scale.
+    #[test]
+    fn the_filters_pixels_are_points_times_the_scale() {
+        assert_eq!(pixels_of(1728.0, 1117.0, 2.0), Some((3456, 2234)));
+        assert_eq!(pixels_of(1920.0, 1080.0, 1.0), Some((1920, 1080)));
+        assert_eq!(pixels_of(0.0, 0.0, 2.0), None);
+        assert_eq!(pixels_of(1728.0, 1117.0, 0.0), None);
+        assert_eq!(pixels_of(f64::NAN, 1117.0, 2.0), None);
     }
 
     /// The exclusions are this process, its parent and the command line's, without repeats and

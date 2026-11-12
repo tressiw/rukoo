@@ -15,7 +15,8 @@
 //! Reading the window list needs no Screen Recording grant: window titles do, and none are read.
 
 use objc2_core_foundation::{
-    CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect,
+    CFArray, CFBoolean, CFBundle, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect,
+    CFURL,
 };
 use objc2_core_graphics::{
     kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
@@ -219,11 +220,59 @@ fn overlap(frame: &CGRect, bounds: CGRect) -> f64 {
 
 /// Top-level windows from the front window down the Z-order, as the window server lists them.
 pub fn z_order(exclude_pids: &[u32]) -> Vec<WindowInfo> {
+    z_order_without(exclude_pids, &[])
+}
+
+/// `z_order`, with the windows of the apps whose bundle ids are `bundles` excluded too: the
+/// windows the stream's filter leaves out. The bundle of a window's owner comes from its
+/// executable's path, so this asks neither ScreenCaptureKit nor the Screen Recording grant, and
+/// never waits on either.
+pub fn z_order_without(exclude_pids: &[u32], bundles: &[&str]) -> Vec<WindowInfo> {
     let entries = entries();
     if entries.is_empty() {
         return Vec::new();
     }
-    windows(&entries, &frames(), exclude_pids)
+    let mut pids = exclude_pids.to_vec();
+    if !bundles.is_empty() {
+        let mut owners: Vec<i32> = entries.iter().map(|e| e.pid).collect();
+        owners.sort_unstable();
+        owners.dedup();
+        for owner in owners.into_iter().filter(|&pid| pid > 0) {
+            let ids = executable(owner)
+                .map(|path| bundle_ids_at(&path))
+                .unwrap_or_default();
+            if ids.iter().any(|id| bundles.contains(&id.as_str())) {
+                pids.push(owner as u32);
+            }
+        }
+    }
+    windows(&entries, &frames(), &pids)
+}
+
+/// A process's executable, from `proc_pidpath`.
+fn executable(pid: i32) -> Option<std::path::PathBuf> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer has the size the call is told.
+    let len = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if len <= 0 {
+        return None;
+    }
+    buffer.truncate(len as usize);
+    use std::os::unix::ffi::OsStringExt;
+    Some(std::ffi::OsString::from_vec(buffer).into())
+}
+
+/// The bundle ids of the app bundles that hold `path`, innermost first: an Electron renderer
+/// helper lies inside its app's own bundle, so it counts as that app too.
+fn bundle_ids_at(path: &std::path::Path) -> Vec<String> {
+    path.ancestors()
+        .filter(|dir| dir.extension().is_some_and(|ext| ext == "app"))
+        .filter_map(|app| {
+            let url = CFURL::from_directory_path(app)?;
+            let bundle = CFBundle::new(None, Some(&url))?;
+            Some(bundle.identifier()?.to_string())
+        })
+        .collect()
 }
 
 /// The windows the window server shows, front to back.
@@ -377,6 +426,29 @@ mod tests {
 
     fn entry_of(window: &CFDictionary<CFString, CFType>) -> Entry {
         super::entry(window).expect("an entry")
+    }
+
+    /// A window's owner is told by the app bundle its executable lies in, without
+    /// ScreenCaptureKit: the bundles that hold a path, innermost first, and none for a binary
+    /// outside a bundle, such as this test.
+    #[test]
+    fn a_process_is_known_by_its_bundle() {
+        let calculator = std::path::Path::new("/System/Applications/Calculator.app");
+        if calculator.is_dir() {
+            assert_eq!(
+                bundle_ids_at(&calculator.join("Contents/MacOS/Calculator")),
+                ["com.apple.calculator"]
+            );
+        }
+        let me = executable(std::process::id() as i32).expect("this process's executable");
+        assert_eq!(
+            me.canonicalize().unwrap(),
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
+        assert!(bundle_ids_at(&me).is_empty(), "{me:?}");
+        assert!(executable(-1).is_none());
+        // Nothing in the list belongs to a bundle that isn't there.
+        let _ = z_order_without(&[], &["nl.bvdm.rukoo.no-such-app"]);
     }
 
     /// A GUI session has at least one display; a CI runner's may have none, which is allowed.
