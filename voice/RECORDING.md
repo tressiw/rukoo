@@ -245,13 +245,14 @@ The screen process writes it after its `session` line, to a temporary name that 
 | `kind` | Fields | When |
 |---|---|---|
 | `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on Linux |
-| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the platform's monitor id: the Windows device name such as `\\.\DISPLAY1`, or the display id on macOS |
+| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the platform's monitor id: the Windows device name such as `\\.\DISPLAY1`, or the display id on macOS. `width` and `height` are the monitor's pixels on both platforms: on a scaled Retina display the pixels of its current mode, such as 3456 x 2234, not the points macOS lays windows out in |
 | `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
 | `video_end` | `t`, `seq`, `reason`, `bytes` | A video file ended; `t` is the end of its last sample. `reason` is `pause`, `lock`, `monitor`, `resize`, `clock`, `stop`, `error`, `disk` or `crash` |
 | `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what the platform's text reader read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
 | `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder` or `device` |
 | `lock`, `unlock` | `t` | The session locked or disconnected, and came back. Nothing is captured in between |
+| `no_permission` | `t` | macOS' Screen Recording is off for Voice, or was switched off during the meeting. Written just before the `dropped` lines that end the screen part, so they aren't read as a lost graphics device |
 | `device_lost` | `t` | The graphics device was removed or reset. The next `capture` line ends the gap |
 | `no_monitor` | `t` | No monitor is left to record, or the one `--monitor` pinned went away. Written once per wait; the next `capture` line ends it |
 | `heartbeat` | `t`, `wall`, `boot`, `frames`, `videoBytes` | Every 2 s: the frames saved and the bytes of the open video file |
@@ -314,7 +315,7 @@ When both parts are dropped, the process writes `stop` with reason `dropped` and
 ### `rukoo-voice-screen`
 
 ```
-rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
 rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 rukoo-voice-screen probe
 rukoo-voice-screen inspect <file.mp4>
@@ -324,7 +325,10 @@ rukoo-voice-screen inspect <file.mp4>
 
 - It refuses to start while `screen.json` names a process that answers on its port (exit code 4), when the journal has `stop`, and when `screen/` has content and `--resume` isn't given (exit code 3).
 - It waits up to 5 s for a `session` line in the timeline, else it exits with code 1.
-- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
+- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. On macOS the windows of this process, of the app that started it, of Rukoo's bundle `nl.bvdm.rukoo-mail` and of every `--exclude-pid` count as capture-excluded, since the stream leaves them out. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
+- `--exclude-pid <pid>` (repeatable) names a process whose windows stay out of the recording. On macOS the stream's filter leaves out those processes, Voice's own and Rukoo's bundle, so the frames and the video show what is behind them; Windows ignores the switch, because Rukoo hides its windows from capture itself. The filter is built when capture starts, so a Rukoo that restarts with a new pid mid-meeting is in the recording again until the next monitor change or restart of the screen process.
+- On macOS it asks `CGPreflightScreenCaptureAccess` before it starts, and never asks for the permission itself. Without the Screen Recording grant `record` exits with code 5 and a line that names Screen Recording and where to switch it on; it journals nothing and the meeting's audio goes on. Voice shows that reason and doesn't start it again. A stream that stops with the grant gone, or that the user stops from the system's menu, writes `no_permission`, then drops the video and the frames with reason `device`, ends the video file with `error` and stops the session with reason `dropped`; Voice reads the `no_permission` line first and shows the same notice. A stream that stops because its display went follows the monitor rules above, and one that stops with its display still there is started again after a second.
+- On macOS a display is captured at its native pixels. A monitor's size is the pixel size of its current mode, so a scaled Retina display such as a 16-inch MacBook Pro (1728 x 1117 points) records 3456 x 2234. When that is more than the encoder takes (see "Video and frames"), ScreenCaptureKit itself delivers the size `caps::video_size` gives the video, 4096 x 2304 for a 5K display, so no frame is converted and scaled on the CPU; the frames' JPEGs stop at 2560 pixels as everywhere. The `capture` line's size is the frame's, so it can be smaller than the `monitor` line's. A monitor's `x` and `y` stay in points, the unit of window frames, because the display choice places windows by them.
 - It follows the timeline every 250 ms: it stops capturing at `pause` and starts again at `resume`, and at `stop` it ends at the `stop` line's `t`, finishes the video file, reads the frames still queued, writes `video_end` and `stop` with reason `meeting`, removes `screen.json` and exits with code 0.
 - It stops by itself, with reason `interrupted`, when the timeline has had no new line for 60 s of awake time and nobody asked its `status` in that time: the screen is never recorded without the audio.
 - It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names. Frames are logged by id, size, bytes and JPEG and OCR time only. A development copy also logs the graphics memory it uses once a minute.
@@ -337,9 +341,11 @@ rukoo-voice-screen inspect <file.mp4>
 { "version": 1, "capture": true, "encoders": [{ "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }], "hardwareEncoder": { "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }, "ocr": ["nl-NL"], "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL S3220DGF", "x": 0, "y": 0, "width": 2560, "height": 1440, "primary": true }] }
 ```
 
+On macOS the output also has `"screenRecording": true` or `false`: whether this process holds the Screen Recording grant, from a call that never prompts for it. `capture` is true there, because ScreenCaptureKit is part of the system; a Mac without the grant starts the screen process, which exits with code 5. Windows leaves `screenRecording` out.
+
 `inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads, and on macOS the shared box walker reads them.
 
-`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. Until ScreenCaptureKit lands, macOS records the synthetic screen of `--test` and refuses a real one. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
+`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. On macOS the real screen is ScreenCaptureKit: one `SCStream` on the monitor's display, `420f` frames at the video's frame rate, encoded by VideoToolbox as they are. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it, and 5, only on macOS, Screen Recording is off.
 
 `--test` is honoured only in a development copy, with `RUKOO_VOICE_DATA_DIR` set. It replaces the screen with a synthetic source and adds faults, as `synthetic:<w>x<h>` followed by options separated by commas:
 
