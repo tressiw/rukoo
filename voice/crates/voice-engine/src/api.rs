@@ -238,7 +238,17 @@ pub trait EngineApi: Send + Sync + 'static {
     ) -> Result<(), ApiError>;
 
     // Settings (API.md "Settings"). Values are the JSON shapes API.md defines.
+    /// The whole state, reading the privacy permissions because the page is asking.
     fn settings_state(&self) -> Value;
+    /// The same state without reading the privacy permissions, for callers that aren't the page,
+    /// such as the development hooks. Asking while Settings is closed must not make macOS list
+    /// Voice in System Settings.
+    #[doc(hidden)]
+    fn settings_state_quiet(&self) -> Value;
+    /// The Settings window was built or shown: pushed states now read the privacy permissions.
+    fn settings_opened(&self);
+    /// The Settings window is gone: pushed states leave the privacy permissions out.
+    fn settings_closed(&self);
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError>;
     fn settings_save_provider(&self, save: Value) -> Result<(), ApiError>;
     fn settings_remove_key(&self, target: &str) -> Result<(), ApiError>;

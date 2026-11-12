@@ -55,6 +55,9 @@ pub(crate) struct Core {
     /// What Settings > Speaker labels last showed about running meetings.
     labels: Mutex<Value>,
     pub settings_seq: AtomicU64,
+    /// Whether the Settings window exists. Its states read the privacy permissions; nothing else
+    /// does, so starting Voice doesn't call TCC before anyone opens Settings.
+    settings_open: AtomicBool,
     /// Settings states go out one at a time, each built after its `seq` was given.
     emitting: Mutex<()>,
     /// The engine itself, for work that outlives a call: set once by `start_with`.
@@ -98,6 +101,7 @@ impl Core {
             rukoo: Mutex::new(Value::Null),
             labels: Mutex::new(Value::Null),
             settings_seq: AtomicU64::new(1),
+            settings_open: AtomicBool::new(false),
             emitting: Mutex::new(()),
             this: OnceLock::new(),
         }
@@ -240,7 +244,24 @@ impl Core {
         }
         let _emitting = lock(&self.emitting);
         self.settings_seq.fetch_add(1, Ordering::SeqCst);
-        self.sink.settings(crate::settings::state(self));
+        self.sink
+            .settings(crate::settings::state(self, self.settings_open()));
+    }
+
+    /// Settings now exists: its states carry the privacy permissions, and the window gets a fresh
+    /// one. Called when the window is built or shown again.
+    pub fn settings_opened(&self) {
+        self.settings_open.store(true, Ordering::SeqCst);
+        self.settings_changed();
+    }
+
+    /// Settings is gone: pushed states leave the privacy permissions out again.
+    pub fn settings_closed(&self) {
+        self.settings_open.store(false, Ordering::SeqCst);
+    }
+
+    pub fn settings_open(&self) -> bool {
+        self.settings_open.load(Ordering::SeqCst)
     }
 
     pub fn looks(&self) -> Looks {
@@ -936,7 +957,19 @@ impl EngineApi for EngineImpl {
     }
 
     fn settings_state(&self) -> Value {
-        crate::settings::state(&self.0)
+        crate::settings::state(&self.0, true)
+    }
+
+    fn settings_state_quiet(&self) -> Value {
+        crate::settings::state(&self.0, false)
+    }
+
+    fn settings_opened(&self) {
+        self.0.settings_opened();
+    }
+
+    fn settings_closed(&self) {
+        self.0.settings_closed();
     }
 
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError> {

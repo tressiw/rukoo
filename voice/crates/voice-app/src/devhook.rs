@@ -81,7 +81,7 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
                 "pill": engine.pill_snapshot(),
                 "pillWindow": shared.pill.status(),
                 "tray": { "meeting": tray.meeting, "meetingAtMs": tray.meeting_at_ms },
-                "settings": engine.settings_state(),
+                "settings": engine.settings_state_quiet(),
             }))
         }
         "start_meeting" => engine
@@ -141,7 +141,7 @@ fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, 
         "import" => engine.settings_sync_key("import", text("code")),
         "restore_list" => engine.settings_sync_restore("list"),
         "restore_start" => engine.settings_sync_restore("start"),
-        "status" => Ok(engine.settings_state()["sync"].clone()),
+        "status" => Ok(engine.settings_state_quiet()["sync"].clone()),
         other => return Err(format!("unknown sync action {other:?}")),
     };
     result.map_err(|e| e.to_string())

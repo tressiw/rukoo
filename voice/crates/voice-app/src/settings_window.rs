@@ -84,6 +84,7 @@ pub fn open(
         if focus {
             window.set_focus()?;
         }
+        engine.settings_opened();
         return Ok(window);
     }
     let ui = engine.ui();
@@ -105,6 +106,7 @@ pub fn open(
     if focus {
         window.set_focus()?;
     }
+    engine.settings_opened();
     Ok(window)
 }
 

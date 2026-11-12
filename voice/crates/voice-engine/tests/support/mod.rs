@@ -704,16 +704,23 @@ impl System for FakeSystem {
 pub struct FakePermissions {
     pub supported: bool,
     pub states: Mutex<HashMap<Permission, PermissionState>>,
+    /// How often the engine asked, one per permission per state that reads them.
+    calls: AtomicUsize,
 }
 
 impl FakePermissions {
     pub fn set(&self, permission: Permission, state: PermissionState) {
         lock(&self.states).insert(permission, state);
     }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
 }
 
 impl Permissions for FakePermissions {
     fn state(&self, permission: Permission) -> Option<PermissionState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if !self.supported {
             return None;
         }
@@ -787,6 +794,7 @@ impl Harness {
             permissions: Arc::new(FakePermissions {
                 supported: cfg!(target_os = "macos"),
                 states: Mutex::new(HashMap::new()),
+                calls: AtomicUsize::new(0),
             }),
             ownkey_config: None,
             ownkey_models: None,
