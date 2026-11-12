@@ -1352,10 +1352,6 @@ fn record_with_pause(engine: &Engine, data: &Path, before: u64, paused: u64, aft
 /// its `video_end`; the journal after its own `stop`; the clips and `screen.json` never (contract
 /// 2.1, spec RUK-110 2.8).
 fn screen_files_upload_by_their_rules() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("sync-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
@@ -1463,10 +1459,6 @@ fn screen_files_upload_by_their_rules() {
 /// again after retention removed them and sync fetched them back. A range across a pause gives
 /// one stretch, with the shorter end (contract 2.3).
 fn media_open_serves_a_frame_and_a_clip() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("media-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1565,10 +1557,6 @@ fn media_open_serves_a_frame_and_a_clip() {
 /// A meeting whose video hasn't reached the bucket keeps `screen/video`, with its frames and audio,
 /// past its retention; once it uploaded, the sweep removes them and keeps the journal (contract 2.6).
 fn retention_holds_screen_media() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("retention-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1724,10 +1712,6 @@ fn a_restored_meeting_keeps_its_speakers() {
 /// says so in `sync.screenRecording` (spec RUK-110 D18, contract 2.7): by the screen supervisor's
 /// mode for the meeting that records, not by Voice's default.
 fn the_key_dialogs_wait_while_the_screen_records() {
-    if !cfg!(windows) {
-        println!("skipped: the screen process records on Windows only");
-        return;
-    }
     let h = screen_harness("key-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
