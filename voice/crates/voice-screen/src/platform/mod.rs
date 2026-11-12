@@ -362,6 +362,10 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
         frame: &Frame<Self::Picture>,
     ) -> Result<Pixels, PlatformError>;
     /// A maker for video files on this device; `None` when this computer has no encoder at all.
-    fn video_maker(&self, device: &Self::Device)
-        -> Option<Box<dyn VideoMaker<File = Self::Video>>>;
+    /// `first` is the file's first picture, whose format a platform may prepare the encoder for.
+    fn video_maker(
+        &self,
+        device: &Self::Device,
+        first: &Self::Picture,
+    ) -> Option<Box<dyn VideoMaker<File = Self::Video>>>;
 }

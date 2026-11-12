@@ -60,6 +60,17 @@ impl MacVideoWriter {
         height: u32,
         options: WriterOptions,
     ) -> Result<MacVideoWriter, VideoError> {
+        MacVideoWriter::create_primed(path, width, height, options, Priming::Bgra)
+    }
+
+    /// `create`, with the encoder primed in the format the file's frames come in.
+    pub fn create_primed(
+        path: &Path,
+        width: u32,
+        height: u32,
+        options: WriterOptions,
+        priming: Priming,
+    ) -> Result<MacVideoWriter, VideoError> {
         let (video_width, video_height) = video_size(width, height);
         if video_width == 0 || video_height == 0 {
             return Err(VideoError::Encoder("the frame has no size".into()));
@@ -83,10 +94,18 @@ impl MacVideoWriter {
         let mut encoder =
             Encoder::create(video_width, video_height, kind).map_err(VideoError::Encoder)?;
         // The file needs the encoder's SPS and PPS, which VideoToolbox only hands out with the
-        // first sample: one black frame before the file exists gives them.
-        let black = PixelBuffer::new(video_width, video_height)
-            .ok_or_else(|| VideoError::Encoder("can't allocate the encoder's frame".into()))?;
-        black.fill([0, 0, 0, 0xff]);
+        // first sample: one black frame before the file exists gives them. It has the format of
+        // the frames that follow: a session primed with BGRA writes an SPS without a colour
+        // description and converts every `420f` frame after it to video range (measured with the
+        // hardware encoder, about 3 ms a frame at 3456 x 2234), while one primed with `420f`
+        // signals full range and BT.709 and takes the frames as they are.
+        let black = match priming {
+            Priming::Biplanar => PixelBuffer::black_420f(video_width, video_height),
+            Priming::Bgra => PixelBuffer::new(video_width, video_height).inspect(|black| {
+                black.fill([0, 0, 0, 0xff]);
+            }),
+        }
+        .ok_or_else(|| VideoError::Encoder("can't allocate the encoder's frame".into()))?;
         encoder
             .encode(&black, 0, true)
             .map_err(VideoError::Encoder)?;
@@ -276,12 +295,40 @@ impl PlatformWriter for MacVideoWriter {
     }
 }
 
+/// The format of the black frame that primes a file's encoder: the format its frames come in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Priming {
+    /// BGRA, as the synthetic screen sends.
+    #[default]
+    Bgra,
+    /// `420f`, as ScreenCaptureKit sends.
+    Biplanar,
+}
+
 /// Makes video files with VideoToolbox and `voice_screen_files::fmp4`.
-pub struct MacVideoMaker;
+pub struct MacVideoMaker {
+    priming: Priming,
+}
 
 impl MacVideoMaker {
     pub fn new() -> MacVideoMaker {
-        MacVideoMaker
+        MacVideoMaker {
+            priming: Priming::Bgra,
+        }
+    }
+
+    /// A maker whose files are primed in `first`'s format. A frame of the video's own size goes
+    /// to the encoder as it is; a larger one is scaled through BGRA, so its file is primed so.
+    pub fn for_picture(first: &PixelBuffer) -> MacVideoMaker {
+        let (width, height) = (first.width(), first.height());
+        let as_it_is = video_size(width & !1, height & !1) == (width, height);
+        MacVideoMaker {
+            priming: if first.is_biplanar() && as_it_is {
+                Priming::Biplanar
+            } else {
+                Priming::Bgra
+            },
+        }
     }
 }
 
@@ -301,7 +348,7 @@ impl VideoMaker for MacVideoMaker {
         height: u32,
         options: WriterOptions,
     ) -> Result<MacVideoWriter, VideoError> {
-        MacVideoWriter::create(path, width, height, options)
+        MacVideoWriter::create_primed(path, width, height, options, self.priming)
     }
 }
 
@@ -410,6 +457,38 @@ mod tests {
         assert_eq!(samples, 30);
         assert!(index.fragments.len() >= 2, "{:?}", index.fragments.len());
         assert!(index.fragments.iter().all(|f| f.first_sync));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file whose frames are `420f` is primed with a black `420f` frame, so the encoder takes
+    /// them as they are; a larger one, scaled through BGRA, is primed with BGRA.
+    #[test]
+    fn a_420f_file_is_primed_in_420f() {
+        let slide = crate::capture::synthetic_mac::slide("Slide 1", 1, 320, 180).unwrap();
+        let biplanar = PixelBuffer::from_pixels_420f(&slide).unwrap();
+        assert_eq!(
+            MacVideoMaker::for_picture(&biplanar).priming,
+            Priming::Biplanar
+        );
+        let bgra = PixelBuffer::from_pixels(&slide).unwrap();
+        assert_eq!(MacVideoMaker::for_picture(&bgra).priming, Priming::Bgra);
+        let large = PixelBuffer::black_420f(5120, 1440).unwrap();
+        assert_eq!(MacVideoMaker::for_picture(&large).priming, Priming::Bgra);
+
+        let dir = temp_dir("primed");
+        let path = dir.join("000001.mp4");
+        let mut maker = MacVideoMaker::for_picture(&biplanar);
+        let mut writer = maker.create(&path, 320, 180, software()).unwrap();
+        let mut boot = 3_000_000_000u64;
+        for _ in 0..20 {
+            writer.write(&biplanar, boot).unwrap();
+            boot += 666_667;
+        }
+        writer.finish().unwrap();
+        let index = mp4::index_path(&path).unwrap();
+        assert_eq!(index.complete_len, index.file_len);
+        let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+        assert_eq!(samples, 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

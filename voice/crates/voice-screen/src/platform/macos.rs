@@ -159,8 +159,12 @@ impl Platform for MacPlatform {
             .ok_or_else(|| PlatformError::new("can't read the frame's pixels"))
     }
 
-    fn video_maker(&self, _device: &MacDevice) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
-        Some(Box::new(MacVideoMaker::new()))
+    fn video_maker(
+        &self,
+        _device: &MacDevice,
+        first: &PixelBuffer,
+    ) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
+        Some(Box::new(MacVideoMaker::for_picture(first)))
     }
 }
 

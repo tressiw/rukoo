@@ -1031,7 +1031,7 @@ impl<P: Platform> Screen<P> {
         let Some(device) = self.device.clone() else {
             return;
         };
-        let Some(maker) = self.platform.video_maker(&device) else {
+        let Some(maker) = self.platform.video_maker(&device, &frame.picture) else {
             self.drop_video_encoder("this computer has no video encoder");
             return;
         };

@@ -638,7 +638,11 @@ impl Platform for FakePlatform {
         })
     }
 
-    fn video_maker(&self, _device: &FakeDevice) -> Option<Box<dyn VideoMaker<File = FakeWriter>>> {
+    fn video_maker(
+        &self,
+        _device: &FakeDevice,
+        _first: &(),
+    ) -> Option<Box<dyn VideoMaker<File = FakeWriter>>> {
         Some(Box::new(FakeMaker {
             calls: self.calls.clone(),
         }))

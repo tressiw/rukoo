@@ -803,5 +803,13 @@ mod tests {
         let samples = encoder.encode(&picture, 0, true).unwrap();
         assert_eq!(samples.len(), 1);
         assert!(samples[0].sync);
+        // Primed with `420f`, as a file of ScreenCaptureKit's frames is, it takes them too.
+        let mut encoder = Encoder::create(1920, 1080, Kind::Hardware).unwrap();
+        let black = PixelBuffer::black_420f(1920, 1080).unwrap();
+        assert_eq!(encoder.encode(&black, 0, true).unwrap().len(), 1);
+        assert!(encoder.parameter_sets().is_some());
+        let slide = crate::capture::synthetic_mac::slide("Slide 2", 2, 1920, 1080).unwrap();
+        let frame = PixelBuffer::from_pixels_420f(&slide).unwrap();
+        assert_eq!(encoder.encode(&frame, 66, false).unwrap().len(), 1);
     }
 }
