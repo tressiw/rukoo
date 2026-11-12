@@ -220,7 +220,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
-| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; System Audio Recording before a tap can be checked). `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
+| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; system audio before a tap can be checked). `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
 | `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
@@ -446,7 +446,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 | `accessibility` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
 | `screenRecording` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
 
-System Audio Recording shares the Screen & System Audio Recording pane; Apple lists no pane of its own for it. Rejects with `invalid_value` for an id outside the table.
+The system audio permission shares the Screen & System Audio Recording pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane. The pane names here and in Settings are macOS 27's; macOS 26 and earlier called three of them "Accessibility", "Screen Recording" and "System Audio Recording". Rejects with `invalid_value` for an id outside the table.
 
 ### Command `settings_clean_preview`
 

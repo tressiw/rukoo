@@ -134,7 +134,9 @@ const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'm
 const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permissions', 'about'];
 
 // macOS privacy permissions, in the order System Settings groups them. The names are the ones
-// System Settings shows; each row says why Voice needs it (voice/ui/API.md, SettingsState.permissions).
+// System Settings on macOS 27 shows, the same in both catalogs: macOS 26 and earlier said
+// "Accessibility", "Screen Recording" and "System Audio Recording". Each row says why Voice needs
+// it (voice/ui/API.md, SettingsState.permissions).
 const PERMISSIONS = [
   ['microphone', 'settings.permissions.microphone', 'settings.permissions.microphoneWhy'],
   ['systemAudio', 'settings.permissions.systemAudio', 'settings.permissions.systemAudioWhy'],
