@@ -1,6 +1,7 @@
-//! The `boot` field of `session` and `heartbeat` lines: Windows interrupt time read next to `t`,
-//! so the screen process can map its own moments onto the meeting clock (`voice/RECORDING.md`).
-//! Elsewhere the recorder leaves the field out.
+//! The `boot` field of `session` and `heartbeat` lines: a clock that counts sleep, read next to
+//! `t`, so the screen process can map its own moments onto the meeting clock
+//! (`voice/RECORDING.md`). On Windows that is the interrupt time, on macOS `mach_continuous_time`;
+//! Linux has no such shared counter, so the recorder leaves the field out there.
 
 mod common;
 
@@ -48,7 +49,7 @@ fn assert_boot_follows_t(anchors: &[&Value], what: &str) {
 }
 
 #[test]
-fn session_and_heartbeats_carry_boot_on_windows() {
+fn session_and_heartbeats_carry_boot_where_the_clock_counts_sleep() {
     let m = TempMeeting::new("boot");
     let tracks = ["mic=synthetic:tone:440", "call=synthetic:tone:660"];
     let mut child = m.record(&tracks, &[]);
@@ -73,11 +74,11 @@ fn session_and_heartbeats_carry_boot_on_windows() {
         .filter(|l| l["kind"] == "session" || l["kind"] == "heartbeat")
         .collect();
     assert!(anchors.len() >= 8, "{anchors:?}");
-    if cfg!(windows) {
+    if cfg!(windows) || cfg!(target_os = "macos") {
         for line in &anchors {
             assert!(boot(line).is_some(), "no boot in {line}");
         }
-        // Interrupt time keeps counting across processes, so both sessions sit on one line.
+        // The counter keeps counting across processes, so both sessions sit on one line.
         assert_boot_follows_t(&session_lines(&lines, 1), "session 1");
         assert_boot_follows_t(&session_lines(&lines, 2), "session 2");
         let first = boot(session_lines(&lines, 1)[0]).unwrap();

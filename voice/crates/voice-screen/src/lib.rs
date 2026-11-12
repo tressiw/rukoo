@@ -4,12 +4,23 @@
 //!
 //! The binary `rukoo-voice-screen` runs as its own process, so a graphics driver, encoder or OCR
 //! crash never costs audio.
+//!
+//! `record` and `video::thread` are the orchestration and build on every platform; everything an
+//! operating system provides for them — capture, the graphics device, thumbnails, pixels, the
+//! video writer, JPEG, OCR, the clocks, the monitors and free space — sits behind the traits in
+//! `platform`. The Windows backend is `platform::windows`; the commands still refuse to record
+//! where there is none.
 
 use std::fmt;
 
 pub mod args;
+pub mod finalize;
 pub mod inspect;
+pub mod platform;
+pub mod record;
 pub mod video;
+
+pub mod frames;
 
 #[cfg(windows)]
 pub mod capture;
@@ -20,13 +31,7 @@ mod com;
 #[cfg(windows)]
 pub mod disk;
 #[cfg(windows)]
-pub mod finalize;
-#[cfg(windows)]
-pub mod frames;
-#[cfg(windows)]
 pub mod probe;
-#[cfg(windows)]
-pub mod record;
 
 /// The screen process's own version, written into `session` lines.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -116,10 +121,11 @@ pub fn run(args: &[String]) -> Result<(), ExitError> {
             }
         }
         #[cfg(windows)]
-        args::Cmd::Record(opts) => record::record(opts),
+        args::Cmd::Record(opts) => record::record(platform::windows::WindowsPlatform::new(), opts),
         #[cfg(windows)]
         args::Cmd::Finalize { meeting, reason } => {
-            let done = finalize::finalize(&meeting, &reason)?;
+            let platform = platform::windows::WindowsPlatform::new();
+            let done = finalize::finalize(&platform, &meeting, &reason)?;
             print_line(&done.to_json().to_string());
             Ok(())
         }

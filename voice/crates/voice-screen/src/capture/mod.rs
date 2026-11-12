@@ -8,33 +8,18 @@ pub mod session;
 pub mod synthetic;
 pub mod wgc;
 
-use voice_screen_files::monitors::MonitorInfo;
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
-use self::d3d::D3D;
-
-/// A captured frame, copied out of the capture's own buffers. `width` and `height` are even
-/// (an odd last column or row is cropped). `boot` is when it was composed, in interrupt time.
-/// `dirty` is the fraction of the screen its dirty regions cover, where Windows reports them.
-/// `generation` names the capture session, so frames of a stopped one are dropped.
+/// The picture of a frame on Windows: a texture of the process's own, copied out of the capture.
+/// It travels from the capture's thread to the main thread and on to the encoder's, so it is
+/// declared sendable: Direct3D textures are free-threaded and are only read after the copy.
 #[derive(Clone)]
-pub struct CapturedFrame {
-    pub texture: ID3D11Texture2D,
-    pub boot: u64,
-    pub width: u32,
-    pub height: u32,
-    pub dirty: Option<f32>,
-    pub generation: u64,
-}
+pub struct Texture(pub ID3D11Texture2D);
 
-// The texture is free-threaded and only read after the copy.
-unsafe impl Send for CapturedFrame {}
+unsafe impl Send for Texture {}
 
-/// A capture of one monitor at a time.
-pub trait Source: Send {
-    /// Starts capturing `monitor`; frames carry `generation`.
-    fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> windows::core::Result<()>;
-    /// Stops capturing. Frames already sent may still arrive; their generation is old.
-    fn stop(&mut self);
-    fn device(&self) -> &D3D;
-}
+/// A captured frame on Windows.
+pub type CapturedFrame = crate::platform::Frame<Texture>;
+
+/// The picture of a frame, as the types above name it.
+pub type Picture = Texture;

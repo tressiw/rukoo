@@ -1,8 +1,9 @@
 //! One encoder thread per video file. The main thread hands it frames through a queue of four;
 //! when the encoder falls behind, the oldest frame goes. Frames held back on a still screen
-//! (`hold`) replace each other; the writer puts the newest in at its next re-submit. The sink
-//! writer lives and dies on this thread, and a `Finalize` that hangs costs only this thread: `end`
-//! gives up after its timeout and the file stays readable to its last fragment.
+//! (`hold`) replace each other; the writer puts the newest in at its next re-submit. The
+//! platform's writer (`platform::VideoWriter`) lives and dies on this thread, and a finish that
+//! hangs costs only this thread: `end` gives up after its timeout and the file stays readable to
+//! its last fragment.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -11,11 +12,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
-
-use super::mf::Mf;
-use super::writer::{VideoError, VideoWriter, WriterOptions};
-use crate::capture::d3d::D3D;
+use crate::platform::{VideoError, VideoMaker, VideoWriter, WriterOptions};
 use crate::record::Ev;
 
 /// Frames waiting for the encoder.
@@ -25,8 +22,6 @@ pub const START_WAIT: Duration = Duration::from_secs(10);
 
 /// What a new file needs.
 pub struct VideoStart {
-    pub mf: &'static Mf,
-    pub d3d: D3D,
     pub path: PathBuf,
     /// Relative to the meeting folder, for the journal.
     pub file: String,
@@ -37,23 +32,34 @@ pub struct VideoStart {
     pub options: WriterOptions,
 }
 
-#[derive(Default)]
-struct State {
-    frames: VecDeque<(ID3D11Texture2D, u64)>,
-    held: Option<(ID3D11Texture2D, u64)>,
+struct State<F> {
+    frames: VecDeque<(F, u64)>,
+    held: Option<(F, u64)>,
     tick: Option<u64>,
     end: bool,
     dropped: u64,
 }
 
-struct Shared {
-    state: Mutex<State>,
+impl<F> Default for State<F> {
+    fn default() -> State<F> {
+        State {
+            frames: VecDeque::new(),
+            held: None,
+            tick: None,
+            end: false,
+            dropped: 0,
+        }
+    }
+}
+
+struct Shared<F> {
+    state: Mutex<State<F>>,
     ready: Condvar,
 }
 
 /// A running video file.
-pub struct VideoThread {
-    shared: Arc<Shared>,
+pub struct VideoThread<W: VideoWriter> {
+    shared: Arc<Shared<W::Picture>>,
     done: Receiver<Result<u64, VideoError>>,
     end_t: Arc<AtomicU64>,
     pub seq: u64,
@@ -69,8 +75,12 @@ pub struct VideoThread {
     pub hardware: bool,
 }
 
-/// Starts the thread and its sink writer, and waits until the encoder runs.
-pub fn start(spec: VideoStart, to_main: SyncSender<Ev>) -> Result<VideoThread, VideoError> {
+/// Starts the thread and its writer, and waits until the encoder runs.
+pub fn start<W: VideoWriter>(
+    spec: VideoStart,
+    mut maker: Box<dyn VideoMaker<File = W>>,
+    to_main: SyncSender<Ev<W::Picture>>,
+) -> Result<VideoThread<W>, VideoError> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         ready: Condvar::new(),
@@ -81,8 +91,6 @@ pub fn start(spec: VideoStart, to_main: SyncSender<Ev>) -> Result<VideoThread, V
     let (done_tx, done) = mpsc::channel();
     let (thread_shared, thread_end_t, seq) = (shared.clone(), end_t.clone(), spec.seq);
     let VideoStart {
-        mf,
-        d3d,
         path,
         file,
         width,
@@ -94,8 +102,7 @@ pub fn start(spec: VideoStart, to_main: SyncSender<Ev>) -> Result<VideoThread, V
     std::thread::Builder::new()
         .name(format!("video-{seq}"))
         .spawn(move || {
-            crate::com::init_mta();
-            let writer = match VideoWriter::create(mf, &d3d, &thread_path, width, height, options) {
+            let writer = match maker.create(&thread_path, width, height, options) {
                 Ok(writer) => {
                     let (name, hardware) = writer.encoder();
                     let _ = ready_tx.send(Ok((name.to_string(), hardware, writer.video_size())));
@@ -143,10 +150,10 @@ pub fn start(spec: VideoStart, to_main: SyncSender<Ev>) -> Result<VideoThread, V
     }
 }
 
-fn run(
-    mut writer: VideoWriter,
-    shared: &Shared,
-    to_main: &SyncSender<Ev>,
+fn run<W: VideoWriter>(
+    mut writer: W,
+    shared: &Shared<W::Picture>,
+    to_main: &SyncSender<Ev<W::Picture>>,
     seq: u64,
     end_t: &AtomicU64,
     done: mpsc::Sender<Result<u64, VideoError>>,
@@ -167,14 +174,14 @@ fn run(
         };
         if !failed {
             let mut result = Ok(());
-            for (texture, boot) in frames {
-                result = writer.write(&texture, boot);
+            for (picture, boot) in frames {
+                result = writer.write(&picture, boot);
                 if result.is_err() {
                     break;
                 }
             }
-            if let Some((texture, boot)) = held {
-                writer.hold(&texture, boot);
+            if let Some((picture, boot)) = held {
+                writer.hold(&picture, boot);
             }
             if let (Ok(()), Some(boot)) = (&result, tick) {
                 result = writer.tick(boot);
@@ -203,7 +210,7 @@ fn run(
 
 /// Sends an error to the main thread. The main thread may be waiting in `end` for this very
 /// thread, so once the file is ending a full queue isn't waited for.
-fn report(shared: &Shared, to_main: &SyncSender<Ev>, mut event: Ev) {
+fn report<F>(shared: &Shared<F>, to_main: &SyncSender<Ev<F>>, mut event: Ev<F>) {
     loop {
         match to_main.try_send(event) {
             Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => return,
@@ -218,9 +225,9 @@ fn report(shared: &Shared, to_main: &SyncSender<Ev>, mut event: Ev) {
     }
 }
 
-impl VideoThread {
+impl<W: VideoWriter> VideoThread<W> {
     /// Queues a frame; with four waiting, the oldest goes.
-    pub fn send(&self, texture: ID3D11Texture2D, boot: u64) {
+    pub fn send(&self, picture: W::Picture, boot: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.frames.len() >= QUEUE {
             state.frames.pop_front();
@@ -229,15 +236,15 @@ impl VideoThread {
         if state.held.as_ref().is_some_and(|(_, at)| *at <= boot) {
             state.held = None;
         }
-        state.frames.push_back((texture, boot));
+        state.frames.push_back((picture, boot));
         self.shared.ready.notify_one();
     }
 
     /// Keeps a frame of a still screen as the newest picture, for the writer's next re-submit.
     /// It isn't a sample of its own, and a newer one replaces it.
-    pub fn hold(&self, texture: ID3D11Texture2D, boot: u64) {
+    pub fn hold(&self, picture: W::Picture, boot: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.held = Some((texture, boot));
+        state.held = Some((picture, boot));
     }
 
     /// Lets the writer put in the held frame, or its last frame again, after a quarter second
