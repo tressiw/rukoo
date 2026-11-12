@@ -1,8 +1,9 @@
 //! `--self-test <folder>`, development only and always with `--fake-engine`: drives the real windows
-//! through a meeting, records what Windows reports about them, and captures the pill and Settings pages in
-//! both themes into `<folder>`. It never sends input and never reads the screen; the captures come from
-//! WebView2 rendering the app's own pages. The report is `<folder>/self-test.json`. The app keeps running
-//! afterwards, so whoever started it stops it by its process id.
+//! through a meeting, records what the platform reports about them (Windows' window styles today), and
+//! captures the pill and Settings pages in both themes into `<folder>`. It never sends input and never
+//! reads the screen; the captures come from the web view rendering the app's own pages. The report is
+//! `<folder>/self-test.json`. The app keeps running afterwards, so whoever started it stops it by its
+//! process id.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,6 +84,101 @@ fn painted(pill: &Pill, seq: u64) -> bool {
     status.shown && status.acked >= seq
 }
 
+/// Waits for the pill page to acknowledge that it painted the snapshot. A window that shows nothing is
+/// the fault ownkey-windows #13 was about, so on Windows the wait is final.
+#[cfg(windows)]
+fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
+    wait(what, limit, || painted(pill, seq))
+}
+
+/// A Mac waits exactly as Windows does when someone is at its console, so a pill that really doesn't
+/// paint still fails the self-test. Otherwise (no GUI session, a session that isn't the console's, or a
+/// locked screen) WebKit runs no frames: the page's `requestAnimationFrame` acknowledgement never comes
+/// and waiting would only fail the run. The capture then shows what the page drew, and `session` in the
+/// report says which of those it was.
+#[cfg(target_os = "macos")]
+fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
+    if at_the_console() {
+        return wait(what, limit, || painted(pill, seq));
+    }
+    thread::sleep(Duration::from_millis(500));
+    if !painted(pill, seq) {
+        log::warn!(
+            "self-test: {what}: no paint acknowledgement while nobody is at the console ({}); \
+             capturing what the page drew",
+            session()
+        );
+    }
+    Ok(())
+}
+
+/// Other platforms capture nothing here, so a missing acknowledgement is only worth a line in the log.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn await_paint(what: &str, _limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
+    thread::sleep(Duration::from_millis(500));
+    if !painted(pill, seq) {
+        log::warn!("self-test: {what}: no paint acknowledgement; capturing what the page drew");
+    }
+    Ok(())
+}
+
+/// Whether anyone is at this Mac's console looking at the app's windows: the GUI session on the console
+/// with its screen unlocked. A switched-out session or a locked screen counts as nobody, because WebKit
+/// paints nothing there.
+#[cfg(target_os = "macos")]
+fn at_the_console() -> bool {
+    let (on_console, screen_locked) = session_flags();
+    at_the_console_from(on_console, screen_locked)
+}
+
+/// `kCGSessionOnConsoleKey` and `CGSSessionScreenIsLocked` of `CGSessionCopyCurrentDictionary`. A missing
+/// dictionary means no GUI session at all, which reads as neither flag.
+#[cfg(target_os = "macos")]
+fn session_flags() -> (Option<bool>, Option<bool>) {
+    use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
+
+    let Some(dictionary) = objc2_core_graphics::CGSessionCopyCurrentDictionary() else {
+        return (None, None);
+    };
+    // SAFETY: a session dictionary has string keys and CoreFoundation values, and the dictionary outlives
+    // both reads below.
+    let dictionary: CFRetained<CFDictionary<CFString, CFType>> =
+        unsafe { CFRetained::cast_unchecked(dictionary) };
+    let read = |name: &str| {
+        let key = CFString::from_str(name);
+        // SAFETY: as above; the value is borrowed for the length of the closure body.
+        unsafe { dictionary.get_unchecked(&key) }
+            .and_then(CFType::downcast_ref::<CFBoolean>)
+            .map(CFBoolean::as_bool)
+    };
+    (
+        read("kCGSSessionOnConsoleKey"),
+        read("CGSSessionScreenIsLocked"),
+    )
+}
+
+/// The rule the self-test acts on, with the two flags passed in.
+#[cfg(target_os = "macos")]
+fn at_the_console_from(on_console: Option<bool>, screen_locked: Option<bool>) -> bool {
+    on_console == Some(true) && screen_locked != Some(true)
+}
+
+/// What the report says about the session the self-test ran in, so an empty pill capture is explained.
+#[cfg(target_os = "macos")]
+fn session() -> Value {
+    let (on_console, screen_locked) = session_flags();
+    json!({
+        "onConsole": on_console,
+        "screenLocked": screen_locked,
+        "atTheConsole": at_the_console_from(on_console, screen_locked),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn session() -> Value {
+    Value::Null
+}
+
 #[cfg(windows)]
 fn foreground() -> Value {
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
@@ -114,8 +210,8 @@ fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, St
     })
 }
 
-/// The PNG a capture wrote, as the self-test reports it. Only Windows can capture a window here.
-#[cfg(windows)]
+/// The PNG a capture wrote, as the self-test reports it.
+#[cfg(any(windows, target_os = "macos"))]
 fn png_info(path: &Path) -> Value {
     let bytes = fs::read(path).unwrap_or_default();
     let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() > 24;
@@ -130,7 +226,7 @@ fn png_info(path: &Path) -> Value {
     json!({ "file": path.file_name().map(|n| n.to_string_lossy().into_owned()), "png": png, "bytes": bytes.len(), "width": width, "height": height })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn capture(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     let Some(window) = window else {
         return json!({ "file": path.display().to_string(), "error": "no window" });
@@ -141,9 +237,25 @@ fn capture(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn capture(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     json!({ "file": path.display().to_string(), "error": "captures need WebView2" })
+}
+
+/// The pill's native window styles. Windows sets and reports them; macOS has no equivalents yet, so
+/// there is nothing to read there and the self-test doesn't fail for the value it doesn't have.
+#[cfg(windows)]
+fn styles_ok(styles: &Value) -> bool {
+    let p = &styles["pill"];
+    p["toolwindow"] == true
+        && p["noactivate"] == true
+        && p["topmost"] == true
+        && p["appwindow"] == false
+}
+
+#[cfg(not(windows))]
+fn styles_ok(_styles: &Value) -> bool {
+    true
 }
 
 fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
@@ -160,9 +272,14 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     // 1. A meeting: the pill shows with its stop button.
     engine.start_meeting().map_err(|e| e.to_string())?;
     let seq = engine.pill_snapshot().seq;
-    wait("the meeting pill to paint", Duration::from_secs(20), || {
-        painted(&pill, seq)
-    })?;
+    await_paint(
+        "the meeting pill to paint",
+        Duration::from_secs(20),
+        &pill,
+        seq,
+    )?;
+    // The button windows over the pill's stop and screen buttons are Windows-only today.
+    #[cfg(windows)]
     wait(
         "the stop window over the button",
         Duration::from_secs(5),
@@ -193,7 +310,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     };
     steps.push("Settings loaded");
 
-    // 3. Both themes in both languages, captured from WebView2.
+    // 3. Both themes in both languages, captured from the web view.
     let mut captures = Vec::new();
     for (theme, language) in CAPTURES {
         for (key, value) in [("ui.theme", theme), ("ui.language", language)] {
@@ -202,10 +319,11 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
         }
         let seq = engine.pill_snapshot().seq;
-        wait(
+        await_paint(
             "the restyled pill to paint",
             Duration::from_secs(10),
-            || painted(&pill, seq),
+            &pill,
+            seq,
         )?;
         thread::sleep(Duration::from_millis(1200));
         captures.push(capture(
@@ -236,9 +354,12 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     let hidden = pill_styles(app, &pill)?;
     engine.start_meeting().map_err(|e| e.to_string())?;
     let seq = engine.pill_snapshot().seq;
-    wait("the pill to show again", Duration::from_secs(10), || {
-        painted(&pill, seq)
-    })?;
+    await_paint(
+        "the pill to show again",
+        Duration::from_secs(10),
+        &pill,
+        seq,
+    )?;
     thread::sleep(Duration::from_millis(400));
     let reshown = pill_styles(app, &pill)?;
     let end = foreground();
@@ -250,13 +371,6 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     let ours = [&after_pill, &after_settings, &end]
         .iter()
         .any(|f| f["pid"] == json!(std::process::id()));
-    let styles_ok = |v: &Value| {
-        let p = &v["pill"];
-        p["toolwindow"] == true
-            && p["noactivate"] == true
-            && p["topmost"] == true
-            && p["appwindow"] == false
-    };
     let ok = unchanged
         && !ours
         && styles_ok(&shown)
@@ -270,6 +384,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         "ok": ok,
         "pid": std::process::id(),
         "steps": steps,
+        "session": session(),
         "foreground": {
             "before": before, "afterPill": after_pill, "afterSettings": after_settings, "end": end,
             "unchanged": unchanged, "everOurs": ours
@@ -280,4 +395,19 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         "twoStepStop": { "firstClickAsks": asked, "secondClickStops": saving },
         "captures": captures,
     }))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unlocked_session_on_the_console_waits_for_the_paint() {
+        assert!(!at_the_console_from(None, None));
+        assert!(!at_the_console_from(Some(false), Some(false)));
+        assert!(at_the_console_from(Some(true), None));
+        assert!(at_the_console_from(Some(true), Some(false)));
+        // A locked screen runs no frames either, however it was reached.
+        assert!(!at_the_console_from(Some(true), Some(true)));
+    }
 }

@@ -226,6 +226,46 @@ fn a_setting_is_saved_applied_and_sent() {
 }
 
 #[test]
+fn a_system_theme_change_reaches_the_pill_and_settings_only_while_the_theme_follows_it() {
+    use voice_engine::Theme;
+
+    let h = Harness::new("system-theme");
+    let engine = h.start();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert!(engine.ui().theme_follows_system);
+
+    // The theme is System: macOS switches to light and tells the engine.
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Light);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Light);
+    assert_eq!(h.sink.last_settings()["theme"], "light");
+    assert!(h.sink.last_settings()["seq"].as_u64().unwrap() > seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // Nothing changed since: nothing is sent again.
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    engine.system_looks_changed();
+    assert_eq!(h.sink.last_settings()["seq"].as_u64().unwrap(), seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // A theme the user chose stays when the system changes.
+    engine.settings_set("ui.theme", json!("dark")).unwrap();
+    assert!(!engine.ui().theme_follows_system);
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    h.set_system_theme(Theme::Dark);
+    engine.system_looks_changed();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Dark);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes);
+    engine.shutdown();
+}
+
+#[test]
 fn bad_values_same_keys_and_dev_mode_are_refused() {
     let h = Harness::new("refuse");
     h.config(json!({}));

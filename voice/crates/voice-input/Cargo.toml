@@ -1,6 +1,6 @@
 [package]
 name = "voice-input"
-description = "Windows input for Rukoo Voice dictation: hotkeys, text insertion, selection capture"
+description = "Input for Rukoo Voice dictation: hotkeys, text insertion, the clipboard and selection capture"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,3 +20,19 @@ features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The objc2 family tauri 2.12.5, tao 0.37.2 and wry 0.57.1 build against.
+# voice-input uses objc2-app-kit for the general pasteboard only.
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSPasteboard",
+  "NSPasteboardItem",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSData",
+  "NSString",
+] }

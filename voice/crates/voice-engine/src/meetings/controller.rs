@@ -960,6 +960,11 @@ fn last_line(path: &Path) -> Option<String> {
 
 /// Starts the recorder (or the screen process) outside the app's console, process group and
 /// kill-on-close job, so it outlives the app (voice/RECORDING.md).
+///
+/// That is the difference from Voice's own workers, which end with the app: the local speech
+/// worker and the speaker label worker get `local::parent`'s variable from their spawn code and
+/// watch Voice's pid, while the recorder is never told a parent to watch. A meeting can't be
+/// repeated, so the recorder keeps recording after Voice crashes.
 pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     #[cfg(windows)]
     {

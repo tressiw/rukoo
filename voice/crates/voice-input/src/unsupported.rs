@@ -1,5 +1,9 @@
-//! Other platforms: no hotkeys or insertion yet. Every call says so instead
-//! of failing silently.
+//! The calls this crate hasn't implemented on a platform yet. Every one says
+//! so instead of failing silently.
+//!
+//! Linux uses all of them. macOS implements the pasteboard itself and shares
+//! the rest for step 2's key posting, typed text, selection capture and
+//! foreground window.
 
 use std::time::Duration;
 
@@ -30,7 +34,18 @@ pub(crate) fn capture_selection(
     Err(InputError::Unsupported)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn wait_for_clipboard_restore() {}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn copy_hidden(_text: &str) -> Result<(), InputError> {
+    Err(InputError::Unsupported)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn clear_if(_text: &str) -> Result<bool, InputError> {
+    Err(InputError::Unsupported)
+}
 
 pub(crate) fn foreground_window() -> Option<WindowInfo> {
     None

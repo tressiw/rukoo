@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Rukoo Voice Dev</string>
+	<key>CFBundleExecutable</key>
+	<string>rukoo-voice</string>
+	<key>CFBundleIdentifier</key>
+	<string>nl.bvdm.rukoo.voice.dev</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Rukoo Voice Dev</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<!-- scripts/dev-app-macos.mjs puts CFBundleIconFile here when voice-app/icons has an .icns. -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Rukoo Voice Dev uses the microphone for your dictation and for your side of a meeting.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Rukoo Voice Dev records the other side of a meeting from what your Mac plays.</string>
+</dict>
+</plist>
