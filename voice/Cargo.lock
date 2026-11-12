@@ -4583,7 +4583,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "voice-app"
 version = "0.1.0"
 dependencies = [
+ "block2",
+ "libc",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",
@@ -4639,7 +4644,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "cpal",
+ "libc",
  "log",
+ "objc2-audio-toolbox",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "voice-audio",
@@ -4759,6 +4767,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",
  "hmac",
+ "libc",
  "log",
  "rusqlite",
  "rusty-s3",

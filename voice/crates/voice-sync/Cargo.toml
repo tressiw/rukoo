@@ -32,6 +32,10 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_Threading",
 ] }
 
+# The worker lowers its own quality of service so uploads never compete with a recording.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 voice-audio = { path = "../voice-audio" }
 voice-s3-fake = { path = "../voice-s3-fake" }
