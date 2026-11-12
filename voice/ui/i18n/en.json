@@ -198,6 +198,10 @@
     "message": "Screen Recording is off",
     "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
   },
+  "pill.screenStopped": {
+    "message": "Screen recording stopped",
+    "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. A notification says the same. voice/ui/pill.js (meetingView)."
+  },
   "pill.screenChangeFailed": { "message": "Screen change failed", "description": "Pill notice when a selected screen mode or monitor could not be applied. The previous mode remains. Full details appear in a notification." },
   "pill.screenMoved": {
     "message": "Screen: {name}",
@@ -270,6 +274,10 @@
   "app.notify.screenPermission": {
     "message": "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.",
     "description": "Body of the tray notification titled \"Meeting recording\" when macOS doesn't let Voice record the screen: Screen Recording is off for Voice, from the start of the meeting or switched off during it. Names the pane in System Settings where it is switched on. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.screenStopped": {
+    "message": "The screen recording was stopped from macOS' screen sharing control, so Voice records no screen for the rest of this meeting. The audio goes on.",
+    "description": "Body of the tray notification titled \"Meeting recording\" when the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar. Screen Recording is still on. Read by voice-app (see voice/ui/API.md)."
   },
   "app.notify.settings": {
     "message": "Rukoo Voice Settings",

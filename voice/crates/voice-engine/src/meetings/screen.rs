@@ -138,6 +138,11 @@ pub enum ScreenChange {
     NoPermission {
         id: String,
     },
+    /// The user stopped the screen capture from the system's own control, such as macOS' menu
+    /// bar button for screen sharing. The screen isn't recorded any more; the audio goes on.
+    StoppedByUser {
+        id: String,
+    },
     /// The screen process died five times in a row; the screen isn't recorded any more.
     GaveUp {
         id: String,
@@ -179,8 +184,9 @@ struct ScreenLive {
     /// The `stop` line's reason, once the journal has one.
     stopped: Option<String>,
     gave_up: bool,
-    /// The journal says the Screen Recording grant is gone, or the process refused to start for
-    /// lack of it. Retrying can't help, and the drops that follow aren't a graphics device.
+    /// The journal says the Screen Recording grant is gone or the user stopped the capture, or
+    /// the process refused to start for lack of the grant. Retrying can't help, and the drops
+    /// that follow aren't a graphics device: their reason has a notice of its own.
     no_permission: bool,
     monitors: Option<usize>,
     /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
@@ -256,6 +262,16 @@ impl ScreenLive {
                             id: self.id.clone(),
                             name,
                         });
+                    }
+                }
+                Line::StoppedByUser { .. } => {
+                    if !self.no_permission {
+                        self.no_permission = true;
+                        if report {
+                            changes.push(ScreenChange::StoppedByUser {
+                                id: self.id.clone(),
+                            });
+                        }
                     }
                 }
                 Line::NoPermission { .. } => {
@@ -2023,6 +2039,40 @@ mod tests {
         assert_eq!(live.shown_mode(), ScreenMode::Off);
         // A line read later says nothing more.
         assert!(live.read_journal(true).is_empty());
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capture the user stopped from the system's control has its own change, and the drops
+    /// after it none, so Voice doesn't say Screen Recording is off when it is on.
+    #[test]
+    fn a_capture_the_user_stopped_is_reported_as_such() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-user-stopped-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-2", &dir, ScreenMode::Frames, Phase::Running);
+        use voice_screen_files::journal::Line;
+        journal.write(&Line::StoppedByUser { t: 900 }).unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 900,
+                what: "frames".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(changes.as_slice(), [ScreenChange::StoppedByUser { id }] if id == "m-2"),
+            "{changes:?}"
+        );
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
         drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
     }

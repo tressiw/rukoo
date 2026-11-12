@@ -497,6 +497,12 @@ impl Core {
                 self.pill_screen(&id);
                 self.settings_changed();
             }
+            ScreenChange::StoppedByUser { id } => {
+                self.screen_notice(&id, Some(notices::SCREEN_STOPPED), Map::new(), DROP_HOLD);
+                self.notify_keyed(NOTIFY_MEETING, NOTIFY_SCREEN_STOPPED, SCREEN_STOPPED_TEXT);
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
             ScreenChange::GaveUp { id } => {
                 self.screen_notice(&id, Some(notices::SCREEN_FAILED), Map::new(), DROP_HOLD);
                 self.notify(
@@ -755,6 +761,11 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
 /// (voice/ui/i18n `app.notify.screenPermission`), and its English text for a catalog without it.
 pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
 const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
+
+/// The body of the notification when the user stopped the screen capture from macOS' own
+/// control (voice/ui/i18n `app.notify.screenStopped`), and its English text.
+pub const NOTIFY_SCREEN_STOPPED: &str = "app.notify.screenStopped";
+const SCREEN_STOPPED_TEXT: &str = "The screen recording was stopped from macOS' screen sharing control, so Voice records no screen for the rest of this meeting. The audio goes on.";
 
 /// The pill notice for a part of the screen recording that stopped.
 fn drop_notice(what: Part, reason: Reason) -> &'static str {

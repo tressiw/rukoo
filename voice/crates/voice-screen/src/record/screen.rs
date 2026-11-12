@@ -63,6 +63,9 @@ pub struct CaptureStop {
     /// The stop says that this process may not capture the screen any more, as when the user
     /// switches Screen Recording off, rather than that the display went away.
     pub permission_lost: bool,
+    /// The user stopped the capture from the system's own control, such as the menu bar's
+    /// sharing button. The screen part ends as for a lost permission, with a line of its own.
+    pub by_user: bool,
 }
 
 const TICK: Duration = Duration::from_millis(250);
@@ -514,6 +517,10 @@ impl<P: Platform> Screen<P> {
         log(format_args!("the screen capture stopped: {}", stop.why));
         self.end_video("error");
         self.stop_capture();
+        if stop.by_user {
+            self.drop_stopped_by_user();
+            return;
+        }
         if stop.permission_lost || self.permission_gone() {
             self.drop_for_permission();
             return;
@@ -603,6 +610,18 @@ impl<P: Platform> Screen<P> {
             // take them for a lost graphics device.
             let t = self.now_t();
             self.write(&Line::NoPermission { t });
+        }
+        self.end_screen(Reason::Device);
+    }
+
+    /// The user stopped the capture from the system's control: the screen part ends as for a
+    /// lost permission, but the journal says so, so Voice doesn't say Screen Recording is off
+    /// when it is on.
+    fn drop_stopped_by_user(&mut self) {
+        log("the user stopped the screen capture from the system's control");
+        if (self.mode == Mode::Video && self.drops.video.is_none()) || self.drops.frames.is_none() {
+            let t = self.now_t();
+            self.write(&Line::StoppedByUser { t });
         }
         self.end_screen(Reason::Device);
     }

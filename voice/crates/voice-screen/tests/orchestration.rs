@@ -318,6 +318,8 @@ struct FakeSource {
     refuses_for_permission: bool,
     /// After this many frames the permission goes, and the frames keep coming, as macOS does.
     revoke_after: Option<u32>,
+    /// The stop is the user's, from the system's control.
+    by_user: bool,
     starts: Arc<AtomicU32>,
     /// The stop never reaches the queue, as when it is full; `health` has it.
     loses_notice: bool,
@@ -347,6 +349,7 @@ impl Source for FakeSource {
         );
         let (loses, kept) = (self.loses_notice, self.kept.clone());
         let revoke_after = self.revoke_after;
+        let by_user = self.by_user;
         let handle = std::thread::Builder::new()
             .name("fake-screen".into())
             .spawn(move || {
@@ -360,6 +363,7 @@ impl Source for FakeSource {
                         let stop = CaptureStop {
                             why: "the capture stopped".into(),
                             permission_lost: says,
+                            by_user,
                         };
                         if loses {
                             *kept.lock().unwrap() = Some(stop);
@@ -435,6 +439,8 @@ struct FakePlatform {
     loses_notice: bool,
     /// The permission goes after this many frames, and the capture goes on.
     revoke_after: Option<u32>,
+    /// The capture's stop says the user stopped it.
+    by_user: bool,
     /// How many times a capture was started.
     starts: Arc<AtomicU32>,
     /// What the source's `exclude` was last given.
@@ -461,8 +467,17 @@ impl FakePlatform {
             starts: Arc::new(AtomicU32::new(0)),
             loses_notice: false,
             revoke_after: None,
+            by_user: false,
             excluded: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// A capture the user stops from the system's control after `frames` frames.
+    fn stopped_by_the_user(mut self, frames: u32) -> FakePlatform {
+        self.stop_after = Some(frames);
+        self.says_permission = true;
+        self.by_user = true;
+        self
     }
 
     /// The permission goes after `frames` frames while the capture keeps delivering.
@@ -593,6 +608,7 @@ impl Platform for FakePlatform {
             says_permission: self.says_permission,
             refuses_for_permission: self.refuses_for_permission,
             revoke_after: self.revoke_after,
+            by_user: self.by_user,
             starts: self.starts.clone(),
             loses_notice: self.loses_notice,
             kept: Arc::new(Mutex::new(None)),
@@ -1139,6 +1155,32 @@ fn a_grant_revoked_under_a_running_capture_ends_it() {
             .any(|k| k == "frame" || k == "capture"),
         "{kinds:?}"
     );
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+}
+
+/// The user stops the capture from the system's control: the screen part ends as for a lost
+/// permission, and the journal says what happened instead of `no_permission`.
+#[test]
+fn a_capture_the_user_stopped_ends_with_its_own_line() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("user-stopped");
+    let platform = FakePlatform::new(true).stopped_by_the_user(3);
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(Instant::now() < deadline, "{:?}", meeting.journal());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    assert!(
+        at("stopped_by_user").unwrap() < at("dropped").unwrap(),
+        "{kinds:?}"
+    );
+    assert!(at("no_permission").is_none(), "{kinds:?}");
     assert_eq!(lines.last().unwrap()["reason"], "dropped");
 }
 

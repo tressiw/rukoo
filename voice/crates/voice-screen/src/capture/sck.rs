@@ -286,6 +286,7 @@ impl Source for ScreenSource {
                     STALL_AFTER.as_secs()
                 ),
                 permission_lost: false,
+                by_user: false,
             });
         }
         crate::log(format_args!(
@@ -298,6 +299,7 @@ impl Source for ScreenSource {
             Err(e) => Some(CaptureStop {
                 why: e.to_string(),
                 permission_lost: false,
+                by_user: false,
             }),
         }
     }
@@ -329,6 +331,7 @@ impl RefreshJob {
                         CaptureStop {
                             why: e.to_string(),
                             permission_lost: true,
+                            by_user: false,
                         },
                     ));
                 } else if shared.refresh_error.as_deref() != Some(e.message.as_str()) {
@@ -397,6 +400,7 @@ impl RefreshJob {
                         CaptureStop {
                             why: e.to_string(),
                             permission_lost: true,
+                            by_user: false,
                         },
                     ));
                 } else {
@@ -473,6 +477,7 @@ impl StartJob {
             Opened::Failed(CaptureStop {
                 why: e.to_string(),
                 permission_lost: e.permission,
+                by_user: false,
             })
         };
         // One read of the shareable content serves the display and the filter.
@@ -576,6 +581,7 @@ impl StartJob {
                 Opened::Failed(CaptureStop {
                     why: format!("the screen capture didn't start: {why}"),
                     permission_lost: permission,
+                    by_user: false,
                 })
             }
             Err(_) => Opened::Late(
@@ -585,6 +591,7 @@ impl StartJob {
                         ANSWER_WAIT.as_secs()
                     ),
                     permission_lost: false,
+                    by_user: false,
                 },
                 Pending { live, answer },
             ),
@@ -955,6 +962,7 @@ define_class!(
             self.on_stop(CaptureStop {
                 why: describe(error),
                 permission_lost: permission_lost(error.code()),
+                by_user: error.code() == SCStreamErrorCode::UserStopped.0,
             });
         }
     }
@@ -1409,6 +1417,7 @@ mod tests {
         let stop = CaptureStop {
             why: "-3821 the system stopped the stream".into(),
             permission_lost: false,
+            by_user: false,
         };
         output.on_stop(stop.clone());
         assert!(matches!(receiver.try_recv(), Ok(Ev::CaptureStopped(3, s)) if s == stop));
