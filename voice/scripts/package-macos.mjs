@@ -32,6 +32,11 @@
 // stops the way package.ps1 stops with "Publish the NeMo runtime first". `--no-speakers` makes a test package
 // without the runtime and says so loudly.
 //
+// Before it builds anything it checks that voice/THIRD_PARTY_NOTICES.md lists the crates the lockfile gives for both
+// shipping targets (voice/scripts/notices.mjs, which package.ps1 runs too). Tauri bundles that file, and the script adds
+// a THIRD_PARTY_LICENSES.txt with the license files of the macOS build's crates and the NeMo runtime to
+// Contents/Resources.
+//
 // The checks, all of which fail the script, are the macOS counterparts of package.ps1's:
 //   - the Info.plist keys (LSUIElement, the two usage strings, the category, the development region, the minimum
 //     system version) with `plutil -extract`, and the English and Dutch InfoPlist.strings;
@@ -51,6 +56,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkNotices, licenseTexts, MACOS } from './notices.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -58,7 +64,7 @@ const APP = path.join(VOICE, 'crates', 'voice-app');
 const APP_NAME = 'Rukoo Voice';
 const BUNDLE = `${APP_NAME}.app`;
 const BUNDLE_ID = 'nl.bvdm.rukoo.voice';
-const TRIPLE = 'aarch64-apple-darwin';
+const TRIPLE = MACOS;
 // The CLI voice/crates/voice-app/tauri.macos.conf.json was written against, the version package.ps1 pins.
 const TAURI_CLI = '2.12.4';
 const PROGRAM = 'rukoo-voice';
@@ -338,6 +344,19 @@ function addRuntime(appDir, runtime) {
   console.log(`  note: voice-core does not search Contents/Resources/nemo_speech yet and speaker labels are Windows-only in this build; the macOS speaker worker adds that lookup`);
 }
 
+// The license texts of everything the macOS app holds, in Resources next to the runtime, where the app's seal covers
+// them. THIRD_PARTY_NOTICES.md is already there: tauri.conf.json lists it as a resource. package.ps1 puts the same
+// two files in the installer.
+function addLicenseTexts(appDir, runtime) {
+  const resources = path.join(appDir, 'Contents', 'Resources');
+  const texts = licenseTexts(TRIPLE, {
+    nemoDir: runtime ? runtime.dir : null,
+    nemoLabel: `${NEMO_FOLDER}/licenses`,
+  });
+  fs.writeFileSync(path.join(resources, 'THIRD_PARTY_LICENSES.txt'), texts);
+  console.log(`  THIRD_PARTY_LICENSES.txt: ${(texts.length / 1024 / 1024).toFixed(1)} MB`);
+}
+
 // ---------- signing ----------
 
 function identity() {
@@ -591,6 +610,16 @@ function assertBundle(appDir, version, runtime, signer) {
     ok('entitlements', `${name}: ${entitlements.join(', ') || 'none'}`);
   }
 
+  for (const name of ['THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+    const file = path.join(appDir, 'Contents', 'Resources', name);
+    if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error(`Contents/Resources/${name} is missing or empty`);
+  }
+  if (fs.readFileSync(path.join(appDir, 'Contents', 'Resources', 'THIRD_PARTY_NOTICES.md'), 'utf8')
+    !== fs.readFileSync(path.join(VOICE, 'THIRD_PARTY_NOTICES.md'), 'utf8')) {
+    throw new Error('the THIRD_PARTY_NOTICES.md in the app differs from voice/THIRD_PARTY_NOTICES.md');
+  }
+  ok('notices', 'THIRD_PARTY_NOTICES.md and THIRD_PARTY_LICENSES.txt in Contents/Resources');
+
   if (runtime) {
     const folder = path.join(appDir, 'Contents', 'Resources', NEMO_FOLDER);
     const files = fs.readdirSync(folder).sort();
@@ -706,6 +735,10 @@ async function main() {
   const release = path.join(target, 'release');
   console.log(`Rukoo Voice ${version}${signer === '-' ? ', ad-hoc signed' : `, signed as ${signer}`}`);
 
+  step('Checking THIRD_PARTY_NOTICES.md');
+  const crates = checkNotices();
+  ok('notices', `THIRD_PARTY_NOTICES.md lists the ${crates.length} crates of the Windows and macOS builds`);
+
   const runtime = resolveRuntime();
   if (runtime && (runtime.dir === out || runtime.dir.startsWith(`${out}${path.sep}`))) {
     throw new Error(`--nemo-dir ${runtime.dir} is inside ${out}, which this script empties; keep the runtime elsewhere`);
@@ -729,6 +762,8 @@ async function main() {
     step('Adding the NeMo runtime');
     addRuntime(appDir, runtime);
   }
+
+  addLicenseTexts(appDir, runtime);
 
   step(`Signing ${signer === '-' ? 'ad-hoc with hardened runtime' : `as ${signer} with hardened runtime`}`);
   signAll(appDir, runtime, signer);
