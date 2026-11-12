@@ -102,13 +102,6 @@ impl Permissions for SystemPermissions {
         use objc2_core_graphics::CGPreflightScreenCaptureAccess;
         use objc2_io_kit::{IOHIDCheckAccess, IOHIDRequestType};
 
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            /// Whether this app may use the Accessibility API. Unlike
-            /// `AXIsProcessTrustedWithOptions`, this never prompts.
-            fn AXIsProcessTrusted() -> bool;
-        }
-
         Some(match permission {
             // The same status a first microphone open would read; it never prompts. A Settings
             // read must not panic, so a missing framework constant reads as unknown.
@@ -127,7 +120,7 @@ impl Permissions for SystemPermissions {
             Permission::InputMonitoring => {
                 input_monitoring_state(IOHIDCheckAccess(IOHIDRequestType::ListenEvent).0)
             }
-            Permission::Accessibility => preflight_state(unsafe { AXIsProcessTrusted() }),
+            Permission::Accessibility => preflight_state(voice_input::accessibility_trusted()),
             Permission::ScreenRecording => preflight_state(CGPreflightScreenCaptureAccess()),
         })
     }
