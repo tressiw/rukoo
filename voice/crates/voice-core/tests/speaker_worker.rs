@@ -81,6 +81,9 @@ fn frames_reply(id: &Value, first: u64, frames: u64) -> Value {
 }
 
 fn fake_worker() {
+    // What the real worker's `main` does first: when the app that started it is gone, end. The
+    // client sets the variable, so this is the same path Voice takes.
+    voice_core::local::parent::watch(|line| eprintln!("fake speakers: {line}"));
     let stdin = std::io::stdin();
     let mut input = BufReader::new(stdin.lock());
     let mut output = std::io::stdout().lock();
@@ -372,6 +375,19 @@ fn probabilities_decode() {
     let pid = stream.worker_pid().expect("a worker pid");
     assert_ne!(pid, std::process::id());
     assert!(process_alive(pid));
+
+    // Below this process, like the below-normal priority class on Windows: a meeting's
+    // recognition and dictation come first.
+    #[cfg(unix)]
+    {
+        // SAFETY: getpriority only reads a value, for the worker and for this process.
+        let worker_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) };
+        let own_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+        assert!(
+            worker_nice > own_nice,
+            "the worker's niceness {worker_nice} isn't below this process's {own_nice}"
+        );
+    }
 
     check_frames(&stream.push(&pcm(1_600)).unwrap(), 0, 10);
     check_frames(&stream.push(&pcm(3_200)).unwrap(), 10, 20);
@@ -729,13 +745,55 @@ fn the_worker_dies_with_voice() {
     wait_for("the worker to end with its job", || !process_alive(pid));
 }
 
-/// Kill-on-close job objects are Windows-only; elsewhere the client stops its workers itself.
+#[cfg(unix)]
+fn the_worker_dies_with_voice() {
+    use std::process::{Command, Stdio};
+
+    let data = TempDir::new("parent");
+    let mut voice = Command::new(std::env::current_exe().unwrap())
+        .env(ROLE, "parent")
+        .env(PARENT_DATA, data.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(voice.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let pid: u32 = line
+        .trim()
+        .strip_prefix("pid ")
+        .expect("the worker pid")
+        .parse()
+        .unwrap();
+    assert!(process_alive(pid));
+    // A hard kill, like a crash: Voice gets no chance to stop its worker itself.
+    voice.kill().unwrap();
+    voice.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_alive(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "the worker is still running 2 s after Voice was killed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Kill-on-close job objects are Windows-only; on Unix the worker watches Voice's pid, which the
+/// client named in the environment. Two seconds is all a worker may outlive its app.
 #[cfg(windows)]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn platform_tests() -> Vec<(&'static str, fn())> {
+    vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
+}
+
+#[cfg(not(any(unix, windows)))]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     Vec::new()
 }
