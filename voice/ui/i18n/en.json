@@ -464,11 +464,11 @@
     "description": "Settings > Dictation: description of Dictation key. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.paste": {
-    "message": "Paste instead of type",
+    "message": "Paste mode",
     "description": "Settings > Dictation: switch for inserting text through the clipboard instead of typing it key by key. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.pasteHelp": {
-    "message": "Voice pastes the text through the clipboard and puts your clipboard back afterwards. Faster, and more reliable in most apps. When off, Voice types the text key by key.",
+    "message": "Inserts text through the clipboard and puts your clipboard back afterwards. Faster, and more reliable in most apps.",
     "description": "Settings > Dictation: description of Paste mode. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.chime": {
@@ -520,7 +520,7 @@
     "description": "Settings > Dictation: value of the Rewriting row when auto-rewrite and the rewrite key are both on. voice/ui/settings.js (rewritingValue)."
   },
   "settings.pill.edge": {
-    "message": "Recording indicator position",
+    "message": "Pill position",
     "description": "Settings > Dictation: row and choice dialog title for where the pill (the small status bar during dictation) appears. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.bottom": {
@@ -532,11 +532,11 @@
     "description": "Settings > Dictation > Pill position: choice. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.hide": {
-    "message": "Hide the recording indicator from screen sharing",
+    "message": "Hide the pill from screen sharing",
     "description": "Settings > Dictation: switch that keeps the pill out of screen shares and recordings. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.hideHelp": {
-    "message": "Keeps the recording indicator, the small bar that shows while Voice listens or records, out of screen shares and screen recordings.",
+    "message": "Keeps the pill out of screen shares and screen recordings.",
     "description": "Settings > Dictation: description of Hide the pill from screen sharing. voice/ui/settings.js (mainPage)."
   },
   "settings.provider.custom": {
@@ -759,7 +759,7 @@
     "description": "Settings > Transcription: title of the row with the folder Voice downloads Orukeet to or reads it from. voice/ui/settings.js (modelCard)."
   },
   "settings.model.folderHelp": {
-    "message": "Where Voice stores the transcription models it downloads. You can also choose a folder that already contains the extracted model files.",
+    "message": "Download here, or choose a folder that already contains the extracted model files.",
     "description": "Settings > Transcription: description of Model folder. voice/ui/settings.js (modelCard)."
   },
   "settings.model.folderAuto": {

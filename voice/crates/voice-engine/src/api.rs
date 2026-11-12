@@ -16,7 +16,7 @@ use serde_json::Value;
 pub struct EngineOptions {
     /// Voice's data folder: `RUKOO_VOICE_DATA_DIR`, or the platform default.
     pub data_dir: PathBuf,
-    /// `RUKOO_VOICE_DATA_DIR` is set: F13/F14 on Windows and Linux, no automatic Ownkey import, no autostart.
+    /// `RUKOO_VOICE_DATA_DIR` is set: F13/F14, no automatic Ownkey import, no autostart.
     pub dev_mode: bool,
     /// The folder holding `rukoo-voice-recorder`, `rukoo-voice-screen` and `rukoo-voice-local`.
     pub exe_dir: PathBuf,

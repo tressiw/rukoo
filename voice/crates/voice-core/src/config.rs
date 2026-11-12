@@ -295,9 +295,8 @@ impl From<io::Error> for ConfigError {
 }
 
 impl Config {
-    /// Ownkey's defaults plus Voice's. In development mode on Windows and Linux the keys are F13
-    /// and F14, so a dev copy never answers the installed Ownkey's Right Alt and Right Ctrl. A Mac
-    /// has no Ownkey and few F13 keys, so a dev copy there uses the installed copy's keys.
+    /// Ownkey's defaults plus Voice's. In development mode the keys are F13 and F14, so a dev
+    /// copy never answers the installed Ownkey's Right Alt and Right Ctrl.
     pub fn defaults(dev_mode: bool) -> Config {
         let (hotkey, rewrite_hotkey) = default_hotkeys(dev_mode);
         Config {
@@ -627,16 +626,15 @@ fn default_hotkeys(dev_mode: bool) -> (&'static str, &'static str) {
     default_hotkeys_on(dev_mode, cfg!(target_os = "macos"))
 }
 
-/// The keys a fresh config gets. A development copy on Windows or Linux uses F13 and F14, so it
-/// never answers the installed Ownkey's keys. A Mac starts with Right Option and Right Command,
-/// installed or not: Ownkey doesn't exist there, most Mac keyboards have no F13 or F14, most Mac
-/// laptops have no Right Control key, and Fn/Globe already opens the emoji picker and macOS
-/// dictation. A dev copy and an installed Voice on one Mac therefore answer the same keys.
+/// The keys a fresh config gets. A development copy uses F13 and F14 on every platform, so it
+/// never answers the installed Ownkey's keys; on a Mac an installed copy starts with Right Option
+/// and Right Command: most Mac laptops have no Right Control key, and Fn/Globe already opens the
+/// emoji picker and macOS dictation.
 pub fn default_hotkeys_on(dev_mode: bool, macos: bool) -> (&'static str, &'static str) {
-    if macos {
-        ("right alt", "right command")
-    } else if dev_mode {
+    if dev_mode {
         ("f13", "f14")
+    } else if macos {
+        ("right alt", "right command")
     } else {
         ("right alt", "right ctrl")
     }

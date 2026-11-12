@@ -62,7 +62,7 @@ More in [Agents](docs/agents.md).
 
 - Rukoo Voice, a companion app for Windows, records a meeting's microphone and call audio, and the screen if you want, and transcribes it while you talk. Rukoo shows the transcript and the screen's frames in the meeting view (`Ctrl+3`), next to the agent chat.
 - Start a recording from a calendar event, the meeting view or Voice. Name the voices from the event's guests and keep your own notes next to the transcript.
-- Rename a meeting from its header or sidebar. Delete a finished meeting after confirming the permanent removal; chats stay. During a live or paused meeting, choose Off, Frames, Video and a monitor from the header or Voice's recording indicator. Live mode changes and deletion need the updated Voice.
+- Rename a meeting from its header or sidebar. Delete a finished meeting after confirming the permanent removal; chats stay. During a live or paused meeting, choose Off, Frames, Video and a monitor from the header or Voice's pill. Live mode changes and deletion need the updated Voice.
 - Your agent reads the meeting through Rukoo's MCP tools, as untrusted content, and can't start or stop a recording. While a meeting records, Rukoo keeps its windows out of screen recordings and screen shares on Windows and macOS.
 
 More in [Meetings](docs/meetings.md) and [Rukoo Voice](voice/README.md).

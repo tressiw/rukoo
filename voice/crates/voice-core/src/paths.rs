@@ -82,7 +82,7 @@ fn home(platform: Platform, env: &dyn Fn(&str) -> Option<String>) -> Option<Stri
     }
 }
 
-/// Development mode: `RUKOO_VOICE_DATA_DIR` is set. Default hotkeys become F13 and F14 (not on macOS), the
+/// Development mode: `RUKOO_VOICE_DATA_DIR` is set. Default hotkeys become F13 and F14, the
 /// Ownkey import only runs on request and autostart is never registered.
 pub fn dev_mode_in(env: &dyn Fn(&str) -> Option<String>) -> bool {
     var(env, DATA_DIR_ENV).is_some()

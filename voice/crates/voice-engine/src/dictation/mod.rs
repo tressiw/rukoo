@@ -142,11 +142,7 @@ impl Selection {
 
 /// The keys from Settings. An unknown dictation key falls back to the default.
 pub fn hotkeys(cfg: &Config, dev_mode: bool) -> (HotkeyConfig, Option<Key>) {
-    let fallback = if dev_mode && !cfg!(target_os = "macos") {
-        Key::F13
-    } else {
-        Key::RightAlt
-    };
+    let fallback = if dev_mode { Key::F13 } else { Key::RightAlt };
     let dictate = Key::parse(&cfg.hotkey).unwrap_or(fallback);
     let rewrite = Key::parse(&cfg.rewrite_hotkey).filter(|k| *k != dictate);
     let stop = Key::parse(&cfg.meetings_stop_key).filter(|k| *k != dictate && Some(*k) != rewrite);

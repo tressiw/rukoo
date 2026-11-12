@@ -218,7 +218,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 |---|---|
 | `seq` | +1 per state, and the app sends states in `seq` order, each built after its number was given. The page drops a state that isn't newer than the one it has. |
 | `version` | Voice's version, shown under About. |
-| `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14, except on a Mac, where they start on Right Option and Right Command like an installed copy. |
+| `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
 | `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; system audio before a tap can be checked). `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
