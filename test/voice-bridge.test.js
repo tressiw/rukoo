@@ -65,7 +65,7 @@ function deadPid() {
   });
 }
 
-test('the first hello carries the token, no cursor and no Origin, and the welcome connects', async (t) => {
+test('the first hello carries the token and Rukoo\'s pid, no cursor and no Origin, and the welcome connects', async (t) => {
   const { file, voice } = await setup(t);
   voice.writeDiscovery();
   const bridge = new VoiceBridge({ file, clientVersion: '2.2.0', ...FAST }).start();
@@ -73,7 +73,7 @@ test('the first hello carries the token, no cursor and no Origin, and the welcom
   const welcome = await new Promise((resolve) => bridge.once('welcome', resolve));
   assert.equal(welcome.instance, voice.instance);
   assert.equal(welcome.replay, 'full');
-  assert.deepEqual(voice.hellos[0], { type: 'hello', protocol: 2, token: voice.token, client: 'rukoo', clientVersion: '2.2.0', instance: null, after: 0 });
+  assert.deepEqual(voice.hellos[0], { type: 'hello', protocol: 2, token: voice.token, client: 'rukoo', clientVersion: '2.2.0', pid: process.pid, instance: null, after: 0 });
   assert.equal(voice.upgrades[0].url, '/bridge');
   assert.equal(voice.upgrades[0].headers.origin, undefined, "Rukoo's main process sends no Origin");
   assert.equal(bridge.state().status, 'connected');
