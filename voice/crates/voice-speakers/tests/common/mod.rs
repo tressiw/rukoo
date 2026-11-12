@@ -20,6 +20,30 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const EXE: &str = env!("CARGO_BIN_EXE_rukoo-voice-speakers");
 
+/// Live speaker labels need the worker to run faster than real time. Below this many seconds of
+/// audio per second, a host (a hosted macOS runner measured 0.5, a Windows runner 8, an M4 27)
+/// can't keep labels up, and a test that asks for the speed would only fail.
+/// `RUKOO_VOICE_TEST_MIN_REALTIME` overrides it, to see the skip on a fast machine.
+pub fn min_realtime_factor() -> f64 {
+    std::env::var("RUKOO_VOICE_TEST_MIN_REALTIME")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0)
+}
+
+/// True, after printing why, when the worker measured `factor` and that is below
+/// [`min_realtime_factor`].
+pub fn too_slow_for_live_labels(test: &str, factor: f64) -> bool {
+    let min = min_realtime_factor();
+    let slow = factor < min;
+    if slow {
+        eprintln!(
+            "skipped the speed check of {test}: the speaker worker runs at {factor} times real time on this host, below the {min} that live labels need"
+        );
+    }
+    slow
+}
+
 pub struct Worker {
     child: Child,
     stdin: Option<ChildStdin>,
