@@ -102,8 +102,25 @@ mod tests {
         assert_eq!(to_100ns(0), 0);
     }
 
+    /// True, after printing why, when CI's host probe found the host too stalled for timing
+    /// windows (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step).
+    fn skip_on_slow_host(test: &str) -> bool {
+        let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+        if slow {
+            eprintln!(
+                "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
+            );
+        }
+        slow
+    }
+
     #[test]
     fn both_counters_move_with_the_clock() {
+        // A late wake-up of the sleeping thread moves both counters, and the window below
+        // can't tell that from a counter that runs wrong.
+        if skip_on_slow_host("both_counters_move_with_the_clock") {
+            return;
+        }
         let (b0, a0) = (boot_100ns(), awake_100ns());
         std::thread::sleep(std::time::Duration::from_millis(200));
         let (b1, a1) = (boot_100ns(), awake_100ns());
