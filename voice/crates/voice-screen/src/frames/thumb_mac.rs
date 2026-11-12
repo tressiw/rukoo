@@ -1,7 +1,9 @@
 //! The 1/8-scale luma thumbnail of a frame, averaged on the CPU: the saver and the video gate
 //! only need a small picture of how the screen changed, and a screen-sized buffer is cheap to
-//! read once per frame at most five times a second. The luma is the same BT.601 mix the Windows
-//! thumbnailer's GPU path produces, so a threshold set there means the same here.
+//! read once per frame at most five times a second. A BGRA frame gets the same BT.601 mix the
+//! Windows thumbnailer's GPU path produces, so a threshold set there means the same here. A frame
+//! from ScreenCaptureKit is bi-planar YCbCr and already holds its luma, so the thumbnail reads that
+//! plane and never converts the picture to colour.
 
 use voice_screen_files::frames::Thumb;
 
@@ -33,6 +35,9 @@ impl Thumbnailer {
             .ok_or_else(|| PlatformError::new("can't read the frame for a thumbnail"))?;
         let row = locked.bytes_per_row();
         let base = locked.base();
+        if picture.is_biplanar() {
+            return thumb_of_luma(&locked, picture, width, height);
+        }
         let mut luma = vec![0u8; thumb_width * thumb_height];
         for ty in 0..thumb_height {
             let top = ty * 8;
@@ -63,6 +68,49 @@ impl Thumbnailer {
     }
 }
 
+/// The thumbnail of a bi-planar frame, from its luma plane.
+fn thumb_of_luma(
+    locked: &crate::capture::mac::Locked<'_>,
+    picture: &PixelBuffer,
+    width: usize,
+    height: usize,
+) -> Result<Thumb, PlatformError> {
+    let (plane, row) = locked
+        .plane(0)
+        .ok_or_else(|| PlatformError::new("the frame has no luma plane"))?;
+    let full = picture.is_full_range();
+    let (thumb_width, thumb_height) = ((width / 8).max(1), (height / 8).max(1));
+    let mut luma = vec![0u8; thumb_width * thumb_height];
+    for ty in 0..thumb_height {
+        let (top, bottom) = (ty * 8, ((ty + 1) * 8).min(height));
+        for tx in 0..thumb_width {
+            let (left, right) = (tx * 8, ((tx + 1) * 8).min(width));
+            let (mut sum, mut count) = (0u32, 0u32);
+            for y in top..bottom {
+                // SAFETY: plane 0 has `height` rows of at least `width` bytes inside the locked
+                // buffer.
+                let pixels = unsafe { std::slice::from_raw_parts(plane.add(y * row), right) };
+                for &y in &pixels[left..] {
+                    sum += u32::from(y);
+                    count += 1;
+                }
+            }
+            let mean = ((sum + count / 2) / count.max(1)) as u8;
+            luma[ty * thumb_width + tx] = if full { mean } else { expand_video_range(mean) };
+        }
+    }
+    Ok(Thumb {
+        width: thumb_width as u32,
+        height: thumb_height as u32,
+        luma,
+    })
+}
+
+/// A video-range luma (16 to 235) as the full-range value the thumbnail's thresholds are set for.
+fn expand_video_range(y: u8) -> u8 {
+    ((u32::from(y.saturating_sub(16)) * 255 + 109) / 219).min(255) as u8
+}
+
 /// BT.601 luma from BGRA, as the Windows thumbnail's GPU path mixes it.
 pub fn luma_of(b: u8, g: u8, r: u8) -> u8 {
     ((u32::from(b) * 29 + u32::from(g) * 150 + u32::from(r) * 77) >> 8) as u8
@@ -72,6 +120,14 @@ pub fn luma_of(b: u8, g: u8, r: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::platform::Pixels;
+
+    #[test]
+    fn video_range_luma_expands_to_full_range() {
+        assert_eq!(expand_video_range(16), 0);
+        assert_eq!(expand_video_range(235), 255);
+        assert_eq!(expand_video_range(0), 0);
+        assert!((i32::from(expand_video_range(126)) - 128).abs() <= 1);
+    }
 
     #[test]
     fn luma_of_primaries() {
