@@ -4855,7 +4855,6 @@ dependencies = [
  "objc2",
  "objc2-audio-toolbox",
  "objc2-av-foundation",
- "objc2-core-audio",
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-io-kit",

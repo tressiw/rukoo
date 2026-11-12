@@ -248,3 +248,37 @@ fn a_shortfall_after_a_resume_moves_the_next_segment() {
         );
     }
 }
+
+/// Records the real default microphone and, through a process tap on macOS or loopback on
+/// Windows, what the computer plays, for five seconds. It opens the microphone, makes macOS ask
+/// for System Audio Recording the first time and records the room: run it at a computer you sit
+/// at, with something playing.
+#[test]
+#[ignore = "records the real microphone and output; prompts for permissions on macOS"]
+fn records_the_real_devices() {
+    let m = TempMeeting::new("real-devices");
+    let mut child = m.record(&["mic=default-input", "call=default-output"], &[]);
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(5_000);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+    let lines = m.lines();
+    let opened: Vec<_> = of_kind(&lines, "track")
+        .iter()
+        .map(|l| l["track"].clone())
+        .collect();
+    assert!(
+        opened.contains(&json!("call")),
+        "the call never opened: {lines:?}"
+    );
+    let call = segments(&m, &lines, "call");
+    assert!(
+        call.iter().map(|s| s.pcm.len()).sum::<usize>() > 16_000 * 3,
+        "{call:?}"
+    );
+    // A computer without a microphone says so instead of failing to start.
+    if !opened.contains(&json!("mic")) {
+        let lost = of_kind(&lines, "device_lost");
+        assert!(lost.iter().any(|l| l["track"] == "mic"), "{lines:?}");
+    }
+}

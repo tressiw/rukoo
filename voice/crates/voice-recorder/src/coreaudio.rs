@@ -71,10 +71,15 @@ fn read<T: Copy + Default>(
 /// Whether the Mac has no default input device: Core Audio answers `kAudioObjectUnknown`, which
 /// cpal 0.18.2 still turns into a device. A HAL that doesn't answer leaves the decision to cpal.
 pub fn no_microphone() -> bool {
-    read::<AudioObjectID>(
+    missing(read::<AudioObjectID>(
         kAudioObjectSystemObject as AudioObjectID,
         kAudioHardwarePropertyDefaultInputDevice,
-    ) == Some(kAudioObjectUnknown)
+    ))
+}
+
+/// Whether Core Audio's answer for the default input means "this Mac has no input device".
+fn missing(default_input: Option<AudioObjectID>) -> bool {
+    default_input == Some(kAudioObjectUnknown)
 }
 
 /// Whether a process other than this one is playing sound on some output device right now, from
@@ -308,6 +313,25 @@ fn aggregate_properties(tap_uid: &NSString, uid: &str, name: &str) -> CFRetained
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_audio_device_is_no_microphone() {
+        assert!(missing(Some(0)), "kAudioObjectUnknown");
+        assert!(!missing(Some(1)));
+        assert!(!missing(Some(0x4E)));
+        assert!(
+            !missing(None),
+            "a HAL that can't answer is cpal's own `None`, not this check"
+        );
+    }
+
+    /// The Mac mini this port was built on has no input device, the case the check exists for.
+    /// The read opens nothing and asks for no permission.
+    #[test]
+    #[ignore = "needs a Mac without an input device"]
+    fn this_mac_reports_no_microphone() {
+        assert!(no_microphone());
+    }
 
     /// Reads Core Audio's state without opening a device or asking for anything.
     #[test]

@@ -431,7 +431,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         let (b, passed) = (Stamp::now(), start.elapsed().as_millis() as u64);
         let awake = b.awake - a.awake;
-        assert!(awake.abs_diff(passed) <= 2, "awake {awake} ms, Instant {passed} ms");
+        assert!(
+            awake.abs_diff(passed) <= 2,
+            "awake {awake} ms, Instant {passed} ms"
+        );
     }
 
     #[test]
