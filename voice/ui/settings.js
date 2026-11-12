@@ -1625,7 +1625,7 @@ async function act(action, button) {
       return invoke('settings_open_link', { link: arg }).catch(() => {});
     case 'permission':
       return invoke('settings_open_permission', { permission: arg }).catch((error) =>
-        showError(t('settings.permissions.openFailed'), error?.message)
+        showError(t('settings.permissions.openFailed'), error?.message || String(error))
       );
     case 'dict-mode':
       dictionary = { correcting: !dictionary.correcting, error: '' };
