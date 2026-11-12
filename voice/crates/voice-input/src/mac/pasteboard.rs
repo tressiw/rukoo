@@ -203,6 +203,15 @@ impl Clipboard for Pasteboard {
     ) -> Result<bool, InputError> {
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
+            // Built before the last look: a type that is refused can't leave
+            // the pasteboard empty, and the look stays close to the write.
+            let items = items(snapshot);
+            if items.is_empty() && !snapshot.items.is_empty() {
+                // Nothing of the user's would go back: leave what is there.
+                return Err(InputError::Clipboard(
+                    "The pasteboard refused the copied items.".into(),
+                ));
+            }
             // The last look before the write. AppKit can't hold the
             // pasteboard closed, so a copy landing after this check and
             // before `clearContents` is the one case Voice can't see.
@@ -210,40 +219,41 @@ impl Clipboard for Pasteboard {
                 return Ok(false);
             }
             board.clearContents();
-            if snapshot.items.is_empty() {
+            if items.is_empty() {
                 return Ok(true);
             }
-            write_items(&board, snapshot)?;
+            let objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+                .into_iter()
+                .map(ProtocolObject::from_retained)
+                .collect();
+            if !board.writeObjects(&NSArray::from_retained_slice(&objects)) {
+                return Err(InputError::Clipboard(
+                    "The pasteboard refused the copied items.".into(),
+                ));
+            }
             Ok(true)
         })
     }
 }
 
-/// Puts every item and type of `snapshot` back on the open pasteboard.
-fn write_items(board: &NSPasteboard, snapshot: &PasteboardSnapshot) -> Result<(), InputError> {
-    let mut objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
-        Vec::with_capacity(snapshot.items.len());
+/// The items of `snapshot`, ready to write. A type an item refuses is left out and the rest go
+/// back, as on Windows, where a format that fails is skipped; an item left with no type at all
+/// is left out too.
+fn items(snapshot: &PasteboardSnapshot) -> Vec<Retained<NSPasteboardItem>> {
+    let mut items = Vec::with_capacity(snapshot.items.len());
     for item in &snapshot.items {
         let pasteboard_item = NSPasteboardItem::new();
+        let mut kept = false;
         for format in &item.types {
             let name = NSString::from_str(&format.name);
             let data = NSData::with_bytes(&format.data);
-            if !pasteboard_item.setData_forType(&data, &name) {
-                return Err(InputError::Clipboard(format!(
-                    "The pasteboard refused {}.",
-                    format.name
-                )));
-            }
+            kept |= pasteboard_item.setData_forType(&data, &name);
         }
-        objects.push(ProtocolObject::from_retained(pasteboard_item));
+        if kept {
+            items.push(pasteboard_item);
+        }
     }
-    let objects = NSArray::from_retained_slice(&objects);
-    if !board.writeObjects(&objects) {
-        return Err(InputError::Clipboard(
-            "The pasteboard refused the copied items.".into(),
-        ));
-    }
-    Ok(())
+    items
 }
 
 /// `NSPasteboard.changeCount` cut to the trait's width. It only has to be
@@ -454,6 +464,44 @@ mod tests {
         assert_eq!(snapshot.items[1].types[0].name, "public.file-url");
         assert_eq!(snapshot.items[1].types[0].data, b"file:///tmp/a");
         assert!(PasteboardSnapshot::new(Vec::new()).items.is_empty());
+    }
+
+    /// Building the items touches no pasteboard: they are plain objects until they are written.
+    #[test]
+    fn the_items_to_restore_keep_every_type_and_its_bytes() {
+        let snapshot = PasteboardSnapshot::new(vec![
+            vec![
+                ("public.utf8-plain-text".into(), b"plain".to_vec()),
+                ("public.rtf".into(), b"{\\rtf1}".to_vec()),
+            ],
+            vec![("public.file-url".into(), b"file:///tmp/a".to_vec())],
+        ]);
+        let built = autoreleasepool(|_| {
+            items(&snapshot)
+                .iter()
+                .map(|item| {
+                    item.types()
+                        .to_vec()
+                        .into_iter()
+                        .map(|name| {
+                            let data = item.dataForType(&name).map(|d| d.to_vec());
+                            (name.to_string(), data.unwrap_or_default())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        let expected: Vec<Vec<(String, Vec<u8>)>> = snapshot
+            .items
+            .iter()
+            .map(|item| {
+                item.types
+                    .iter()
+                    .map(|t| (t.name.clone(), t.data.clone()))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(built, expected);
     }
 
     #[test]
