@@ -12,7 +12,7 @@
 // (RUKOO_VOICE_DATA_DIR), Rukoo's profile (SEM_DATA_DIR), the discovery file both get as RUKOO_VOICE_BRIDGE, and the
 // speech. Captures of the apps' own windows go to tmp/live-shots/. --models seeds the run's data folder with a models
 // root in Voice's layout (<root>/orukeet/<revision>) without another copy: an APFS clone on macOS, a hard link
-// elsewhere, a copy as the last resort. Without --models it uses /Users/agent/rukoo/tmp/voice-macos/models when that
+// elsewhere, a copy as the last resort. Without --models it uses tmp/voice-assets/models in this checkout when that
 // holds Orukeet, so a Mac run transcribes; Windows still reads Ownkey's model folder when it isn't given one. Nothing
 // touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process it started is
 // stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice/target, and the programs
@@ -25,7 +25,7 @@
 // screen process, window-protection, WebView2 capture and video checks are skipped, each with a line in the report that
 // says why. --speakers is decided by Voice: when its Settings > Speaker labels reports reason "platform" the run
 // refuses with that message, and on a build where the macOS speaker worker exists it runs with --nemo-dir (or
-// /Users/agent/rukoo/tmp/voice-macos/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from the shared folder.
+// tmp/voice-assets/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from tmp/voice-assets/speaker-assets.
 // A run without a model or a provider key still reports that as its one failed prerequisite and skips the passage
 // checks: the script seeds a model but never downloads one and never uses a key.
 //
@@ -80,12 +80,13 @@
 //
 // --models <dir> seeds each fresh Voice data folder from a models root in Voice's layout (<root>/orukeet/<revision>):
 // an APFS clone with cp -c on macOS, a hard link or a copy elsewhere, so the model costs no second 487 MB and Voice
-// finds it, hashes it once and keeps its stamp, as after an install. It defaults to
-// /Users/agent/rukoo/tmp/voice-macos/models when that holds Orukeet, on every platform. The run never downloads a
-// model; --models points at one fetched once, for example with Voice's own Settings > Transcription code.
+// finds it, hashes it once and keeps its stamp, as after an install. It defaults to tmp/voice-assets/models in this
+// checkout when that holds Orukeet, on every platform. The run never downloads a model; --models points at one
+// fetched once, for example with Voice's own Settings > Transcription code.
 //
 // --nemo-dir <dir> is the NeMo-Speech.cpp runtime folder for --speakers (a local macOS arm64 build, for instance); it
-// becomes RUKOO_VOICE_NEMO_DIR for Voice. Without it the shared build under nemo-arm64/ is used when present.
+// becomes RUKOO_VOICE_NEMO_DIR for Voice. Without it tmp/voice-assets/nemo-arm64/nemo_speech is used when it holds a
+// runtime.
 //
 // --measure=speakers measures labels on and off (spec RUK-109 section 7): the worker's real-time factor through its
 // --self-test, then two meetings started from Voice in fresh data folders, labels on and labels off, each --minutes
@@ -140,10 +141,10 @@ const SCREEN_SKIP = 'the macOS screen process does not record yet (the screen re
 const PROTECTION_SKIP = 'window protection belongs to the Windows screen-capture checks; the macOS screen recorder is not in this build, so there is no capture to hide Rukoo from';
 const CAPTURE_SKIP = 'WebView2 captures are Windows-only; the macOS WKWebView capture is a later step, so only Rukoo\'s own window is captured';
 
-// This Mac's shared Voice folder: the downloaded models, the speaker runtime and the speaker assets. Each run's data
-// folder is seeded from it, so a fresh checkout doesn't download 487 MB or 100 MB again. --models and --nemo-dir point
-// elsewhere.
-const SHARED = '/Users/agent/rukoo/tmp/voice-macos';
+// The shared folder under this checkout's ignored tmp/: the downloaded models, the speaker runtime and the speaker
+// assets. Each run's data folder is seeded from it, so a fresh run doesn't download 487 MB or 100 MB again. --models
+// and --nemo-dir point elsewhere.
+const SHARED = path.join(ROOT, 'tmp', 'voice-assets');
 const SHARED_MODELS = path.join(SHARED, 'models');
 const SHARED_ASSETS = path.join(SHARED, 'speaker-assets');
 const SHARED_NEMO = path.join(SHARED, 'nemo-arm64', 'nemo_speech');
@@ -161,7 +162,7 @@ const ORUKEET_DIR = path.join('models', ORUKEET_REL);
 const SPEAKER_NEEDS =
   "Speaker labels are unavailable on this Mac: Voice's Settings > Speaker labels reports reason \"platform\" through the status hook. " +
   'Speaker labels on macOS need the arm64 NeMo-Speech.cpp runtime (voice/nemo-runtime/build-macos.sh) pointed at with --nemo-dir or ' +
-  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and the macOS speaker labels from the voice-macos-s5a-speakers branch`;
+  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and a Voice build with the macOS speaker worker`;
 
 class Refusal extends Error {}
 
@@ -298,7 +299,8 @@ const MODELS = ARGS.models
     ? SHARED_MODELS
     : null;
 const NEMO_DIR = ARGS.nemoDir ? path.resolve(ARGS.nemoDir) : null;
-// The speaker assets: this Mac's shared copy (AMI and Nemotron), else the checkout's tmp, which the asset scripts fill.
+// The speaker assets: tmp/voice-assets/speaker-assets when it holds them, else tmp/speaker-assets, which the asset
+// scripts fill.
 const ASSETS =
   MAC &&
   fs.existsSync(path.join(SHARED_ASSETS, 'ami', 'ami_en2002d_2132.wav')) &&
@@ -512,8 +514,8 @@ function build() {
 // The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
 // names a published archive (the script skips it before that).
 // On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS the same
-// folder comes from this Mac's shared copy, or from voice/scripts/speaker-assets.mjs when that branch provides it (the
-// runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
+// folder comes from tmp/voice-assets/speaker-assets, or from voice/scripts/speaker-assets.mjs once that script exists
+// (the runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
 function assets() {
   if (WIN) {
     const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
@@ -1770,7 +1772,7 @@ async function pair(monitor) {
     }
   }
   if (SPEAKERS !== null) {
-    // Decided by what Voice reports, not by the platform: the macOS speaker branch makes this true and the run goes on.
+    // Decided by what Voice reports, not by the platform: a Voice build with the macOS speaker worker reports ready and the run goes on.
     const sp = first.settings.speakers || {};
     if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
     if (SPEAKERS === true) {
