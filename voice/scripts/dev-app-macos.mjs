@@ -90,8 +90,7 @@ const TCC_PANES = [
   'Privacy & Security > Microphone: dictation and the microphone side of a meeting',
   'Privacy & Security > Screen & System Audio Recording > System Audio Recording Only: the other side of a meeting',
   'Privacy & Security > Screen & System Audio Recording: a meeting that records the screen',
-  'Privacy & Security > Input Monitoring: the dictation key, when macOS asks for it',
-  'Privacy & Security > Accessibility: typing into another app and reading the selection',
+  'Privacy & Security > Device Control and Data Access (Accessibility before macOS 27): typing into another app and reading the selection',
 ];
 const APP_FLAGS = new Set(['--dev-hooks', '--self-test']);
 const DATA_DEFAULT = path.join(DEV, 'data');

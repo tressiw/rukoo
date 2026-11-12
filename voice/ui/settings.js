@@ -138,7 +138,8 @@ const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permission
 // macOS privacy permissions, in the order System Settings groups them. The names are the ones
 // System Settings on macOS 27 shows, the same in both catalogs: macOS 26 and earlier said
 // "Accessibility", "Screen Recording" and "System Audio Recording". Each row says why Voice needs
-// it (voice/ui/API.md, SettingsState.permissions).
+// it, or, for Input Monitoring, that it doesn't: Voice reads the dictation key by polling key
+// state, which needs no grant (voice/ui/API.md, SettingsState.permissions).
 const PERMISSIONS = [
   ['microphone', 'settings.permissions.microphone', 'settings.permissions.microphoneWhy'],
   ['systemAudio', 'settings.permissions.systemAudio', 'settings.permissions.systemAudioWhy'],
@@ -386,8 +387,12 @@ function permissionsCard() {
   return card(
     PERMISSIONS.map(([id, name, why]) => {
       const value = permissions[id] || 'unknown';
-      const note =
-        value === 'denied'
+      // Voice reads the dictation key without Input Monitoring. The row stays for the other
+      // software that asks for it, but it never tells the user to switch it on for Voice.
+      const needed = id !== 'inputMonitoring';
+      const note = !needed
+        ? ''
+        : value === 'denied'
           ? t('settings.permissions.denied', { name: t(name) })
           : value === 'notAsked'
             ? t('settings.permissions.notAskedHelp')
