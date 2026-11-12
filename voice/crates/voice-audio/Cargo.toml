@@ -9,6 +9,10 @@ publish = false
 
 [dependencies]
 
+# `flock`, which keeps a second writer off a live segment.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # An independent WAV reader, to prove the segments open outside our own code.
 hound = "=3.5.1"
