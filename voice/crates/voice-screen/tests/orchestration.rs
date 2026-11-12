@@ -311,11 +311,22 @@ struct FakeSource {
     stop_after: Option<u32>,
     revoke_on_stop: bool,
     says_permission: bool,
+    /// Every start fails, saying the permission is gone, while the preflight still says yes.
+    refuses_for_permission: bool,
+    starts: Arc<AtomicU32>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
 impl Source for FakeSource {
     fn start(&mut self, _monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        if self.refuses_for_permission {
+            return Err(PlatformError {
+                code: "SCError -3801".into(),
+                permission: true,
+                ..PlatformError::new("the user declined the capture")
+            });
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let (clock, to_main, flag) = (self.clock.clone(), self.to_main.clone(), stop.clone());
         let (allowed, stop_after, revoke, says) = (
@@ -392,6 +403,10 @@ struct FakePlatform {
     revoke_on_stop: bool,
     /// Whether the stop itself says that the permission is gone.
     says_permission: bool,
+    /// Every start is refused for the permission.
+    refuses_for_permission: bool,
+    /// How many times a capture was started.
+    starts: Arc<AtomicU32>,
 }
 
 impl FakePlatform {
@@ -409,7 +424,15 @@ impl FakePlatform {
             stop_after: None,
             revoke_on_stop: false,
             says_permission: false,
+            refuses_for_permission: false,
+            starts: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// A capture whose every start is refused for the permission while the preflight says yes.
+    fn refusing_for_permission(mut self) -> FakePlatform {
+        self.refuses_for_permission = true;
+        self
     }
 
     /// A capture that stops itself after `frames` frames, as when the user revokes Screen
@@ -520,6 +543,8 @@ impl Platform for FakePlatform {
             stop_after: self.stop_after,
             revoke_on_stop: self.revoke_on_stop,
             says_permission: self.says_permission,
+            refuses_for_permission: self.refuses_for_permission,
+            starts: self.starts.clone(),
             worker: None,
         })
     }
@@ -877,6 +902,42 @@ fn a_stop_that_names_the_permission_drops_the_screen() {
     assert!(lines.iter().any(|line| line["kind"] == "no_permission"));
     assert!(lines.iter().any(|line| line["kind"] == "dropped"));
     assert_eq!(lines.last().unwrap()["reason"], "dropped");
+}
+
+/// A start the platform refuses for the permission ends the screen part at once, even while the
+/// preflight still says yes: it isn't tried again every second for the rest of the meeting.
+#[test]
+fn a_start_refused_for_permission_drops_the_screen() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("start-refused");
+    let platform = FakePlatform::new(true).refusing_for_permission();
+    let starts = platform.starts.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never stopped: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    assert!(
+        at("no_permission").unwrap() < at("dropped").unwrap(),
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"capture".to_string()), "{kinds:?}");
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        1,
+        "started again after the refusal"
+    );
 }
 
 /// A capture that stopped with the permission still in place is a display that went and came

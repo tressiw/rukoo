@@ -45,6 +45,10 @@ pub struct PlatformError {
     /// The platform's own code, ready for the log (`0x887a0005`).
     pub code: String,
     pub message: String,
+    /// The platform said that this process may not capture the screen, as ScreenCaptureKit does
+    /// with a refused or revoked grant. Its own answer counts, whatever the preflight says: a
+    /// grant revoked a moment ago can still read as given there.
+    pub permission: bool,
 }
 
 impl PlatformError {
@@ -53,6 +57,7 @@ impl PlatformError {
             device_lost: false,
             code: String::new(),
             message: message.into(),
+            permission: false,
         }
     }
 }

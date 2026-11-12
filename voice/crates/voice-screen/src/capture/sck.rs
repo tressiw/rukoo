@@ -271,12 +271,12 @@ fn shareable() -> Result<Retained<SCShareableContent>, PlatformError> {
             let answer = match (NonNull::new(content), NonNull::new(error)) {
                 (Some(content), _) => unsafe { Retained::retain(content.as_ptr()) }
                     .map(Ok)
-                    .unwrap_or_else(|| Err("the shareable content went away".into())),
+                    .unwrap_or_else(|| Err(("the shareable content went away".into(), false))),
                 // The handler's arguments are borrowed for the call: retain what is kept.
                 (None, Some(error)) => Err(unsafe { Retained::retain(error.as_ptr()) }
-                    .map(|error| describe(&error))
-                    .unwrap_or_else(|| "no reason given".into())),
-                (None, None) => Err("no reason given".into()),
+                    .map(|error| (describe(&error), permission_lost(error.code())))
+                    .unwrap_or_else(|| ("no reason given".into(), false))),
+                (None, None) => Err(("no reason given".into(), false)),
             };
             let _ = sender.send(answer);
         },
@@ -284,9 +284,12 @@ fn shareable() -> Result<Retained<SCShareableContent>, PlatformError> {
     unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&block) };
     match receiver.recv_timeout(ANSWER_WAIT) {
         Ok(Ok(content)) => Ok(content),
-        Ok(Err(why)) => Err(PlatformError::new(format!(
-            "the screen's content wasn't readable ({why}); Screen Recording may be off"
-        ))),
+        Ok(Err((why, permission))) => Err(PlatformError {
+            permission,
+            ..PlatformError::new(format!(
+                "the screen's content wasn't readable ({why}); Screen Recording may be off"
+            ))
+        }),
         Err(_) => Err(PlatformError::new(
             "ScreenCaptureKit didn't answer within 5 s",
         )),
@@ -299,16 +302,20 @@ fn wait_for(
     wait: Duration,
     start: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
 ) -> Result<(), PlatformError> {
-    let (sender, receiver): (_, Receiver<Option<String>>) = mpsc::channel();
+    let (sender, receiver): (_, Receiver<Option<(String, bool)>>) = mpsc::channel();
     let block: RcBlock<dyn Fn(*mut NSError)> = RcBlock::new(move |error: *mut NSError| {
         // SAFETY: the error is a live `NSError` for the length of the call, or null.
-        let answer = unsafe { Retained::retain(error) }.map(|error| describe(&error));
+        let answer = unsafe { Retained::retain(error) }
+            .map(|error| (describe(&error), permission_lost(error.code())));
         let _ = sender.send(answer);
     });
     start(&block);
     match receiver.recv_timeout(wait) {
         Ok(None) => Ok(()),
-        Ok(Some(reason)) => Err(PlatformError::new(format!("{why}: {reason}"))),
+        Ok(Some((reason, permission))) => Err(PlatformError {
+            permission,
+            ..PlatformError::new(format!("{why}: {reason}"))
+        }),
         Err(_) => Err(PlatformError::new(format!(
             "{why}: no answer within {} s",
             wait.as_secs()
@@ -327,6 +334,7 @@ fn sc_error(what: &str, error: &NSError) -> PlatformError {
         device_lost: false,
         code: format!("SCError {}", error.code()),
         message: format!("{what}: {}", error.localizedDescription()),
+        permission: permission_lost(error.code()),
     }
 }
 

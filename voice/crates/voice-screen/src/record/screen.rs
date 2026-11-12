@@ -259,6 +259,7 @@ impl<P: Platform> Screen<P> {
                 // `DXGI_ERROR_DEVICE_REMOVED`, as a removed device reports it.
                 code: "0x887a0005".into(),
                 message: "device-lost-at test switch".into(),
+                permission: false,
             });
         }
         let warp = self.test.as_ref().is_some_and(|t| t.warp);
@@ -348,8 +349,8 @@ impl<P: Platform> Screen<P> {
                 }
                 log(format_args!("can't capture {}: {e}", self.monitor.id));
                 // A grant that went away between two starts never comes back by itself: end the
-                // screen part instead of trying every second.
-                if self.permission_gone() {
+                // screen part instead of trying again. The platform's own answer decides first.
+                if e.permission || self.permission_gone() {
                     self.drop_for_permission();
                     return;
                 }

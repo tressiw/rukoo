@@ -30,6 +30,7 @@ impl From<windows::core::Error> for PlatformError {
             device_lost: is_device_lost(&e),
             code: format!("{:#010x}", e.code().0),
             message: e.message(),
+            permission: false,
         }
     }
 }
