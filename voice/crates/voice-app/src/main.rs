@@ -293,6 +293,16 @@ fn setup(
     sink.refresh_ui();
     let handle = app.clone();
     appearance::watch_system(move || system_appearance_changed(&handle));
+    // A key-up can be lost when the session goes away. Every one of these events ends a held
+    // hotkey's recording, so push-to-talk never stays on while the screen is locked or the Mac sleeps.
+    #[cfg(target_os = "macos")]
+    {
+        let engine_for_session = engine.clone();
+        session_mac::watch_releases(move |event| {
+            log::info!("{}: releasing held hotkeys", event.description());
+            engine_for_session.release_hotkeys();
+        });
+    }
     tray.update(engine.tray_state());
     let handle = app.clone();
     if let Err(error) = tray.install(move |action| tray_action(&handle, action)) {
