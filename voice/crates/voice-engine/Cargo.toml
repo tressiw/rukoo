@@ -22,11 +22,14 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Microphone capture and the Ownkey check are Windows-only in 0.1, as in the recorder; elsewhere
-# they report that the platform isn't supported. The theme, the language, the chime, the free-space
-# check and Start at login use macOS' own APIs through objc2.
-[target.'cfg(windows)'.dependencies]
+# Dictation's microphone opens through cpal on Windows and macOS. The Ownkey check, the Windows
+# audio APIs and the registry stay Windows-only; elsewhere they report that the platform isn't
+# supported. The theme, the language, the chime, the free-space check and Start at login use
+# macOS' own APIs through objc2.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 cpal = "=0.18.2"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
   "Win32_Foundation",
   "Win32_Globalization",
@@ -53,6 +56,10 @@ objc2-av-foundation = { version = "=0.3.2", default-features = false, features =
   "std",
   "AVCaptureDevice",
   "AVMediaFormat",
+] }
+# macOS' default input device, which cpal 0.18.2 reports even when there is none (spike S2).
+objc2-core-audio = { version = "=0.3.2", default-features = false, features = [
+  "AudioHardware",
 ] }
 objc2-core-graphics = "=0.3.2"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [

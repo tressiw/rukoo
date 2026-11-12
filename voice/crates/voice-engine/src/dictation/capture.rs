@@ -4,15 +4,20 @@
 
 use crate::services::{AudioSink, MicStream, Microphone};
 
+/// What the user sees when there is no microphone to open. cpal's missing device and Core
+/// Audio's `kAudioObjectUnknown` read the same, so a Mac and a PC say it the same way.
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) const NO_MICROPHONE: &str = "No microphone is available.";
+
 pub struct DefaultMicrophone;
 
 impl Microphone for DefaultMicrophone {
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             cpal_mic::open(on_audio).map(|mic| Box::new(mic) as Box<dyn MicStream>)
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = on_audio;
             Err("Dictation isn't supported on this platform yet.".into())
@@ -20,7 +25,7 @@ impl Microphone for DefaultMicrophone {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod cpal_mic {
     use std::sync::mpsc;
     use std::thread::{self, JoinHandle};
@@ -29,6 +34,7 @@ mod cpal_mic {
     use cpal::{Data, SampleFormat};
     use voice_audio::Resampler;
 
+    use super::NO_MICROPHONE;
     use crate::services::{AudioSink, MicStream};
 
     /// The stream lives on its own thread, which drops it when the microphone closes.
@@ -84,10 +90,13 @@ mod cpal_mic {
     }
 
     fn build(mut on_audio: AudioSink) -> Result<cpal::Stream, String> {
+        // A Mac with no input device still gets a device from cpal; see `mac_microphone`.
+        #[cfg(target_os = "macos")]
+        if super::mac_microphone::is_missing(super::mac_microphone::default_input_id()) {
+            return Err(NO_MICROPHONE.into());
+        }
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or("No microphone is available.")?;
+        let device = host.default_input_device().ok_or(NO_MICROPHONE)?;
         // The device's own format: cpal doesn't ask Windows to convert capture streams.
         let config = device.default_input_config().map_err(|e| e.to_string())?;
         let format = config.sample_format();
@@ -146,5 +155,113 @@ mod cpal_mic {
                 .collect(),
             _ => return None,
         })
+    }
+}
+
+/// Core Audio's default input device on macOS, which cpal can't tell Voice about.
+#[cfg(target_os = "macos")]
+mod mac_microphone {
+    use std::ptr::NonNull;
+
+    use objc2_core_audio::{
+        kAudioHardwareNoError, kAudioHardwarePropertyDefaultInputDevice,
+        kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+        AudioObjectGetPropertyData, AudioObjectPropertyAddress,
+    };
+
+    /// `kAudioObjectUnknown`: what Core Audio reports when the Mac has no default input device.
+    const UNKNOWN_AUDIO_DEVICE: u32 = 0;
+
+    /// The id Core Audio has for the default input device, or `None` when the HAL didn't answer.
+    pub(super) fn default_input_id() -> Option<u32> {
+        let address = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut device: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: the address is valid and the HAL writes exactly one device id into `device`,
+        // whose size is passed along.
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                kAudioObjectSystemObject as u32,
+                NonNull::from(&address),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+                NonNull::from(&mut device).cast(),
+            )
+        };
+        (status == kAudioHardwareNoError).then_some(device)
+    }
+
+    /// Whether that id means "this Mac has no input device".
+    ///
+    /// cpal 0.18.2's Core Audio backend keeps the unknown id and hands out a device for it; its
+    /// name, its id and its format then all fail, and calling `to_string` on the device used to
+    /// panic (spike S2). Voice reads the id itself and treats it as no microphone, so dictation
+    /// says so instead of failing inside cpal.
+    pub(super) fn is_missing(device: Option<u32>) -> bool {
+        // A HAL that didn't answer leaves cpal's own `None` to report the missing microphone.
+        device == Some(UNKNOWN_AUDIO_DEVICE)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::mac_microphone::{default_input_id, is_missing};
+    use super::{DefaultMicrophone, NO_MICROPHONE};
+    use crate::services::{AudioSink, Microphone};
+
+    #[test]
+    fn an_unknown_audio_device_is_no_microphone() {
+        assert!(is_missing(Some(0)), "kAudioObjectUnknown");
+        assert!(!is_missing(Some(1)));
+        assert!(!is_missing(Some(0x4E)));
+        assert!(
+            !is_missing(None),
+            "a HAL that can't answer is cpal's own `None`, not this check"
+        );
+    }
+
+    #[test]
+    fn the_missing_microphone_reads_as_a_message_for_the_user() {
+        assert_eq!(NO_MICROPHONE, "No microphone is available.");
+    }
+
+    /// This Mac has no input device, which is the case the check exists for. The read opens
+    /// nothing and asks for no permission.
+    #[test]
+    #[ignore = "needs the real machine: checks this Mac's own input devices"]
+    fn this_mac_reports_no_microphone() {
+        assert!(
+            is_missing(default_input_id()),
+            "Core Audio answered {:?}",
+            default_input_id()
+        );
+    }
+
+    /// Opens the real microphone, so it needs one and a desktop nobody is using.
+    #[test]
+    #[ignore = "needs a microphone: opens and closes the real input device"]
+    fn opens_the_real_microphone() {
+        let seen = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&seen);
+        let sink: AudioSink = Box::new(move |pcm: &[i16]| {
+            *counter.lock().unwrap() += pcm.len();
+        });
+        let mic = DefaultMicrophone
+            .open(sink)
+            .expect("a microphone on this machine");
+        std::thread::sleep(Duration::from_millis(300));
+        drop(mic);
+        assert!(
+            *seen.lock().unwrap() > 0,
+            "the microphone delivered no samples"
+        );
     }
 }
