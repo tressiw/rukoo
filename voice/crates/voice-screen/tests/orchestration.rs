@@ -940,6 +940,52 @@ fn a_start_refused_for_permission_drops_the_screen() {
     );
 }
 
+/// A capture that stops every time it starts, with its display and permission in place, is tried
+/// again after a growing wait, and after ten failures in a row the screen part ends with a reason
+/// of its own: it doesn't open a video file a second for the rest of the meeting.
+#[test]
+fn a_capture_that_keeps_stopping_ends_the_screen() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("keeps-stopping");
+    std::env::set_var("RUKOO_VOICE_DATA_DIR", &meeting.root);
+    std::env::set_var("VOICE_SCREEN_TEST_CAPTURE_RETRY_MS", "5");
+    let platform = FakePlatform::new(true).stopping(0, false);
+    let starts = platform.starts.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never stopped: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let result = handle.join().unwrap();
+    std::env::remove_var("RUKOO_VOICE_DATA_DIR");
+    std::env::remove_var("VOICE_SCREEN_TEST_CAPTURE_RETRY_MS");
+    result.expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let dropped: Vec<(Option<&str>, Option<&str>)> = lines
+        .iter()
+        .filter(|line| line["kind"] == "dropped")
+        .map(|line| (line["what"].as_str(), line["reason"].as_str()))
+        .collect();
+    assert_eq!(
+        dropped,
+        [
+            (Some("video"), Some("capture")),
+            (Some("frames"), Some("capture"))
+        ],
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"no_permission".to_string()), "{kinds:?}");
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+    assert_eq!(starts.load(Ordering::SeqCst), 10);
+}
+
 /// A capture that stopped with the permission still in place is a display that went and came
 /// back: the session records again instead of giving up the screen.
 #[test]

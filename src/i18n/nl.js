@@ -2400,6 +2400,7 @@
   "meeting.mark.droppedVideoDisk": "Video gestopt om de audio te blijven opnemen: de schijf is bijna vol. Schermbeelden gaan door.",
   "meeting.mark.droppedVideoEncoder": "Video gestopt: geen video-encoder op deze computer werkte. Schermbeelden gaan door.",
   "meeting.mark.droppedVideoDevice": "Video gestopt: de videokaart kon de video niet opnieuw starten",
+  "meeting.mark.droppedCapture": "Schermopname gestopt: het opnemen van het scherm stopte steeds",
   "meeting.mark.droppedCrash": "Schermopname gestopt: de schermopname viel te vaak uit",
   "meeting.mark.droppedDevice": "Schermopname gestopt om de audio te blijven opnemen: de videokaart kon niet opnieuw starten",
   "meeting.mark.monitor": "Schermopname verplaatst naar {name}",

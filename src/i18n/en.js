@@ -9307,6 +9307,10 @@
     "message": "Screen recording stopped to keep recording audio: the graphics card couldn't start again",
     "description": "Meeting view transcript: Rukoo Voice stopped recording the screen because the graphics device was reset and couldn't be started again. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.droppedCapture": {
+    "message": "Screen recording stopped: the screen capture kept stopping",
+    "description": "Meeting view transcript: the operating system's screen capture failed to start or stopped by itself ten times in a row, so Rukoo Voice no longer records the screen in this meeting; the audio goes on. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.droppedCrash": {
     "message": "Screen recording stopped: the screen recorder failed too often",
     "description": "Meeting view transcript: Rukoo Voice's screen recorder stopped five times in a row, so Voice no longer records the screen in this meeting; the audio goes on. src/renderer/meeting.js (markText)"

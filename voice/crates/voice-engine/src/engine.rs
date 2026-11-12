@@ -762,6 +762,8 @@ fn drop_notice(what: Part, reason: Reason) -> &'static str {
         (Part::Video, Reason::Disk) => notices::VIDEO_DROPPED_DISK,
         (Part::Video, Reason::Encoder) => notices::VIDEO_DROPPED_ENCODER,
         (Part::Video, Reason::Device) => notices::VIDEO_DROPPED_DEVICE,
+        // The frames go in the same moment, and their notice is the one shown.
+        (Part::Video, Reason::Capture) => notices::SCREEN_FAILED,
         (Part::Frames, Reason::Disk) => notices::FRAMES_DROPPED_DISK,
         (Part::Frames, _) => notices::SCREEN_FAILED,
     }
@@ -777,7 +779,8 @@ fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
         (Part::Video, Reason::Device) => "Voice stopped the screen video: the graphics device didn't come back with video support.",
         (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
         (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
-        (Part::Frames, Reason::Encoder) => return None,
+        (Part::Frames, Reason::Capture) => "Voice stopped recording the screen: the screen capture kept stopping. The audio goes on.",
+        (Part::Frames, Reason::Encoder) | (Part::Video, Reason::Capture) => return None,
     })
 }
 
@@ -1212,6 +1215,15 @@ mod drop_tests {
             .unwrap()
             .contains("Frames go on"));
         assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        // A capture that kept stopping takes both parts at once; the frames speak for both.
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Capture),
+            "pill.screenFailed"
+        );
+        assert!(drop_text(Part::Frames, Reason::Capture)
+            .unwrap()
+            .contains("kept stopping"));
+        assert_eq!(drop_text(Part::Video, Reason::Capture), None);
         assert!(drop_text(Part::Frames, Reason::Disk).is_some());
     }
 }

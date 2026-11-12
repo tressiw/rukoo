@@ -927,7 +927,7 @@ function markText(k) {
     }
     // The whole screen recording stopped; the audio goes on (voice/PROTOCOL.md, marks).
     case 'dropped': {
-      const key = { disk: 'meeting.mark.droppedDisk', device: 'meeting.mark.droppedDevice', crash: 'meeting.mark.droppedCrash' }[k.detail] || 'meeting.mark.droppedEncoder';
+      const key = { disk: 'meeting.mark.droppedDisk', device: 'meeting.mark.droppedDevice', capture: 'meeting.mark.droppedCapture', crash: 'meeting.mark.droppedCrash' }[k.detail] || 'meeting.mark.droppedEncoder';
       return t(key);
     }
     // Only the video stopped. After a lost graphics device the frames may stop right after; their own mark says so.

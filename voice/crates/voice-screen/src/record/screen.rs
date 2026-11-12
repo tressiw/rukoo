@@ -82,7 +82,15 @@ const DRAIN_EXTRA: Duration = Duration::from_secs(2);
 /// the process alive.
 const WORKER_JOIN: Duration = Duration::from_secs(5);
 pub(crate) const MEMORY_LOG: Duration = Duration::from_secs(60);
-const CAPTURE_RETRY: Duration = Duration::from_secs(1);
+/// The first wait before a capture that failed to start, or stopped by itself, is started again.
+/// Each failure in a row doubles it, up to `CAPTURE_RETRY_MAX`.
+pub(crate) const CAPTURE_RETRY: Duration = Duration::from_secs(1);
+/// The longest wait between two starts, as a multiple of `CAPTURE_RETRY`: 30 s.
+const CAPTURE_RETRY_MAX: u32 = 30;
+/// After this many failed captures in a row the screen part ends, with reason `capture`.
+const CAPTURE_FAILURES: u32 = 10;
+/// A capture that has delivered frames this long counts as working: the failures start over.
+const CAPTURE_STABLE: Duration = Duration::from_secs(60);
 const DEVICE_RETRY_PAUSE: Duration = Duration::from_millis(500);
 pub(crate) const EVENT_QUEUE: usize = 64;
 const MONITOR_CACHE: Duration = Duration::from_secs(2);
@@ -152,6 +160,12 @@ pub(crate) struct Screen<P: Platform> {
     /// The encoder failed once: a new device and a new file at this moment.
     pub(crate) rebuild_at: Option<Instant>,
     pub(crate) capture_retry_at: Option<Instant>,
+    /// Captures in a row that failed to start or stopped by themselves, and the first wait after
+    /// one (`CAPTURE_RETRY`; a test shortens it).
+    pub(crate) capture_failures: u32,
+    pub(crate) capture_retry: Duration,
+    /// When the running capture's first frame arrived.
+    pub(crate) capture_since: Option<Instant>,
     /// A `no_monitor` line is out and no `capture` has ended its wait yet.
     pub(crate) no_monitor: bool,
     pub(crate) paused: bool,
@@ -354,7 +368,7 @@ impl<P: Platform> Screen<P> {
                     self.drop_for_permission();
                     return;
                 }
-                self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+                self.capture_failed();
             }
         }
     }
@@ -364,6 +378,7 @@ impl<P: Platform> Screen<P> {
             source.stop();
         }
         self.capturing = false;
+        self.capture_since = None;
         self.generation += 1;
         self.last = None;
     }
@@ -505,10 +520,47 @@ impl<P: Platform> Screen<P> {
         }
         if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
             // The display is still there, so the stream stopped for some other reason: try again
-            // after a pause, not at once, so a stream that stops as it starts doesn't spin.
-            self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+            // after a pause that grows, so a stream that stops as it starts doesn't spin.
+            self.capture_failed();
         } else {
             self.on_monitor_lost();
+        }
+    }
+
+    /// A capture failed to start or stopped by itself with its display still there. It is tried
+    /// again after a wait that doubles with each failure in a row, up to 30 s, and after
+    /// `CAPTURE_FAILURES` the screen part ends with reason `capture`: a stream that starts and
+    /// stops again would otherwise open a video file a second for the rest of the meeting.
+    fn capture_failed(&mut self) {
+        self.capture_failures += 1;
+        if self.capture_failures >= CAPTURE_FAILURES {
+            log(format_args!(
+                "the screen capture failed {} times in a row; the screen isn't recorded any more",
+                self.capture_failures
+            ));
+            self.end_screen(Reason::Capture);
+            return;
+        }
+        let wait = capture_retry_after(self.capture_retry, self.capture_failures);
+        log(format_args!(
+            "trying the capture again in {} ms (failure {} in a row)",
+            wait.as_millis(),
+            self.capture_failures
+        ));
+        self.capture_retry_at = Some(Instant::now() + wait);
+    }
+
+    /// Drops what still records, the video first, for `reason`. `apply_drop` stops the session
+    /// once both parts are gone.
+    fn end_screen(&mut self, reason: Reason) {
+        self.capture_retry_at = None;
+        if self.mode == Mode::Video && self.drops.video.is_none() {
+            self.drops.video = Some(reason);
+            self.apply_drop(Part::Video, reason);
+        }
+        if self.drops.frames.is_none() {
+            self.drops.frames = Some(reason);
+            self.apply_drop(Part::Frames, reason);
         }
     }
 
@@ -536,14 +588,7 @@ impl<P: Platform> Screen<P> {
             let t = self.now_t();
             self.write(&Line::NoPermission { t });
         }
-        if self.mode == Mode::Video && self.drops.video.is_none() {
-            self.drops.video = Some(Reason::Device);
-            self.apply_drop(Part::Video, Reason::Device);
-        }
-        if self.drops.frames.is_none() {
-            self.drops.frames = Some(Reason::Device);
-            self.apply_drop(Part::Frames, Reason::Device);
-        }
+        self.end_screen(Reason::Device);
     }
 
     fn on_monitor_lost(&mut self) {
@@ -674,6 +719,7 @@ impl<P: Platform> Screen<P> {
         if self.awaiting_capture {
             self.awaiting_capture = false;
             self.captured = true;
+            self.capture_since = Some(Instant::now());
             self.no_monitor = false;
             let line = Line::Capture {
                 t,
@@ -1234,6 +1280,13 @@ impl<P: Platform> Screen<P> {
                 self.on_monitor_lost();
             }
         }
+        // A capture that has delivered frames for a minute works: its failures start over.
+        if self
+            .capture_since
+            .is_some_and(|since| since.elapsed() >= CAPTURE_STABLE)
+        {
+            self.capture_failures = 0;
+        }
         if self.capturing {
             if let Some(device) = self.device.clone() {
                 if self.platform.device_removed(&device) {
@@ -1484,6 +1537,13 @@ impl<P: Platform> Screen<P> {
     }
 }
 
+/// The wait before the next start after `failures` failed captures in a row: `base`, doubled for
+/// each failure after the first, at most `CAPTURE_RETRY_MAX` times `base`.
+fn capture_retry_after(base: Duration, failures: u32) -> Duration {
+    let doubled = 1u32 << failures.saturating_sub(1).min(16);
+    base * doubled.min(CAPTURE_RETRY_MAX)
+}
+
 fn error(code: &str) -> Value {
     json!({ "ok": false, "error": code })
 }
@@ -1514,6 +1574,21 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    /// 1, 2, 4, 8 and 16 s, then 30 s for every failure after that.
+    #[test]
+    fn the_capture_retry_doubles_up_to_30_s() {
+        let waits: Vec<u64> = (1..=8)
+            .map(|n| capture_retry_after(CAPTURE_RETRY, n).as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(capture_retry_after(CAPTURE_RETRY, 0).as_secs(), 1);
+        assert_eq!(capture_retry_after(CAPTURE_RETRY, 400).as_secs(), 30);
+        assert_eq!(
+            capture_retry_after(Duration::from_millis(10), 3),
+            Duration::from_millis(40)
+        );
+    }
 
     #[test]
     fn events_behind_a_stop_stay_queued() {

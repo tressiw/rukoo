@@ -756,6 +756,18 @@ test('the transcript says the screen recording stopped when the screen recorder 
   ]);
 });
 
+test('the transcript says the screen recording stopped when the screen capture kept stopping', async (t) => {
+  const { feed, call } = await setup(t);
+  feed([
+    startedEv(M, { screen: 'frames' }),
+    ev('mark', M, { id: 'dropped-frames', kind: 'dropped', at: 65000, until: null, track: 'screen', detail: 'capture', label: null })
+  ]);
+  const res = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.deepEqual(untag(res.transcript).trim().split('\n'), [
+    '[00:01:05] [Rukoo Voice stopped recording the screen: the screen capture kept stopping]'
+  ]);
+});
+
 test('the transcript says where the screen changed, folds a run of changes into one line, and never holds the screen text', async (t) => {
   const { feed, call, hub } = await setup(t);
   feed([
