@@ -157,11 +157,12 @@ fn foreground() -> Value {
 fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, String> {
     let pill = pill.clone();
     on_main(app, move || {
-        // Only Windows has the stop and screen windows, so elsewhere nothing changes this value.
-        #[cfg_attr(not(windows), allow(unused_mut))]
+        // Only Windows and macOS have the stop and screen windows, so elsewhere nothing changes this
+        // value.
+        #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
         let mut styles =
             json!({ "pill": pill.window().and_then(|w| crate::pill::window::styles(&w)) });
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             styles["stopWindow"] = json!(pill.hit_styles());
         }
@@ -201,9 +202,10 @@ fn capture(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     json!({ "file": path.display().to_string(), "error": "captures need WebView2" })
 }
 
-/// The pill's native window styles. Windows sets and reports them; macOS has no equivalents yet, so
-/// there is nothing to read there and the self-test doesn't fail for the value it doesn't have.
-#[cfg(windows)]
+/// The pill's native window styles. Windows sets and reports them, and macOS reports its recipe in the
+/// same shape (`window_mac::styles_of`): never key or main, at the pill's level, out of the window
+/// cycle.
+#[cfg(any(windows, target_os = "macos"))]
 fn styles_ok(styles: &Value) -> bool {
     let p = &styles["pill"];
     p["toolwindow"] == true
@@ -212,7 +214,7 @@ fn styles_ok(styles: &Value) -> bool {
         && p["appwindow"] == false
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn styles_ok(_styles: &Value) -> bool {
     true
 }
@@ -237,13 +239,22 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         &pill,
         seq,
     )?;
-    // The button windows over the pill's stop and screen buttons are Windows-only today.
+    // The button windows over the pill's stop and screen buttons: Windows and macOS. They follow the
+    // page's layout, which a Mac without anyone at its console never sends (no frames run there).
     #[cfg(windows)]
     wait(
         "the stop window over the button",
         Duration::from_secs(5),
         || pill.status().hit_visible,
     )?;
+    #[cfg(target_os = "macos")]
+    if crate::session_mac::at_the_console() {
+        wait(
+            "the stop window over the button",
+            Duration::from_secs(5),
+            || pill.status().hit_visible,
+        )?;
+    }
     thread::sleep(Duration::from_millis(400));
     let after_pill = foreground();
     let shown = pill_styles(app, &pill)?;

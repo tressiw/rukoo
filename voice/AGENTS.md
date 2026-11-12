@@ -61,6 +61,7 @@ Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local spe
 - `--rebuild` builds even when nothing changed. A rebuild stops the copy the script started before it replaces the programs, and it puts each program in place by renaming a new file over it, so a copy the script didn't start keeps running on its old files. `--stop` ends every program running from this bundle, the four helpers included, by pid: a recorder that is still recording goes too, so a meeting in progress in the dev copy ends.
 - Ownkey never ran on macOS, so a development copy has nothing to import and no shared model folder; the first meeting downloads Orukeet into the data folder.
 - Development keys are F13 and F14, as on Windows.
+- The pill is a window at status level (25) that joins every Space and lets clicks through. Voice shows it with `orderFrontRegardless`, never `show`, so Voice never becomes the active app. The stop and screen buttons are non-activating panels over the page's buttons (`voice-app/src/pill/window_mac.rs` and `hit_mac.rs`). The `status` dev hook's `pillNative` reports the level, collection behaviour, sharing type, frame and occlusion of the pill and both panels, so a script can check them without looking at the screen.
 
 ## Package
 
