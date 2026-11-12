@@ -45,12 +45,13 @@ fn the_state_has_every_part_api_md_lists() {
     ] {
         assert!(state.get(field).is_some(), "{field} is missing");
     }
-    // Every feature is in this Voice; bucket sync shows where its store opened (`sync.available`).
+    // Every feature is in this Voice; bucket sync shows only where this platform can keep its keys
+    // safe, which Settings report as `sync.available` (voice-sync's protector decides both).
     assert_eq!(
         state["features"],
         json!({"screen": true, "speakers": true, "sync": state["sync"]["available"]})
     );
-    assert_eq!(state["features"]["sync"], cfg!(windows));
+    assert_eq!(state["features"]["sync"], voice_sync::protect::SUPPORTED);
     // No screen program here, so no probe answered.
     assert_eq!(state["screen"], Value::Null);
     assert_eq!(state["config"]["meetings"]["screen"], "off");
@@ -221,6 +222,46 @@ fn a_setting_is_saved_applied_and_sent() {
     assert!(!saved.paste_mode);
     assert_eq!(saved.vocabulary, ["Rukoo", "Hermes"]);
     assert!(saved.filler_languages.is_empty());
+    engine.shutdown();
+}
+
+#[test]
+fn a_system_theme_change_reaches_the_pill_and_settings_only_while_the_theme_follows_it() {
+    use voice_engine::Theme;
+
+    let h = Harness::new("system-theme");
+    let engine = h.start();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert!(engine.ui().theme_follows_system);
+
+    // The theme is System: macOS switches to light and tells the engine.
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Light);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Light);
+    assert_eq!(h.sink.last_settings()["theme"], "light");
+    assert!(h.sink.last_settings()["seq"].as_u64().unwrap() > seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // Nothing changed since: nothing is sent again.
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    engine.system_looks_changed();
+    assert_eq!(h.sink.last_settings()["seq"].as_u64().unwrap(), seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // A theme the user chose stays when the system changes.
+    engine.settings_set("ui.theme", json!("dark")).unwrap();
+    assert!(!engine.ui().theme_follows_system);
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    h.set_system_theme(Theme::Dark);
+    engine.system_looks_changed();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Dark);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes);
     engine.shutdown();
 }
 

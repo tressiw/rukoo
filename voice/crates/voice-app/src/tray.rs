@@ -1,5 +1,5 @@
 //! The tray icon: its menu and tooltip follow the engine's [`TrayState`] and the catalogs, and it shows the
-//! engine's notifications as balloons, which Windows turns into toasts.
+//! engine's notifications, as balloons on Windows and in Notification Center on macOS (notify_mac.rs).
 
 use std::sync::{Arc, Mutex};
 
@@ -118,7 +118,9 @@ pub fn cut(text: &str, max: usize) -> String {
     out
 }
 
-/// Copies `text` into a fixed, NUL-terminated UTF-16 field such as NOTIFYICONDATAW's.
+/// Copies `text` into a fixed, NUL-terminated UTF-16 field such as NOTIFYICONDATAW's. Windows' balloon
+/// is its only caller; the test that pins the cutting runs on every platform.
+#[cfg(any(windows, test))]
 pub fn fill_wide(field: &mut [u16], text: &str) {
     let text = cut(text, field.len().saturating_sub(1));
     field.fill(0);
@@ -131,6 +133,8 @@ pub struct Tray {
     app: AppHandle,
     catalog: Arc<Catalog>,
     state: Mutex<(TrayState, Locale)>,
+    /// The tray icon's window, which a Windows balloon needs.
+    #[cfg(windows)]
     icon_window: Mutex<isize>,
 }
 
@@ -140,6 +144,7 @@ impl Tray {
             app: app.clone(),
             catalog,
             state: Mutex::new((TrayState::default(), locale)),
+            #[cfg(windows)]
             icon_window: Mutex::new(0),
         })
     }
@@ -176,6 +181,9 @@ impl Tray {
                     on_action(TrayAction::Settings);
                 }
             })
+            // A menu bar icon is a template image: macOS draws it from its alpha in black or white to match
+            // the menu bar, so it stays readable in both themes. The mark's outline becomes the glyph.
+            .icon_as_template(cfg!(target_os = "macos"))
             .build(&self.app)?;
         #[cfg(windows)]
         {
@@ -270,6 +278,8 @@ impl Tray {
                 log::warn!("tray: could not show the notification");
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::notify_mac::notify(&title, &notification.body);
     }
 }
 

@@ -15,6 +15,11 @@ pub use imp::*;
 
 /// What the pill reacts to while it runs: a display change (after it settles) and another app coming to
 /// the foreground (to stay above other topmost windows).
+///
+/// `main.rs` registers these on every platform; the Windows window hooks are their only callers today,
+/// and the macOS ones will be. Gating them to Windows would gate that registration and the pill's two
+/// handlers with it, so they stay where they are and only their dead-code check is Windows'.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct Callbacks {
     pub display_changed: Box<dyn Fn() + Send + Sync>,
     pub foreground_changed: Box<dyn Fn() + Send + Sync>,
@@ -409,9 +414,6 @@ mod imp {
         None
     }
     pub fn place(_window: &WebviewWindow, _monitor: Monitor, _edge: Edge) -> Option<Rect> {
-        None
-    }
-    pub fn origin_and_scale(_window: &WebviewWindow) -> Option<((i32, i32), f64)> {
         None
     }
     pub fn styles(_window: &WebviewWindow) -> Option<Styles> {

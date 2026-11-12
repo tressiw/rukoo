@@ -121,7 +121,7 @@ pub trait Speech: Send + Sync {
 }
 
 pub trait Chime: Send + Sync {
-    /// The ready chime: Windows' "Asterisk" sound, asynchronous.
+    /// The ready chime: Windows' "Asterisk" sound, or macOS' alert sound, asynchronous.
     fn play(&self);
 }
 
@@ -203,7 +203,7 @@ impl Services {
                 speakers: SpeakerLabels::new(speakers),
             }),
             chime: Arc::new(crate::platform::SystemChime),
-            autostart: Arc::new(crate::autostart::RunValue::for_current_exe()),
+            autostart: crate::autostart::system(),
             updates: Arc::new(GitHubUpdates),
             system: Arc::new(crate::platform::SystemInfo),
             ownkey_config: voice_core::paths::ownkey_config(),

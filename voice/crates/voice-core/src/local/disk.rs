@@ -1,9 +1,10 @@
-//! Free disk space, so a download fails before it starts instead of halfway.
+//! Free disk space, so a download fails before it starts instead of halfway. The engine reads it
+//! through [`free_space`] too, for its recording floors.
 
 use std::path::Path;
 
 #[cfg(windows)]
-pub(crate) fn free_space(dir: &Path) -> Option<u64> {
+pub fn free_space(dir: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -21,7 +22,7 @@ pub(crate) fn free_space(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(unix)]
-pub(crate) fn free_space(dir: &Path) -> Option<u64> {
+pub fn free_space(dir: &Path) -> Option<u64> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -40,6 +41,6 @@ pub(crate) fn free_space(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(not(any(windows, unix)))]
-pub(crate) fn free_space(_dir: &Path) -> Option<u64> {
+pub fn free_space(_dir: &Path) -> Option<u64> {
     None
 }

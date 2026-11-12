@@ -2,6 +2,7 @@
 //! scale, taskbar edge and monitor layout (pill-settings-design.md 3.3).
 
 use serde::Deserialize;
+#[cfg(any(windows, test))]
 use voice_engine::Edge;
 
 /// The pill window in logical pixels (voice/ui/API.md). The pill draws itself inside it with room for its
@@ -27,7 +28,12 @@ impl Rect {
     }
 }
 
+// The five helpers below place the pill window and its button windows on Windows; nothing else calls
+// them yet, so they are built for Windows and for the tests, which check every scale, taskbar edge
+// and monitor layout on every platform. The macOS pill will use them too.
+
 /// `dpi / 96`; 0 (an unknown DPI) counts as 100 %.
+#[cfg(any(windows, test))]
 pub fn scale_for_dpi(dpi: u32) -> f64 {
     if dpi == 0 {
         1.0
@@ -37,6 +43,7 @@ pub fn scale_for_dpi(dpi: u32) -> f64 {
 }
 
 /// The pill window's size at `scale`.
+#[cfg(any(windows, test))]
 pub fn window_size(scale: f64) -> (i32, i32) {
     (
         (WINDOW_W * scale).round() as i32,
@@ -46,6 +53,7 @@ pub fn window_size(scale: f64) -> (i32, i32) {
 
 /// Centred on the work area, with its bottom on the work area's bottom (the pill then floats 40 px above
 /// the taskbar) or its top on the work area's top. The work area leaves out the taskbar wherever it is.
+#[cfg(any(windows, test))]
 pub fn pill_window_rect(work: &Rect, scale: f64, edge: Edge) -> Rect {
     let (w, h) = window_size(scale);
     let left = work.left + (work.width() - w) / 2;
@@ -84,6 +92,7 @@ pub struct Layout {
 /// Where the stop window goes on screen: the pill window's client origin plus the button scaled to
 /// physical pixels, rounded outwards so the hit area never falls short of the drawn button. `None` for an
 /// empty or nonsensical rectangle.
+#[cfg(any(windows, test))]
 pub fn css_to_physical(origin: (i32, i32), scale: f64, r: &CssRect) -> Option<Rect> {
     let values = [r.x, r.y, r.width, r.height, scale];
     if values.iter().any(|v| !v.is_finite()) || r.width <= 0.0 || r.height <= 0.0 || scale <= 0.0 {
@@ -102,6 +111,7 @@ pub fn css_to_physical(origin: (i32, i32), scale: f64, r: &CssRect) -> Option<Re
 }
 
 /// Windows that are the desktop or the taskbar, not an app the user dictates into.
+#[cfg(any(windows, test))]
 pub fn is_shell_class(class: &str) -> bool {
     matches!(
         class,

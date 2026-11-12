@@ -9,6 +9,10 @@
 //! The screen process only ever records its synthetic source here (`--test synthetic:...`), and
 //! video uses Microsoft's software encoder (`no-hardware,software-encoder`): nothing of the real
 //! desktop is captured and no hardware encoder runs.
+//!
+//! The screen process records on Windows only until its macOS port, so the tests that start it run
+//! there. This binary still lists every test everywhere: the two that never start a screen process
+//! run on the other platforms too.
 
 mod support;
 
@@ -128,6 +132,28 @@ fn main() {
             screen_mode_changes_require_each_clients_current_ack,
         ),
     ];
+    // The screen process records on Windows only until its macOS port, so the tests that start one
+    // run there. These two never start it and run everywhere: turning the screen off starts nothing,
+    // and the slow-screen case answers through a stand-in process of its own.
+    #[cfg(not(windows))]
+    let tests: Vec<(&str, fn())> = tests
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "screen_off_sends_no_meeting_starting"
+                    | "screen_select_answers_by_its_deadline_when_the_screen_is_slow"
+            )
+        })
+        .collect();
+    // A renamed test would slip out of that filter without a word.
+    #[cfg(not(windows))]
+    assert_eq!(
+        tests.len(),
+        2,
+        "the filter in main() keeps the two tests that start no screen process; a rename dropped one out, so \
+         update its name there"
+    );
     let filters: Vec<String> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))

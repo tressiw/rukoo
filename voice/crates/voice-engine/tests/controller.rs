@@ -200,7 +200,8 @@ fn wait_clock(controller: &Controller, at_least: u64) {
     });
 }
 
-/// Ends a recorder this test started, by its process id.
+/// Ends a recorder this test started, by its process id: `taskkill` on Windows, `kill -9` on every
+/// Unix, macOS included.
 fn kill(pid: u32) {
     #[cfg(windows)]
     let status = std::process::Command::new("taskkill")
@@ -228,7 +229,18 @@ fn alive(pid: u32) -> bool {
     }
     #[cfg(not(windows))]
     {
-        Path::new(&format!("/proc/{pid}")).exists()
+        // Linux could read /proc/<pid>, but macOS has none, so every Unix asks `ps` for the process state.
+        // It prints nothing for a process that is gone and "Z" for one that exited but hasn't been reaped,
+        // which counts as gone here: a controller that reattached never reaps a recorder the last one
+        // started, so that recorder waits to be reaped until this test process ends.
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output();
+        out.is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        })
     }
 }
 
