@@ -82,8 +82,15 @@ jobs:
             }
             Write-Host "::warning::Speaker label assets missing: $($missing -join ', '). The AMI label cases and the runtime tests skip, and the test output reports them as passed."
           }
+      # A test that skips itself prints to stderr, which libtest hides when the test passes. It also appends a line to
+      # the skip log, and the step after the tests turns each line into a warning.
+      - name: Name the skip log
+        run: node scripts/skip-log.mjs init
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
       - run: cargo test --workspace --no-fail-fast
+      - name: Tests that skipped themselves
+        if: ${{ always() }}
+        run: node scripts/skip-log.mjs report
       # The runner's capture support, H.264 encoders, OCR languages and monitors, so a log shows why the screen tests
       # took the software encoder or skipped OCR.
       - name: What this runner can record of the screen
@@ -108,10 +115,17 @@ jobs:
           persist-credentials: false
       - name: Install ALSA headers for cpal
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # A test that skips itself prints to stderr, which libtest hides when the test passes. It also appends a line to
+      # the skip log, and the step after the tests turns each line into a warning.
+      - name: Name the skip log
+        run: node scripts/skip-log.mjs init
       # The app, the input crate, the local worker and the screen process are Windows-first; the recorder, the bridge,
       # the transcript pipeline, the screen folder format and bucket sync must behave the same on Linux, so their tests
       # run here too. Bucket sync's tests run against voice-s3-fake; only its DPAPI cases are Windows-only.
       - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files -p voice-sync -p voice-s3-fake
+      - name: Tests that skipped themselves
+        if: ${{ always() }}
+        run: node scripts/skip-log.mjs report
 
   macos:
     runs-on: macos-latest
@@ -210,9 +224,16 @@ jobs:
       # a warning names them. Windows and Linux never set it, so they stay the gate for those behaviours.
       - name: Probe how well this host keeps time
         run: node scripts/host-probe.mjs
+      # A test that skips itself prints to stderr, which libtest hides when the test passes. It also appends a line to
+      # the skip log, and the step after the tests turns each line into a warning.
+      - name: Name the skip log
+        run: node scripts/skip-log.mjs init
       # The screen process's crash and clock tests run here on the synthetic screen with VideoToolbox's software
       # encoder and Vision; its real-screen and Windows sink writer spikes stay on Windows.
       - run: cargo test --workspace --no-fail-fast
+      - name: Tests that skipped themselves
+        if: ${{ always() }}
+        run: node scripts/skip-log.mjs report
       # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
       - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen
       # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
