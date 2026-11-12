@@ -14,6 +14,7 @@
     "allow-settings-choose-folder",
     "allow-settings-open-folder",
     "allow-settings-open-link",
+    "allow-settings-open-permission",
     "allow-settings-clean-preview",
     "allow-settings-check-updates",
     "allow-settings-new-token",

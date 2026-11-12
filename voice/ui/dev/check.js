@@ -67,10 +67,15 @@ check('the Permissions group shows each macOS state and opens its pane', async (
     (await calls()).some(([command, args]) => command === 'settings_open_permission' && args.permission === 'accessibility'),
     'the app opens the Accessibility pane'
   );
-  // Dutch keeps the group and the action sentence whole.
+  // Dutch keeps the group and the action sentence whole, and names the panes as macOS 27 does.
   await open('settings.html?mock=1&lang=nl&platform=macos&permissions=denied');
   const dutch = await page.locator('[data-section="permissions"]').innerText();
   assert.match(dutch, /Machtigingen[\s\S]*Microfoon[\s\S]*minknop en voeg het opnieuw toe/);
+  assert.match(
+    dutch,
+    /Microfoon[\s\S]*Alleen systeemaudio-opname[\s\S]*Invoer vastleggen[\s\S]*Apparaatbeheer en gegevenstoegang[\s\S]*Scherm- en systeemaudio-opname/,
+    'the Dutch rows use the macOS 27 pane names'
+  );
 });
 
 check('Settings reads the permissions again when its window gains focus', async ({ open, page, mockState }) => {

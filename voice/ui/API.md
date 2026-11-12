@@ -436,7 +436,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_open_permission`
 
-`invoke('settings_open_permission', { permission })` → nothing. Opens that permission's pane in System Settings on macOS. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table, and its links are unverified on macOS 27:
+`invoke('settings_open_permission', { permission })` → nothing. Opens that permission's pane in System Settings on macOS. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table. Checked on macOS 27:
 
 | `permission` | System Settings pane |
 |---|---|

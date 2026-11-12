@@ -13,6 +13,7 @@ const COMMANDS: &[&str] = &[
     "settings_choose_folder",
     "settings_open_folder",
     "settings_open_link",
+    "settings_open_permission",
     "settings_clean_preview",
     "settings_check_updates",
     "settings_new_token",

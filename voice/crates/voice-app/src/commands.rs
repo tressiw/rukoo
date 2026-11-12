@@ -64,10 +64,9 @@ pub mod ops {
         }
     }
 
-    /// The System Settings pane for each privacy permission, in one table. These
-    /// deep links are unverified on macOS 27; a person at a Mac has to open each one.
-    /// System Audio Recording shares the Screen & System Audio Recording pane: Apple lists no
-    /// separate pane for it.
+    /// The System Settings pane for each privacy permission, in one table. Checked on macOS 27:
+    /// each link opens its pane. System Audio Recording shares the Screen & System Audio Recording
+    /// pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane.
     const PERMISSION_PANES: [(&str, &str); 5] = [
         (
             "microphone",
