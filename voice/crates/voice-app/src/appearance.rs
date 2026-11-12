@@ -115,8 +115,8 @@ pub fn log_state(window: &tauri::WebviewWindow, why: &'static str) {
     #[cfg(target_os = "macos")]
     {
         let _ = window.with_webview(move |webview| {
-            // SAFETY: as in `set_window`.
-            let line = unsafe { mac::describe(webview.ns_window()) };
+            // SAFETY: as in `set_window`; `inner` is the window's WKWebView.
+            let line = unsafe { mac::describe(webview.ns_window(), webview.inner()) };
             log::info!("appearance ({why}): {line}");
         });
     }
@@ -144,9 +144,12 @@ mod mac {
 
     use block2::RcBlock;
     use objc2::rc::Retained;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSApplication, NSWindow};
-    use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSString};
+    use objc2::runtime::AnyObject;
+    use objc2::{msg_send, MainThreadMarker};
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSApplication, NSWindow, NSWindowStyleMask,
+    };
+    use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSRect, NSString};
     use voice_engine::Theme;
 
     use super::Choice;
@@ -189,8 +192,8 @@ mod mac {
     }
 
     /// # Safety
-    /// As [`set_window_appearance`].
-    pub unsafe fn describe(ns_window: *mut c_void) -> String {
+    /// As [`set_window_appearance`], and `webview` is that window's `WKWebView`.
+    pub unsafe fn describe(ns_window: *mut c_void, webview: *mut c_void) -> String {
         let Some(mtm) = MainThreadMarker::new() else {
             return "not on the main thread".into();
         };
@@ -202,7 +205,34 @@ mod mac {
         };
         let window_set = window.appearance().map(|a| name_of(&a));
         let window_effective = name_of(&window.effectiveAppearance());
-        format!("window {window_set:?} -> {window_effective}; app {app_set:?} -> {app_effective}")
+        // What could paint a title bar that disagrees with its appearance: a content view under
+        // it (full-size content view), a transparent title bar showing the window's background
+        // colour, or the web view's own background.
+        let full_size = window
+            .styleMask()
+            .contains(NSWindowStyleMask::FullSizeContentView);
+        let transparent_bar = window.titlebarAppearsTransparent();
+        let window_bg = window.backgroundColor();
+        let content_view = window.contentView().map(|view| view.frame());
+        let layout = window.contentLayoutRect();
+        let web = unsafe { (webview as *const AnyObject).as_ref() }.map(|web| {
+            // SAFETY: `web` is a WKWebView; both calls are plain getters.
+            let under_page: Option<Retained<AnyObject>> =
+                unsafe { msg_send![web, underPageBackgroundColor] };
+            let draws: Option<Retained<AnyObject>> =
+                unsafe { msg_send![web, valueForKey: &*NSString::from_str("drawsBackground")] };
+            let frame: NSRect = unsafe { msg_send![web, frame] };
+            format!("webview frame {frame:?}, drawsBackground {draws:?}, underPageBackgroundColor {under_page:?}")
+        });
+        format!(
+            "window {window_set:?} -> {window_effective}; app {app_set:?} -> {app_effective}; \
+             fullSizeContentView {full_size}, titlebarAppearsTransparent {transparent_bar}, \
+             window frame {:?}, contentView frame {content_view:?}, contentLayoutRect {layout:?}, \
+             window backgroundColor {window_bg:?}, opaque {}; {}",
+            window.frame(),
+            window.isOpaque(),
+            web.unwrap_or_else(|| "no webview".into())
+        )
     }
 
     pub fn watch(on_change: impl Fn() + Send + Sync + 'static) {

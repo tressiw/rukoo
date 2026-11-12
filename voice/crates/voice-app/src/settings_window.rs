@@ -94,6 +94,14 @@ pub fn open(
     if let Some(dir) = webview_dir {
         builder = builder.data_directory(dir);
     }
+    // Tauri's macOS default is a title bar style that makes the web view fill the whole window,
+    // under a translucent title bar that takes its colour from the page beneath. That bar came up
+    // near-black over a light page. Transparent keeps the web view below the title bar and draws
+    // the bar in the window's background colour, which Voice sets from the theme (`background`).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+    }
     let window = builder.build()?;
     // Not through the builder's `.theme(..)`: on macOS tao would pin the whole app with it.
     appearance::apply_to_window(&window, &ui);
