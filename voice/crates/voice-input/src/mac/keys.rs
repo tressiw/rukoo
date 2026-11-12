@@ -9,9 +9,11 @@
 //!
 //! This is deliberately not an event tap: a tap needs Input Monitoring and
 //! can stop delivering, and a missed key-up must never leave recording on
-//! (Ownkey #11). What polling can't see is a release that happens while Voice
-//! itself is suspended, so the app also treats a resigning session, a locked
-//! screen and sleep as releases (see `voice-app`'s session observer).
+//! (Ownkey #11). A release that happens while Voice itself is suspended shows
+//! on the next read. One the HID state might never report, around a session
+//! switch, the lock screen or sleep, is why the app also treats those as
+//! releases (see `voice-app`'s session observer), and why dictation's watchdog
+//! stops a recording whose key reads up.
 
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID};
 

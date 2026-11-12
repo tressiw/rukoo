@@ -40,7 +40,7 @@ use mac as sys;
 use unsupported as sys;
 
 pub use clipboard::BeforeKeys;
-pub use hotkeys::{HotkeyEvent, HotkeyPoller, InOrder, Stopper, POLL_INTERVAL, STALL_LIMIT};
+pub use hotkeys::{HotkeyEvent, HotkeyPoller, InOrder, Stopper, POLL_INTERVAL};
 pub use keys::{Key, UnknownKey};
 pub use ptt::{Action, HotkeyConfig, Mode, PushToTalk};
 pub use target::{TextTarget, WindowInfo};
