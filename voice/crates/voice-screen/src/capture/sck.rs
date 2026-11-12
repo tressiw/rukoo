@@ -1548,7 +1548,9 @@ mod tests {
     }
 
     /// The real screen: it needs the Screen Recording grant, so it is ignored and never runs in
-    /// CI. Run it at a Mac with `--ignored`, on a desktop nobody is using.
+    /// CI. Run it at a Mac with `--ignored`. A still desktop sends one frame with a picture and
+    /// then idle samples, so one frame is all it asks for; it prints how many more came in 3 s,
+    /// which says how often a real screen sends frames.
     #[test]
     #[ignore = "needs the Screen Recording grant and captures the real screen"]
     fn captures_the_real_screen() {
@@ -1563,63 +1565,116 @@ mod tests {
         };
         let (sender, receiver) = mpsc::sync_channel(8);
         let mut source = ScreenSource::new(sender, Vec::new());
+        // The start runs on a thread of its own; a failure comes back as an event.
         source.start(monitor, 1).expect("the capture didn't start");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut frames = 0;
-        let mut seen = None;
-        while frames < 2 && std::time::Instant::now() < deadline {
-            if let Ok(Ev::Frame(frame)) = receiver.recv_timeout(Duration::from_millis(500)) {
-                assert_eq!(frame.generation, 1);
-                assert!(frame.width >= 2 && frame.height >= 2);
-                assert_eq!(frame.width % 2, 0);
-                assert_eq!(frame.height % 2, 0);
-                // The stream asks for 420f: the encoder takes that buffer as it is.
-                assert_eq!(
-                    frame.picture.pixel_format(),
-                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                );
-                if seen.is_none() {
-                    let pixels = frame.picture.pixels().expect("the frame's pixels");
-                    assert_eq!((pixels.width, pixels.height), (frame.width, frame.height));
-                    // A real screen isn't uniform: some pixels differ from the first.
-                    let first = pixels.bgra[..4].to_vec();
-                    assert!(
-                        pixels
-                            .bgra
-                            .chunks_exact(4)
-                            .skip(1)
-                            .any(|px| px != first.as_slice()),
-                        "the captured frame is one colour"
-                    );
-                    seen = Some(pixels);
-                }
-                frames += 1;
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let first = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the real screen sent no frame"
+            );
+            match receiver.recv_timeout(Duration::from_millis(500)) {
+                Ok(Ev::Frame(frame)) => break frame,
+                Ok(Ev::CaptureStopped(_, stop)) => panic!("the capture stopped: {}", stop.why),
+                _ => {}
+            }
+        };
+        assert_eq!(first.generation, 1);
+        assert!(first.width >= 2 && first.height >= 2);
+        assert_eq!((first.width % 2, first.height % 2), (0, 0));
+        // The stream asks for 420f: the encoder takes that buffer as it is.
+        assert_eq!(
+            first.picture.pixel_format(),
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        );
+        let pixels = first.picture.pixels().expect("the frame's pixels");
+        assert_eq!((pixels.width, pixels.height), (first.width, first.height));
+        // A real screen isn't uniform: some pixels differ from the first.
+        let corner = pixels.bgra[..4].to_vec();
+        assert!(
+            pixels
+                .bgra
+                .chunks_exact(4)
+                .skip(1)
+                .any(|px| px != corner.as_slice()),
+            "the captured frame is one colour"
+        );
+        eprintln!(
+            "the first frame is {}x{} for a {}x{} monitor",
+            first.width, first.height, monitor.width, monitor.height
+        );
+        let watch = std::time::Instant::now() + Duration::from_secs(3);
+        let mut more = 0;
+        while std::time::Instant::now() < watch {
+            if let Ok(Ev::Frame(_)) = receiver.recv_timeout(Duration::from_millis(100)) {
+                more += 1;
             }
         }
+        eprintln!("{more} more frames with a change in 3 s");
+        assert_eq!(
+            source.health(),
+            None,
+            "the stream counts as stopped or stalled"
+        );
         source.stop();
-        assert!(frames >= 2, "the real screen sent no frames");
     }
 
-    /// The filter leaves out the applications it names. It needs the grant, so it is ignored.
+    /// The filter as the stream gets it, from the real shareable content: every application it
+    /// leaves out matches a pid asked for or one of Voice's and Rukoo's bundle ids, no
+    /// application with such a bundle id is missed, and the filter knows its display's size. A
+    /// windowless process, such as this test, isn't among the shareable applications, so its pid
+    /// is reported as matching nothing rather than asserted present. Whether a left-out window is
+    /// missing from a frame is a check at the Mac with Voice's Settings open over a window. It
+    /// needs the grant, so it is ignored.
     #[test]
     #[ignore = "needs the Screen Recording grant"]
     fn the_exclusions_reach_the_shareable_applications() {
         assert!(monitors_mac::has_permission());
         let content = shareable().expect("no shareable content");
         let pids = ScreenSource::excluded_pids(&[]);
-        let excluded: Vec<u32> = unsafe { content.applications() }
-            .to_vec()
-            .into_iter()
-            .filter(|application| {
-                excludes(
-                    unsafe { application.processID() },
-                    &bundle_id(application),
-                    &pids,
-                )
-            })
-            .map(|application| unsafe { application.processID() } as u32)
-            .collect();
-        // This test binary's own process is in the list; a Mac with Voice running has that too.
-        assert!(excluded.contains(&std::process::id()));
+        let exclusions = Exclusions::of(&content, &pids);
+        eprintln!("the filter {}", exclusions.describe());
+        let all = unsafe { content.applications() }.to_vec();
+        for application in &exclusions.applications {
+            let pid = unsafe { application.processID() };
+            assert!(
+                excludes(pid, &bundle_id(application), &pids),
+                "pid {pid} is left out without a reason"
+            );
+        }
+        for application in &all {
+            if EXCLUDED_BUNDLES.contains(&bundle_id(application).as_str()) {
+                let pid = unsafe { application.processID() } as u32;
+                assert!(
+                    exclusions.matched.pids.contains(&pid),
+                    "pid {pid} is missed"
+                );
+            }
+        }
+        // A pid asked for that matches nothing is named, not lost.
+        for pid in &exclusions.matched.unmatched {
+            assert!(pids.contains(pid));
+        }
+        let Some(display) = unsafe { content.displays() }.to_vec().into_iter().next() else {
+            eprintln!("no display");
+            return;
+        };
+        let filter = unsafe {
+            SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+                SCContentFilter::alloc(),
+                &display,
+                &NSArray::from_retained_slice(&exclusions.applications),
+                &NSArray::<SCWindow>::from_slice(&[]),
+            )
+        };
+        let pixels = filter_pixels(&filter).expect("the filter's size");
+        let id = unsafe { display.displayID() }.to_string();
+        if let Some(monitor) = monitors_mac::list().into_iter().find(|m| m.id == id) {
+            assert_eq!(
+                pixels,
+                (monitor.width, monitor.height),
+                "the filter's pixels and the monitor list's differ"
+            );
+        }
     }
 }
