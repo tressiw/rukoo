@@ -192,6 +192,8 @@ pub struct RecordOptions {
 // command line that is parsed once.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
+// The command line is parsed once, so the size of the largest variant costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Cmd {
     Record(RecordOptions),
     Finalize { meeting: PathBuf, reason: String },

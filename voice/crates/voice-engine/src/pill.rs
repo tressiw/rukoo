@@ -48,6 +48,7 @@ pub mod notices {
     pub const VIDEO_DROPPED_DEVICE: &str = "pill.videoDropped.device";
     pub const FRAMES_DROPPED_DISK: &str = "pill.framesDropped.disk";
     pub const SCREEN_FAILED: &str = "pill.screenFailed";
+    pub const SCREEN_PERMISSION: &str = "pill.screenPermission";
     pub const SCREEN_CHANGE_FAILED: &str = "pill.screenChangeFailed";
     /// `{name}`: the monitor's name.
     pub const SCREEN_MOVED: &str = "pill.screenMoved";

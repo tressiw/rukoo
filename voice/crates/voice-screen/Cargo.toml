@@ -33,6 +33,22 @@ objc2-core-video = "=0.3.2"
 objc2-video-toolbox = "=0.3.2"
 objc2-vision = "=0.3.2"
 objc2-image-io = "=0.3.2"
+# The real screen: ScreenCaptureKit streams one display, and its output handler runs on a
+# dispatch queue that hands blocks back for the shareable content and the stream's start.
+objc2-screen-capture-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "SCError",
+  "SCShareableContent",
+  "SCStream",
+  "block2",
+  "dispatch2",
+  "libc",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+  "objc2-core-media",
+] }
+block2 = "=0.6.2"
+dispatch2 = "=0.3.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

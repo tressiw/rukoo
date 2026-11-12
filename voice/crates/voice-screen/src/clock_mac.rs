@@ -85,6 +85,18 @@ pub fn at_boot(boot: u64) -> Now {
     }
 }
 
+/// The boot time of a frame whose presentation time was `pts_100ns` on the host clock, which is
+/// `mach_absolute_time` and stops while the computer sleeps. Only the frame's age crosses over: it
+/// is how far the awake counter has moved since, taken off the continuous counter, so a frame
+/// delivered after a sleep still lands where it happened. A time in the future counts as now.
+pub fn frame_boot(pts_100ns: u64) -> u64 {
+    frame_boot_at(boot_100ns(), awake_100ns(), pts_100ns)
+}
+
+fn frame_boot_at(boot_now: u64, awake_now: u64, pts_100ns: u64) -> u64 {
+    boot_now.saturating_sub(awake_now.saturating_sub(pts_100ns))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +135,14 @@ mod tests {
         assert_eq!(now.boot, Some(boot.saturating_sub(100 * 10_000)));
         let age = wall_ms().saturating_sub(now.wall);
         assert!((90..=400).contains(&age), "{age} ms");
+    }
+
+    /// A frame is as old on the boot clock as it is on the host clock, and never from the future.
+    #[test]
+    fn a_frame_keeps_its_age() {
+        // Awake for 1,000 units, slept for 5,000 of the 6,000 since boot; the frame is 40 old.
+        assert_eq!(frame_boot_at(6_000, 1_000, 960), 5_960);
+        assert_eq!(frame_boot_at(6_000, 1_000, 1_000), 6_000);
+        assert_eq!(frame_boot_at(6_000, 1_000, 2_000), 6_000);
     }
 }

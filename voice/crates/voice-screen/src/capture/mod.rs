@@ -2,9 +2,8 @@
 //! screen of the tests and live runs. Both copy each frame into a picture the process owns and
 //! hand it to the main thread.
 //!
-//! On macOS the picture is a `CVPixelBuffer` (`mac`), and the only source so far is the synthetic
-//! screen (`synthetic_mac`): the real one, ScreenCaptureKit, comes with its own task, so
-//! `Displays::can_capture` says no until then.
+//! On macOS the picture is a `CVPixelBuffer` (`mac`). The real screen is ScreenCaptureKit (`sck`)
+//! and the synthetic one is `synthetic_mac`.
 
 #[cfg(windows)]
 pub mod d3d;
@@ -21,6 +20,8 @@ pub mod wgc;
 pub mod mac;
 #[cfg(target_os = "macos")]
 pub mod monitors_mac;
+#[cfg(target_os = "macos")]
+pub mod sck;
 #[cfg(target_os = "macos")]
 pub mod session_mac;
 #[cfg(target_os = "macos")]

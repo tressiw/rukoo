@@ -137,6 +137,18 @@ impl Core {
             self.sink.notify(Notification {
                 title_key: title_key.to_string(),
                 body,
+                body_key: None,
+            });
+        }
+    }
+
+    /// A notification whose body has a catalog string; `english` is the fallback.
+    pub fn notify_keyed(&self, title_key: &str, body_key: &str, english: &str) {
+        if !self.shutting_down() {
+            self.sink.notify(Notification {
+                title_key: title_key.to_string(),
+                body: english.to_string(),
+                body_key: Some(body_key.to_string()),
             });
         }
     }
@@ -438,6 +450,19 @@ impl Core {
                 self.pill_screen(&id);
                 self.settings_changed();
             }
+            ScreenChange::NoPermission { id } => {
+                // At the start of a meeting or in the middle of one: either way the screen is
+                // gone and the audio goes on. The notice names the setting, because retrying
+                // can't help.
+                self.screen_notice(&id, Some(notices::SCREEN_PERMISSION), Map::new(), DROP_HOLD);
+                self.notify_keyed(
+                    NOTIFY_MEETING,
+                    NOTIFY_SCREEN_PERMISSION,
+                    SCREEN_PERMISSION_TEXT,
+                );
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
             ScreenChange::GaveUp { id } => {
                 self.screen_notice(&id, Some(notices::SCREEN_FAILED), Map::new(), DROP_HOLD);
                 self.notify(
@@ -692,6 +717,11 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
     }
 }
 
+/// The body of the notification when macOS doesn't let Voice record the screen
+/// (voice/ui/i18n `app.notify.screenPermission`), and its English text for a catalog without it.
+pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
+const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
+
 /// The pill notice for a part of the screen recording that stopped.
 fn drop_notice(what: Part, reason: Reason) -> &'static str {
     match (what, reason) {
@@ -930,6 +960,7 @@ impl EngineApi for EngineImpl {
                 self.0.sink.notify(Notification {
                     title_key: NOTIFY_MEETING.into(),
                     body: e.message.clone(),
+                    body_key: None,
                 });
                 ApiError::new(e.code.as_str(), e.message)
             })

@@ -270,16 +270,23 @@ impl Tray {
                 self.catalog.text(locale, keys::TRAY_TOOLTIP)
             }
         };
-        log::info!("notification: {title}: {}", notification.body);
+        // A body with a catalog string is shown in the user's language; the engine's own words
+        // stay as the English fallback.
+        let body = notification
+            .body_key
+            .as_deref()
+            .and_then(|key| self.catalog.get(locale, key))
+            .map_or_else(|| notification.body.clone(), str::to_string);
+        log::info!("notification: {title}: {body}");
         #[cfg(windows)]
         {
             let window = *self.icon_window.lock().unwrap_or_else(|e| e.into_inner());
-            if window == 0 || !balloon(window, &title, &notification.body) {
+            if window == 0 || !balloon(window, &title, &body) {
                 log::warn!("tray: could not show the notification");
             }
         }
         #[cfg(target_os = "macos")]
-        crate::notify_mac::notify(&title, &notification.body);
+        crate::notify_mac::notify(&title, &body);
     }
 }
 
