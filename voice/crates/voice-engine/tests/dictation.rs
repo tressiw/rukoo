@@ -369,6 +369,31 @@ fn no_text_box_warns_but_inserts_anyway() {
     engine.shutdown();
 }
 
+/// Reading the focused app can take a busy Mac app up to two seconds. The microphone opens first,
+/// so the first words aren't lost, and the release isn't held up by the read either.
+#[test]
+fn the_microphone_opens_before_the_focused_app_is_read() {
+    let h = Harness::new("target-after-open");
+    h.config(json!({}));
+    *lock(&h.input.target) = TextTarget::NotSelected;
+    *lock(&h.input.target_delay) = Duration::from_millis(1500);
+    let engine = h.start();
+    h.speech.say("early");
+    let pressed = Instant::now();
+    h.hold(Key::F13);
+    assert!(
+        pressed.elapsed() < Duration::from_millis(1000),
+        "audio came while the app was still being read"
+    );
+    wait_for("the transcription", || h.speech.heard().len() == 1);
+    assert!(
+        pressed.elapsed() < Duration::from_millis(1500),
+        "the release didn't wait for the read"
+    );
+    wait_for("the insertion", || h.input.texts() == ["early"]);
+    engine.shutdown();
+}
+
 #[test]
 fn insertion_waits_while_a_hotkey_is_held() {
     let h = Harness::new("defer");

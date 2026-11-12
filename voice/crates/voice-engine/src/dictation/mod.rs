@@ -337,8 +337,9 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         Selection::ready(None)
     };
     let activity = activity_of(mode);
-    let no_text_box = core.svc.input.text_target() == TextTarget::NotSelected;
-    core.pill.update(|p, _| p.press(id, activity, no_text_box));
+    // Whether the focused app takes text comes after the microphone opens: on a Mac it is two
+    // Accessibility requests, and a busy app would hold up the first words.
+    core.pill.update(|p, _| p.press(id, activity, false));
     core.meetings.set_dictating(true);
 
     let captured = Arc::new(Mutex::new(Captured {
@@ -374,6 +375,7 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             });
             mark(core, id);
             watch(core, id, key);
+            read_target(core, id);
             if recovered {
                 // Settings shows "no microphone" until it hears otherwise.
                 core.settings_changed();
@@ -572,6 +574,21 @@ fn audio_sink(core: Weak<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Audi
             core.sink.level(level);
         }
     })
+}
+
+/// Reads whether the focused app takes text on a thread of its own, so a slow app holds up
+/// neither the recording nor its release, and shows the warning while the key is held.
+fn read_target(core: &Arc<Core>, id: u64) {
+    let weak = Arc::downgrade(core);
+    let _ = thread::Builder::new()
+        .name("dictation-target".into())
+        .spawn(move || {
+            let Some(core) = weak.upgrade() else {
+                return;
+            };
+            let warning = core.svc.input.text_target() == TextTarget::NotSelected;
+            core.pill.update(|p, _| p.target_warning(id, warning));
+        });
 }
 
 /// Why the watchdog stopped a recording.

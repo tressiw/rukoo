@@ -292,6 +292,8 @@ pub struct FakeInput {
     pub captures: AtomicUsize,
     pub capture_held: Mutex<Vec<Vec<Key>>>,
     pub target: Mutex<TextTarget>,
+    /// How long reading the focused app takes, as two Accessibility requests to a busy app can.
+    pub target_delay: Mutex<Duration>,
     pub fail: Mutex<Option<InputError>>,
     /// How long an insertion or a capture waits for the clipboard before its keys, as behind the
     /// previous paste's restore.
@@ -312,6 +314,7 @@ impl FakeInput {
             captures: AtomicUsize::new(0),
             capture_held: Mutex::new(Vec::new()),
             target: Mutex::new(TextTarget::Selected),
+            target_delay: Mutex::new(Duration::ZERO),
             fail: Mutex::new(None),
             clipboard_wait: Mutex::new(Duration::ZERO),
             entered: AtomicUsize::new(0),
@@ -374,6 +377,8 @@ impl TextInput for FakeInput {
     }
 
     fn text_target(&self) -> TextTarget {
+        let delay = *lock(&self.target_delay);
+        thread::sleep(delay);
         *lock(&self.target)
     }
 
