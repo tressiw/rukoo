@@ -772,13 +772,13 @@ impl Ctx {
                     if settled_gap && labeller.clock.last_is_real() {
                         self.pad(stream.as_mut(), &mut labeller)?;
                     } else {
-                        if settled_gap {
-                            // Everything recorded was pushed and padded: the labels wait for
-                            // audio, not for the worker, however long a pause or a lost device
-                            // lasts. Without this the gate let the first windows after a long
-                            // pause go before the resumed audio had turns.
-                            self.shared.touch();
-                        }
+                        // Everything recorded was pushed and padded: the labels wait for audio,
+                        // not for the worker, however long a pause, a lost device or a break
+                        // between the recorder's writes lasts. Without this the gate let the
+                        // windows after a long pause, and the last ones before the stop, go
+                        // before the resumed audio had turns. What is left as a stall is a
+                        // worker call that doesn't return.
+                        self.shared.touch();
                         self.shared.sleep(self.timing.poll);
                     }
                 }
