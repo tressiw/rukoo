@@ -134,6 +134,11 @@ pub(crate) trait Keyboard {
     /// Sends one batch. [`InputError::Blocked`] when Windows inserted fewer
     /// events than it was given.
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError>;
+    /// Types one chunk of text as a single keyboard event, where the platform
+    /// has one: macOS' `CGEventKeyboardSetUnicodeString`. Windows sends the
+    /// chunk as Unicode key strokes, which is what [`crate::strokes::typing`]
+    /// cuts into one batch per character.
+    fn send_text(&mut self, text: &str) -> Result<(), InputError>;
 }
 
 /// Runs before every batch of keys. The caller waits there until the user
@@ -158,6 +163,11 @@ impl Keyboard for Guarded<'_> {
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError> {
         (self.before)()?;
         self.keyboard.send(strokes)
+    }
+
+    fn send_text(&mut self, text: &str) -> Result<(), InputError> {
+        (self.before)()?;
+        self.keyboard.send_text(text)
     }
 }
 
@@ -594,6 +604,21 @@ mod tests {
                 desk.copy_at = Some(desk.time + desk.copy_delay);
             }
             Ok(())
+        }
+
+        fn send_text(&mut self, text: &str) -> Result<(), InputError> {
+            // One Unicode event on macOS; the fake keeps the units as the strokes Windows would
+            // send, so the same test reads both.
+            let batch: Vec<Stroke> = text
+                .encode_utf16()
+                .flat_map(|unit| {
+                    [
+                        Stroke::Unicode { unit, up: false },
+                        Stroke::Unicode { unit, up: true },
+                    ]
+                })
+                .collect();
+            self.send(&batch)
         }
     }
 

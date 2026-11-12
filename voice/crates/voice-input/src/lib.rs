@@ -1,9 +1,11 @@
 //! Input for Rukoo Voice dictation: push-to-talk hotkeys, text insertion,
 //! selection capture and the focused window.
 //!
-//! Windows has the full backend. macOS has the pasteboard and Secure Event
-//! Input for step 2; its keys, typed text, selection capture and foreground
-//! window still return [`InputError::Unsupported`]. Other platforms return
+//! Windows has the full backend. macOS has the pasteboard, Secure Event Input,
+//! posted keys (Cmd+V to paste, Cmd+C to copy, Unicode events to type) and the
+//! Accessibility API for the selection and the focused element; reading the
+//! physical keyboard returns what step 2's spike S1 decides, and until then
+//! [`InputError::Unsupported`]. Other platforms return
 //! [`InputError::Unsupported`] for everything; the platform-neutral parts
 //! ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`]) work
 //! everywhere.
@@ -63,6 +65,9 @@ pub enum InputError {
     /// On macOS, Secure Event Input does it while a password field or
     /// Terminal's Secure Keyboard Entry is active.
     Blocked,
+    /// macOS doesn't let Voice type into other apps: the Accessibility
+    /// permission is missing. The message says where to switch it on.
+    Accessibility,
     /// Another app kept the clipboard open.
     ClipboardBusy,
     /// A clipboard call failed, with the system's message.
@@ -87,6 +92,21 @@ fn blocked_message() -> &'static str {
     }
 }
 
+/// Why nothing can be typed, with the switch the user has to turn on. macOS
+/// grants this per app and loses the grant when an ad-hoc signed build
+/// changes, so the wording names the pane rather than saying "denied".
+fn accessibility_message() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Voice isn't allowed to type into other apps. Switch Voice on under \
+         Privacy & Security › Accessibility in System Settings, then try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Voice isn't allowed to type into other apps. Its Accessibility permission is missing."
+    }
+}
+
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -94,6 +114,7 @@ impl fmt::Display for InputError {
                 f.write_str("Typing and hotkeys aren't supported on this platform yet.")
             }
             InputError::Blocked => f.write_str(blocked_message()),
+            InputError::Accessibility => f.write_str(accessibility_message()),
             InputError::ClipboardBusy => {
                 f.write_str("Another app is using the clipboard. Try again.")
             }
@@ -109,7 +130,7 @@ impl std::error::Error for InputError {}
 ///
 /// [`InsertMode::Paste`] takes a snapshot of the clipboard, puts the text on
 /// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V
-/// (Cmd+V on macOS, once step 2 posts keys).
+/// (Cmd+V on macOS).
 /// It returns right away. A background thread waits 2 s and then puts the
 /// snapshot back, unless something else was copied by then or the window the
 /// keys went to doesn't answer within 1 s: an app that hasn't handled Ctrl+V
@@ -263,30 +284,20 @@ mod tests {
         );
     }
 
-    /// macOS has the pasteboard, so `copy_hidden` and `clear_if` work; the
-    /// keys and the focus do not yet. This touches no real pasteboard.
+    /// macOS has the pasteboard and posts keys; the physical keyboard waits
+    /// for spike S1. Nothing here types or touches the pasteboard.
     #[cfg(target_os = "macos")]
     #[test]
-    fn mac_os_has_no_keys_typing_or_focus_yet() {
-        assert_eq!(
-            insert_text("x", InsertMode::Paste),
-            Err(InputError::Unsupported)
-        );
-        assert_eq!(
-            insert_text("x", InsertMode::Type),
-            Err(InputError::Unsupported)
-        );
-        assert_eq!(
-            capture_selection(Duration::from_millis(1)),
-            Err(InputError::Unsupported)
-        );
-        assert_eq!(foreground_window(), None);
-        assert_eq!(text_target(), TextTarget::Unknown);
+    fn mac_os_posts_keys_but_reads_no_physical_keys_yet() {
         assert!(!is_key_down(Key::F13));
         let (tx, _rx) = std::sync::mpsc::channel();
         assert_eq!(
             HotkeyPoller::spawn(vec![Key::F13], tx).unwrap_err(),
             InputError::Unsupported
         );
+        // The reason a Mac without the grant gets says what to switch on.
+        let message = InputError::Accessibility.to_string();
+        assert!(message.contains("Accessibility"), "{message}");
+        assert!(message.contains("Privacy & Security"), "{message}");
     }
 }

@@ -226,6 +226,37 @@ fn count(board: &NSPasteboard) -> u32 {
 /// delayed restore must finish before the next paste or capture snapshots.
 static CLIPBOARD_GATE: Gate = Gate::new();
 
+/// Holds the gate for a paste whose restore runs on another thread, as
+/// `win.rs` does: the turn moves to that thread so the next paste waits.
+pub(crate) fn enter_gate() -> crate::clipboard::Turn {
+    CLIPBOARD_GATE.enter()
+}
+
+/// The app Cmd+V went to.
+///
+/// AppKit has no way to ask whether an app still reads its event queue, which
+/// is what Windows' `WM_NULL` asks. Voice asks the weaker question it can: is
+/// that app still running and still in front? When the user switched away or
+/// it quit, nothing will read the dictation any more. A hung app keeps the
+/// dictation on the clipboard, which is the safe direction and what Windows
+/// does for a window it can't reach.
+pub(crate) fn target() -> PasteTarget {
+    PasteTarget(
+        super::Frontmost::read()
+            .map(|app| app.pid)
+            .unwrap_or_default(),
+    )
+}
+
+/// An app by pid, asked from the restore thread.
+pub(crate) struct PasteTarget(i32);
+
+impl crate::clipboard::Target for PasteTarget {
+    fn answers(&self, _timeout: std::time::Duration) -> bool {
+        self.0 == 0 || super::is_still_in_front(self.0)
+    }
+}
+
 pub(crate) fn wait_for_clipboard_restore() {
     drop(CLIPBOARD_GATE.enter());
 }

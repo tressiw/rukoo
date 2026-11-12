@@ -1,5 +1,5 @@
-//! Keystroke sequences for `SendInput`, built without touching Windows so
-//! they can be tested anywhere.
+//! Keystroke sequences for the platform's key posting, built without touching
+//! the OS so they can be tested anywhere.
 
 pub(crate) const VK_RETURN: u16 = 0x0D;
 pub(crate) const VK_SHIFT: u16 = 0x10;
@@ -7,11 +7,26 @@ pub(crate) const VK_CONTROL: u16 = 0x11;
 pub(crate) const VK_C: u16 = 0x43;
 pub(crate) const VK_V: u16 = 0x56;
 
-/// One keyboard `INPUT`.
+/// The macOS key codes the chords use, from `HIToolbox/Events.h`'s `kVK_...`.
+#[cfg(target_os = "macos")]
+pub(crate) mod mac_key {
+    pub(crate) const COMMAND: u16 = 0x37; // kVK_Command
+    pub(crate) const SHIFT: u16 = 0x38; // kVK_Shift
+    pub(crate) const OPTION: u16 = 0x3A; // kVK_Option
+    pub(crate) const CONTROL: u16 = 0x3B; // kVK_Control
+    pub(crate) const RETURN: u16 = 0x24; // kVK_Return
+    pub(crate) const V: u16 = 0x09; // kVK_ANSI_V
+    pub(crate) const C: u16 = 0x08; // kVK_ANSI_C
+}
+
+/// One keyboard event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stroke {
-    /// A virtual key going down or up.
+    /// A Windows virtual key going down or up.
     Key { vk: u16, up: bool },
+    /// A macOS virtual key code (`kVK_...`) going down or up.
+    #[cfg(target_os = "macos")]
+    MacKey { code: u16, up: bool },
     /// One UTF-16 code unit sent with `KEYEVENTF_UNICODE`, independent of the
     /// keyboard layout.
     Unicode { unit: u16, up: bool },
@@ -30,12 +45,61 @@ fn ctrl_chord(vk: u16) -> Vec<Stroke> {
     vec![down(VK_CONTROL), down(vk), up(vk), up(VK_CONTROL)]
 }
 
+/// Cmd plus a key, with the Command key posted around it: macOS' chords carry the modifier as a
+/// key of their own, unlike Windows' Ctrl, which `SendInput` tracks in the chord's flags.
+#[cfg(target_os = "macos")]
+fn cmd_chord(code: u16) -> Vec<Stroke> {
+    use mac_key::COMMAND;
+    vec![
+        mac_down(COMMAND),
+        mac_down(code),
+        mac_up(code),
+        mac_up(COMMAND),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn mac_down(code: u16) -> Stroke {
+    Stroke::MacKey { code, up: false }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_up(code: u16) -> Stroke {
+    Stroke::MacKey { code, up: true }
+}
+
 pub(crate) fn paste() -> Vec<Stroke> {
-    ctrl_chord(VK_V)
+    #[cfg(target_os = "macos")]
+    {
+        cmd_chord(mac_key::V)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctrl_chord(VK_V)
+    }
 }
 
 pub(crate) fn copy() -> Vec<Stroke> {
-    ctrl_chord(VK_C)
+    #[cfg(target_os = "macos")]
+    {
+        cmd_chord(mac_key::C)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctrl_chord(VK_C)
+    }
+}
+
+/// Shift+Return on macOS, for a newline in typed text: the same intent as
+/// Windows' Shift+Enter.
+#[cfg(target_os = "macos")]
+pub(crate) fn newline() -> Vec<Stroke> {
+    vec![
+        mac_down(mac_key::SHIFT),
+        mac_down(mac_key::RETURN),
+        mac_up(mac_key::RETURN),
+        mac_up(mac_key::SHIFT),
+    ]
 }
 
 /// The batches that type `text`, one per character, so the caller can pace
@@ -76,13 +140,15 @@ pub(crate) fn typing(text: &str) -> Vec<Vec<Stroke>> {
     batches
 }
 
-/// The key-ups that undo a batch Windows inserted only partly, so a cut-off
-/// Ctrl+V can't leave Ctrl held down.
+/// The key-ups that undo a batch the platform inserted only partly, so a
+/// cut-off Cmd+V can't leave Command held down.
 pub(crate) fn release_after(inserted: &[Stroke]) -> Vec<Stroke> {
     let mut held: Vec<Stroke> = Vec::new();
     for stroke in inserted {
         match *stroke {
             Stroke::Key { vk, up: false } => held.push(Stroke::Key { vk, up: true }),
+            #[cfg(target_os = "macos")]
+            Stroke::MacKey { code, up: false } => held.push(Stroke::MacKey { code, up: true }),
             Stroke::Unicode { unit, up: false } => held.push(Stroke::Unicode { unit, up: true }),
             released => held.retain(|h| *h != released),
         }
@@ -104,6 +170,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn paste_is_left_ctrl_v() {
         assert_eq!(
             paste(),
@@ -123,8 +190,45 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn copy_is_left_ctrl_c() {
         assert_eq!(copy(), [down(0x11), down(0x43), up(0x43), up(0x11)]);
+    }
+
+    /// macOS' chords post Command as a key of its own, with the V or C between its halves.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn paste_and_copy_are_command_chords_with_macs_key_codes() {
+        let cmd = mac_key::COMMAND;
+        assert_eq!(
+            paste(),
+            [
+                mac_down(cmd),
+                mac_down(mac_key::V),
+                mac_up(mac_key::V),
+                mac_up(cmd),
+            ]
+        );
+        assert_eq!(
+            copy(),
+            [
+                mac_down(cmd),
+                mac_down(mac_key::C),
+                mac_up(mac_key::C),
+                mac_up(cmd),
+            ]
+        );
+        // The codes are the keyboard's own: kVK_Command, kVK_ANSI_V, kVK_ANSI_C.
+        assert_eq!((cmd, mac_key::V, mac_key::C), (0x37, 0x09, 0x08));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_newline_is_shift_return() {
+        assert_eq!(
+            newline(),
+            [mac_down(0x38), mac_down(0x24), mac_up(0x24), mac_up(0x38),]
+        );
     }
 
     #[test]
@@ -179,12 +283,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_cut_off_chord_releases_what_went_down() {
         let chord = paste();
         assert!(release_after(&chord[..0]).is_empty());
         assert_eq!(release_after(&chord[..1]), [up(VK_CONTROL)]);
         assert_eq!(release_after(&chord[..2]), [up(VK_V), up(VK_CONTROL)]);
         assert_eq!(release_after(&chord[..3]), [up(VK_CONTROL)]);
+        assert!(release_after(&chord).is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_cut_off_mac_chord_releases_what_went_down() {
+        let chord = paste();
+        assert_eq!(release_after(&chord[..1]), [mac_up(mac_key::COMMAND)]);
+        assert_eq!(
+            release_after(&chord[..2]),
+            [mac_up(mac_key::V), mac_up(mac_key::COMMAND)]
+        );
+        assert_eq!(release_after(&chord[..3]), [mac_up(mac_key::COMMAND)]);
         assert!(release_after(&chord).is_empty());
     }
 
