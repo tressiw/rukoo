@@ -2,13 +2,12 @@
 //! selection capture and the focused window.
 //!
 //! Windows has the full backend. macOS has the pasteboard, Secure Event Input,
-//! posted keys (Cmd+V to paste, Cmd+C to copy, Unicode events to type) and the
-//! Accessibility API for the selection and the focused element. Reading the
-//! physical keyboard isn't there yet and returns
-//! [`InputError::Unsupported`]. Other platforms return
-//! [`InputError::Unsupported`] for everything; the platform-neutral parts
-//! ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`]) work
-//! everywhere.
+//! the physical keyboard (without a permission), posted keys (Cmd+V to paste,
+//! Cmd+C to copy, Unicode events to type), the Accessibility API for the
+//! selection and the focused element, and the foreground app. Other platforms
+//! return [`InputError::Unsupported`] for everything; the platform-neutral
+//! parts ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`])
+//! work everywhere.
 //!
 //! The behavior ports Ownkey for Windows. Where Voice differs on purpose
 //! (clipboard restore, Shift+Enter for newlines), the code says so.
@@ -25,8 +24,8 @@ mod ptt;
 mod strokes;
 pub mod target;
 
-// The stubs in `unsupported` are shared: macOS uses them for everything step 2
-// still fills in, and Linux uses them for every call.
+// The stubs in `unsupported` are shared: macOS uses them for what step 2 still
+// fills in, and Linux uses them for every call.
 #[cfg(not(windows))]
 mod unsupported;
 #[cfg(windows)]
@@ -41,7 +40,7 @@ use mac as sys;
 use unsupported as sys;
 
 pub use clipboard::BeforeKeys;
-pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL};
+pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL, STALL_LIMIT};
 pub use keys::{Key, UnknownKey};
 pub use ptt::{Action, HotkeyConfig, Mode, PushToTalk};
 pub use target::{TextTarget, WindowInfo};
@@ -292,17 +291,19 @@ mod tests {
         );
     }
 
-    /// macOS has the pasteboard and posts keys; reading the physical keyboard
-    /// isn't there yet. Nothing here types or touches the pasteboard.
+    /// macOS reads the physical keyboard through Core Graphics and posts keys.
+    /// Nothing here reads a hotkey or posts a key, so a desktop someone uses
+    /// is fine.
     #[cfg(target_os = "macos")]
     #[test]
-    fn mac_os_posts_keys_but_reads_no_physical_keys_yet() {
-        assert!(!is_key_down(Key::F13));
+    fn mac_os_reads_the_physical_keyboard_without_a_grant() {
+        // A key a Mac keyboard doesn't have is answered without asking macOS.
+        assert!(!is_key_down(Key::Pause));
+        // Polling starts: no permission is involved, so it can't say Unsupported.
         let (tx, _rx) = std::sync::mpsc::channel();
-        assert_eq!(
-            HotkeyPoller::spawn(vec![Key::F13], tx).unwrap_err(),
-            InputError::Unsupported
-        );
+        let poller = HotkeyPoller::spawn(vec![Key::Pause], tx).expect("macOS polls the keyboard");
+        assert!(poller.is_running());
+        poller.join();
         // The reason a Mac without the grant gets says what to switch on.
         let message = InputError::Accessibility.to_string();
         assert!(message.contains("Accessibility"), "{message}");

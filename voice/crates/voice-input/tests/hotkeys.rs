@@ -7,11 +7,11 @@ mod common;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{wait_for, Keyboard, Latch, INTERVAL, PATIENCE};
 use voice_input::HotkeyEvent::{Pressed, Released};
-use voice_input::{HotkeyEvent, HotkeyPoller, Key, Stopper};
+use voice_input::{HotkeyEvent, HotkeyPoller, Key, Stopper, STALL_LIMIT};
 
 type Events = Arc<Mutex<Vec<HotkeyEvent>>>;
 
@@ -239,6 +239,80 @@ fn a_slow_channel_reader_still_gets_every_change_in_order() {
             Released(Key::F13),
         ]
     );
+    poller.join();
+}
+
+/// A clock the test moves by hand, for the stalled-poll rule.
+struct Clock(Mutex<Instant>);
+
+impl Clock {
+    fn new() -> Arc<Clock> {
+        Arc::new(Clock(Mutex::new(Instant::now())))
+    }
+
+    fn advance(&self, by: Duration) {
+        *self.0.lock().unwrap() += by;
+    }
+
+    fn reader(self: &Arc<Self>) -> impl FnMut() -> Instant + Send + 'static {
+        let clock = Arc::clone(self);
+        move || *clock.0.lock().unwrap()
+    }
+}
+
+#[test]
+fn a_release_during_a_stalled_poll_arrives_when_the_poller_wakes() {
+    let keyboard = Keyboard::new(1, &[Key::RightAlt]);
+    let clock = Clock::new();
+    let (tx, rx) = mpsc::channel();
+    let poller = HotkeyPoller::spawn_with_clock(
+        vec![Key::RightAlt],
+        tx,
+        keyboard.state(),
+        INTERVAL,
+        clock.reader(),
+    )
+    .unwrap();
+    assert_eq!(
+        rx.recv_timeout(PATIENCE),
+        Ok(Pressed(Key::RightAlt)),
+        "held since the start"
+    );
+    // The key comes up while the poll thread is stopped for longer than the
+    // limit. The poll that wakes releases it, so recording stops.
+    keyboard.held.lock().unwrap().remove(&Key::RightAlt);
+    clock.advance(STALL_LIMIT + Duration::from_millis(900));
+    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Released(Key::RightAlt)));
+    // One release, and no press from the stale state after it.
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)),
+        Err(RecvTimeoutError::Timeout)
+    );
+    poller.join();
+}
+
+#[test]
+fn a_key_still_down_across_a_stalled_poll_keeps_its_hold() {
+    let keyboard = Keyboard::new(1, &[Key::RightAlt]);
+    let clock = Clock::new();
+    let (tx, rx) = mpsc::channel();
+    let poller = HotkeyPoller::spawn_with_clock(
+        vec![Key::RightAlt],
+        tx,
+        keyboard.state(),
+        INTERVAL,
+        clock.reader(),
+    )
+    .unwrap();
+    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Pressed(Key::RightAlt)));
+    // The user holds the key through the gap: no invented release, no second press.
+    clock.advance(STALL_LIMIT + Duration::from_millis(900));
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(150)),
+        Err(RecvTimeoutError::Timeout)
+    );
+    keyboard.held.lock().unwrap().remove(&Key::RightAlt);
+    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Released(Key::RightAlt)));
     poller.join();
 }
 
