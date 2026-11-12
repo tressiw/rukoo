@@ -64,8 +64,8 @@ pub mod ops {
         }
     }
 
-    /// The System Settings pane for each privacy permission, in one table as the plan asks. These
-    /// deep links are unverified on macOS 27 (plan section 7); the console session checks them.
+    /// The System Settings pane for each privacy permission, in one table. These
+    /// deep links are unverified on macOS 27; a person at a Mac has to open each one.
     /// System Audio Recording shares the Screen & System Audio Recording pane: Apple lists no
     /// separate pane for it.
     const PERMISSION_PANES: [(&str, &str); 5] = [

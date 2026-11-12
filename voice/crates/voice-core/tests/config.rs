@@ -84,7 +84,8 @@ fn defaults_follow_the_platform_and_a_development_copy() {
         default_hotkeys_on(false, false),
         ("right alt", "right ctrl")
     );
-    // A Mac starts on Right Option and Right Command (plan D5).
+    // A Mac starts on Right Option and Right Command: most Mac laptops have no Right Control key, and
+    // Fn/Globe already opens the emoji picker and macOS dictation.
     assert_eq!(
         default_hotkeys_on(false, true),
         ("right alt", "right command")

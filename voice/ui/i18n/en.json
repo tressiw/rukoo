@@ -305,7 +305,7 @@
   },
   "settings.permissions.intro": {
     "message": "macOS ties these to Voice's signature. After an update, switch them on again.",
-    "description": "Settings > Permissions: one line above the macOS permission rows, explaining why an update loses them (plan D4). voice/ui/settings.js (mainPage)."
+    "description": "Settings > Permissions: one line above the macOS permission rows, explaining why an update loses them: the signature changes, so macOS treats Voice as a new app. voice/ui/settings.js (mainPage)."
   },
   "settings.permissions.microphone": {
     "message": "Microphone",
@@ -365,7 +365,7 @@
   },
   "settings.permissions.denied": {
     "message": "Open System Settings and switch on {name}; if Rukoo Voice is already switched on there, remove it with the minus button and add it again.",
-    "description": "Settings > Permissions: what to do for a permission that is off, including after an update (plan D4). {name}: the permission's name. voice/ui/settings.js (permissionsCard)."
+    "description": "Settings > Permissions: what to do for a permission that is off, including after an update, when macOS treats Voice as a new app. {name}: the permission's name. voice/ui/settings.js (permissionsCard)."
   },
   "settings.permissions.notAskedHelp": {
     "message": "Voice asks when it first needs it.",
@@ -373,7 +373,7 @@
   },
   "settings.permissions.systemAudioUnknown": {
     "message": "macOS doesn't let Voice check this one; it asks when a meeting records the call.",
-    "description": "Settings > Permissions: note under System Audio Recording, which has no public preflight call (plan D2, S2). Not an error. voice/ui/settings.js (permissionsCard)."
+    "description": "Settings > Permissions: note under System Audio Recording, which has no public preflight call. Not an error. voice/ui/settings.js (permissionsCard)."
   },
   "settings.permissions.open": {
     "message": "Open",

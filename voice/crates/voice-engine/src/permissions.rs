@@ -1,9 +1,9 @@
 //! The privacy permissions Voice needs on macOS, read without asking for them.
 //!
-//! macOS ties a grant to the app's code signature. An ad-hoc signed Voice (plan D4) is a new app to
-//! TCC after every update, so Settings shows what the preflight calls report rather than what System
-//! Settings remembers. Nothing here requests a permission: the first microphone open or event tap
-//! does that.
+//! macOS ties a grant to the app's code signature. An ad-hoc signed Voice gets a new signature with
+//! every update, so TCC sees a new app, and Settings shows what the preflight calls report rather
+//! than what System Settings remembers. Nothing here requests a permission: the first microphone
+//! open or event tap does that.
 //!
 //! Windows and Linux have no such permissions and report `None` for every one, so Settings shows no
 //! permission rows there.
@@ -120,10 +120,10 @@ impl Permissions for SystemPermissions {
                     microphone_state(status.0)
                 })
             }
-            // No public preflight for a process tap's System Audio Recording grant (spike S2).
+            // No public preflight exists for a process tap's System Audio Recording grant.
             Permission::SystemAudio => PermissionState::Unknown,
             // The one preflight with a third answer: before the first listen request it reads
-            // unknown, which is "not asked yet" rather than a denial (spike S1).
+            // unknown, which is "not asked yet" rather than a denial.
             Permission::InputMonitoring => {
                 input_monitoring_state(IOHIDCheckAccess(IOHIDRequestType::ListenEvent).0)
             }
@@ -151,8 +151,8 @@ pub fn microphone_state(status: isize) -> PermissionState {
 }
 
 /// `IOHIDAccessType` (IOHIDCheckAccess): 0 granted, 1 denied, 2 unknown. Unknown means macOS hasn't
-/// been asked for Input Monitoring yet, so Settings shows "not asked" instead of an error (spike
-/// S1). A value this version doesn't know is unknown rather than a guessed denial.
+/// been asked for Input Monitoring yet, so Settings shows "not asked" instead of an error. A value
+/// this version doesn't know is unknown rather than a guessed denial.
 pub fn input_monitoring_state(access: u32) -> PermissionState {
     match access {
         0 => PermissionState::Granted,
@@ -211,7 +211,7 @@ mod tests {
     fn the_input_monitoring_access_maps_to_a_state() {
         assert_eq!(input_monitoring_state(0), PermissionState::Granted);
         assert_eq!(input_monitoring_state(1), PermissionState::Denied);
-        // Unknown until the first listen request, which is not a denial (spike S1).
+        // Unknown until the first listen request, which is not a denial.
         assert_eq!(input_monitoring_state(2), PermissionState::NotAsked);
         assert_eq!(input_monitoring_state(9), PermissionState::Unknown);
     }

@@ -628,7 +628,8 @@ fn default_hotkeys(dev_mode: bool) -> (&'static str, &'static str) {
 
 /// The keys a fresh config gets. A development copy uses F13 and F14 on every platform, so it
 /// never answers the installed Ownkey's keys; on a Mac an installed copy starts with Right Option
-/// and Right Command (plan D5).
+/// and Right Command: most Mac laptops have no Right Control key, and Fn/Globe already opens the
+/// emoji picker and macOS dictation.
 pub fn default_hotkeys_on(dev_mode: bool, macos: bool) -> (&'static str, &'static str) {
     if dev_mode {
         ("f13", "f14")

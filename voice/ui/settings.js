@@ -359,7 +359,7 @@ function speakersRow() {
   });
 }
 
-// A permission's state, calm: "Not asked yet" and "Unknown" are not errors (plan S1).
+// A permission's state, calm: "Not asked yet" and "Unknown" are not errors.
 function permissionStatus(value) {
   switch (value) {
     case 'granted':
@@ -373,9 +373,10 @@ function permissionStatus(value) {
   }
 }
 
-// Settings > Permissions, on macOS only. macOS ties a grant to the app's signature, so an update
-// drops them while System Settings keeps showing the old entry switched on (plan D4). The state
-// comes from the preflight calls, and the row says what to do when it is off.
+// Settings > Permissions, on macOS only. macOS ties a grant to the app's signature, and an ad-hoc
+// signed Voice gets a new one with every update, so an update drops them while System Settings
+// keeps showing the old entry switched on. The state comes from the preflight calls, and the row
+// says what to do when it is off.
 function permissionsCard() {
   const permissions = state.permissions || {};
   return card(

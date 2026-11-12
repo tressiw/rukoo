@@ -64,7 +64,7 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["devMode"], true);
     assert_eq!(state["version"], "0.1.0-test");
     // macOS lists each privacy permission's real state; other platforms have none, so Settings
-    // shows no permission rows (plan section 5, step 2).
+    // shows no permission rows.
     if cfg!(target_os = "macos") {
         for id in [
             "microphone",
