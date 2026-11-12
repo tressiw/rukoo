@@ -941,7 +941,13 @@ impl EngineApi for FakeEngine {
     }
 
     fn settings_state(&self) -> Value {
-        self.lock().settings.clone()
+        let mut state = self.lock();
+        if state.settings_open {
+            state.settings["permissions"] =
+                voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                    .unwrap_or(Value::Null);
+        }
+        state.settings.clone()
     }
 
     fn settings_state_quiet(&self) -> Value {
