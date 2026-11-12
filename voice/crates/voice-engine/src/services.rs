@@ -30,6 +30,10 @@ use crate::permissions::Permissions;
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
 
+/// Whether someone is at this computer's console: on a Mac, the session is the one on the
+/// console and its screen isn't locked. Voice ignores hotkey presses otherwise.
+pub type AtConsole = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Text into the focused app, and the selection out of it.
 ///
 /// Both call `before_keys` right before every batch of keys they send, after any wait for the
@@ -171,6 +175,9 @@ pub struct Services {
     pub key_state: Option<KeyState>,
     pub hotkey_interval: Duration,
     pub dictation_timing: DictationTiming,
+    /// The app passes the Mac's session state in; Windows has no such check yet, so the
+    /// default is always at the console.
+    pub at_console: AtConsole,
     pub input: Arc<dyn TextInput>,
     pub microphone: Arc<dyn Microphone>,
     pub speech: Arc<dyn Speech>,
@@ -222,6 +229,7 @@ impl Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
             dictation_timing: DictationTiming::default(),
+            at_console: Arc::new(|| true),
             input: Arc::new(SystemInput),
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {

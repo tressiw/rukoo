@@ -586,6 +586,27 @@ fn a_recording_stops_at_its_longest() {
     engine.shutdown();
 }
 
+/// A press while the screen is locked or the session is switched out records nothing: the
+/// microphone stays closed and the pill stays hidden. Its release does nothing either, and the
+/// first press back at the console dictates.
+#[test]
+fn a_press_away_from_the_console_is_ignored() {
+    let h = Harness::new("console");
+    h.config(json!({}));
+    h.at_console.store(false, Ordering::SeqCst);
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    std::thread::sleep(Duration::from_millis(100));
+    h.at_console.store(true, Ordering::SeqCst);
+    h.keys.up(Key::F13);
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0);
+    assert!(h.sink.phases().is_empty() || !h.sink.last_pill().unwrap().visible);
+    h.speech.say("back");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["back"]);
+    engine.shutdown();
+}
+
 #[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");

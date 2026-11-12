@@ -238,6 +238,12 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
     }
     let this = &core.dictation;
     if let HotkeyEvent::Pressed(key) = event {
+        // A locked screen or a session switched out: whoever pressed the key isn't the user at
+        // this session, and nothing they say should be recorded, sent or inserted.
+        if !(core.svc.at_console)() {
+            log::info!("dictation: {key} pressed away from the console; ignored");
+            return;
+        }
         if *lock(&this.stop_key) == Some(key) {
             core.stop_clicked();
             return;

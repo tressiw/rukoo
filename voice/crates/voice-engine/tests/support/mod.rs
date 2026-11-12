@@ -785,6 +785,8 @@ pub struct Harness {
     pub dev_mode: bool,
     /// The production watchdog and limit unless a test shortens them.
     pub dictation_timing: DictationTiming,
+    /// Whether the session is at the console; true unless a test locks it.
+    pub at_console: Arc<AtomicBool>,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
     /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
@@ -836,6 +838,7 @@ impl Harness {
             timing: ControllerTiming::default(),
             dev_mode: true,
             dictation_timing: DictationTiming::default(),
+            at_console: Arc::new(AtomicBool::new(true)),
             import_from: None,
             test_sources: None,
             test_screen: None,
@@ -873,6 +876,10 @@ impl Harness {
             key_state: Some(self.keys.state()),
             hotkey_interval: Duration::from_millis(5),
             dictation_timing: self.dictation_timing,
+            at_console: {
+                let at_console = Arc::clone(&self.at_console);
+                Arc::new(move || at_console.load(Ordering::SeqCst))
+            },
             input: self.input.clone(),
             microphone: self.mic.clone(),
             speech: Arc::new(SpeechHandle(Arc::clone(&self.speech))),
