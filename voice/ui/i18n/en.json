@@ -198,6 +198,10 @@
     "message": "Screen Recording is off",
     "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
   },
+  "pill.callSilent": {
+    "message": "No sound from the call",
+    "description": "Pill notice: the call track has recorded only exact silence while another app played sound; macOS may not let Voice record system audio. A notification explains where to fix it; the recording goes on. voice/ui/pill.js (meetingView)."
+  },
   "pill.screenChangeFailed": { "message": "Screen change failed", "description": "Pill notice when a selected screen mode or monitor could not be applied. The previous mode remains. Full details appear in a notification." },
   "pill.screenMoved": {
     "message": "Screen: {name}",
@@ -270,6 +274,10 @@
   "app.notify.screenPermission": {
     "message": "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.",
     "description": "Body of the tray notification titled \"Meeting recording\" when macOS doesn't let Voice record the screen: Screen Recording is off for Voice, from the start of the meeting or switched off during it. Names the pane in System Settings where it is switched on. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.callSilent": {
+    "message": "Voice hears only silence from the call while another app plays sound. If the call has sound, macOS may not let Voice record it: in System Settings > Privacy & Security > Screen & System Audio Recording, under System Audio Recording Only, remove Rukoo Voice with the minus button and add it again. The recording goes on.",
+    "description": "Body of the tray notification titled \"Meeting recording\" when the call track has recorded only exact silence while another app played sound, which is what a Mac gives when System Audio Recording is off for Voice or its permission went stale after an update. Names the panes in System Settings as macOS does in this language. Read by voice-app (see voice/ui/API.md)."
   },
   "app.notify.settings": {
     "message": "Rukoo Voice Settings",

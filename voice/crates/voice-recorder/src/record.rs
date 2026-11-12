@@ -17,7 +17,8 @@ use voice_audio::{Resampler, SegmentWriter, SAMPLE_RATE};
 use crate::clock::{self, wall_ms, MeetingClock, Stamp, HEARTBEAT};
 use crate::control::{self, Command, Reply};
 use crate::meeting::{self, RecorderFile};
-use crate::source::{Backend, Capture, DeviceInfo, Failure, Sink, SourceSpec, StreamFlags};
+use crate::silence::{self, SilenceCheck, Verdict};
+use crate::source::{Backend, Capture, DeviceInfo, Failure, Opened, Sink, SourceSpec, StreamFlags};
 use crate::timeline::{self, samples_to_ms, History, Line, TimelineWriter};
 use crate::{token, ExitError, VERSION};
 
@@ -43,6 +44,15 @@ const STALL: Duration = Duration::from_secs(5);
 const RESYNC_MS: u64 = 100;
 /// About 20 s of 10 ms blocks from two tracks.
 const EVENT_QUEUE: usize = 4_096;
+/// A device that hasn't opened after this long is marked lost until it does, so the gap shows.
+/// The open itself goes on: macOS holds the first process tap until the user answers its prompt.
+const OPEN_SLOW: Duration = Duration::from_secs(5);
+/// What a call track waiting on a slow macOS process tap says in the timeline and the status.
+pub const WAITING_FOR_TAP: &str = "Waiting for macOS to start recording system audio. It may be \
+     asking whether Rukoo Voice may record it.";
+const WAITING: &str = "The device is taking long to open.";
+/// How often the silence check asks whether another app plays sound.
+const PLAYING_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct RecordOptions {
@@ -52,6 +62,8 @@ pub struct RecordOptions {
     pub limit_ms: u64,
     /// Segment length; only tests change it.
     pub segment_ms: u64,
+    /// How long the silence check waits; only tests change it.
+    pub silence_ms: u64,
 }
 
 pub(crate) enum Event {
@@ -70,6 +82,12 @@ pub(crate) enum Event {
         reply: Sender<Reply>,
         /// When the control port received it.
         at: Instant,
+    },
+    /// A device open finished on its own thread.
+    Opened {
+        track: usize,
+        generation: u64,
+        result: Result<Opened, String>,
     },
 }
 
@@ -189,7 +207,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let session = history.sessions + 1;
     // Set up the audio host before the clock starts, so the devices open close to the session
     // start.
-    let backend = Backend::prepare();
+    let backend = Arc::new(Backend::prepare());
     let clock = MeetingClock::starting_at(start_t);
     // Read next to the clock's start, so another process can map its own moments onto `t`.
     let boot = clock::boot_100ns();
@@ -252,6 +270,8 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             covered_until: start_t,
             cover_from: None,
             taps: Vec::new(),
+            silence: SilenceCheck::new(opts.silence_ms),
+            playing: None,
         })
         .collect();
     let mut recorder = Recorder {
@@ -269,10 +289,11 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         heartbeat: (start_t, started),
         stop: None,
     };
+    // The devices open on threads of their own, so the control port answers from the start,
+    // also while macOS holds a process tap for its permission prompt.
     for i in 0..recorder.tracks.len() {
-        if let Err(error) = recorder.try_open(i, false) {
-            recorder.mark_lost(i, error, recorder.clock.now());
-        }
+        let at = recorder.clock.now();
+        recorder.begin_open(i, false, at);
     }
     recorder.run(rx);
     Ok(())
@@ -320,11 +341,31 @@ struct Track {
     /// With no segment open, a healthy loopback track is padded from here.
     cover_from: Option<u64>,
     taps: Vec<SyncSender<Vec<u8>>>,
+    /// Watches a source that records silence when it isn't allowed to record.
+    silence: SilenceCheck,
+    /// Whether another app played sound at the last poll, for the silence check.
+    playing: Option<bool>,
 }
 
 enum State {
     Open(Box<Live>),
-    Lost { error: String, next_try: Instant },
+    /// The source is opening on a thread of its own; `Event::Opened` ends this.
+    Opening(Opening),
+    Lost {
+        error: String,
+        next_try: Instant,
+    },
+}
+
+struct Opening {
+    /// When the open started, and its meeting time.
+    since: Instant,
+    at: u64,
+    /// The track was without a device before; an open device is `reconnected` then.
+    after_loss: bool,
+    /// The open took longer than `OPEN_SLOW` and the timeline says the track has no device.
+    waiting: Option<String>,
+    flags: Arc<StreamFlags>,
 }
 
 struct Live {
@@ -333,6 +374,11 @@ struct Live {
     resampler: Resampler,
     flags: Arc<StreamFlags>,
     last_packet: Instant,
+    /// Native frames per second and channels, to measure what a block holds.
+    rate: u32,
+    channels: u16,
+    /// The silence check watches this stream.
+    silent_when_denied: bool,
 }
 
 struct Segment {
@@ -379,6 +425,7 @@ struct Schedule {
     heartbeat: Instant,
     poll: Instant,
     sync: Instant,
+    playing: Instant,
 }
 
 /// The next time of a periodic task; a schedule that fell behind restarts from now.
@@ -395,7 +442,7 @@ struct Recorder {
     dir: PathBuf,
     journal: Journal,
     clock: MeetingClock,
-    backend: Backend,
+    backend: Arc<Backend>,
     events: SyncSender<Event>,
     tracks: Vec<Track>,
     paused: bool,
@@ -417,6 +464,7 @@ impl Recorder {
             heartbeat: now + HEARTBEAT,
             poll: now + DEFAULT_POLL,
             sync: now + SYNC,
+            playing: now,
         };
         while self.stop.is_none() {
             let wait = schedule.tick.saturating_duration_since(Instant::now());
@@ -457,6 +505,11 @@ impl Recorder {
                 }
             }
             Event::Command { command, reply, at } => self.on_command(command, reply, at),
+            Event::Opened {
+                track,
+                generation,
+                result,
+            } => self.on_opened(track, generation, result),
         }
     }
 
@@ -467,9 +520,14 @@ impl Recorder {
             self.suspend(&stamp);
             schedule.heartbeat = Instant::now() + HEARTBEAT;
         }
+        if now >= schedule.playing {
+            schedule.playing = now + PLAYING_POLL;
+            self.poll_playing();
+        }
         for i in 0..self.tracks.len() {
             self.check_failure(i);
             self.check_stall(i, now);
+            self.check_opening(i, now);
             self.retry(i, now);
             self.pad(i, PAD_THRESHOLD_MS);
             self.flush_pending(i);
@@ -507,6 +565,35 @@ impl Recorder {
             return;
         };
         live.last_packet = Instant::now();
+        if live.silent_when_denied {
+            let frames = data.len() as u64 / live.channels.max(1) as u64;
+            let ms = frames * 1000 / live.rate.max(1) as u64;
+            let verdict = track
+                .silence
+                .feed(silence::all_zero(data), ms, arrived, track.playing);
+            let name = track.name.clone();
+            match verdict {
+                Some(Verdict::Silent { since }) => {
+                    log(format_args!(
+                        "{name}: only exact zeros since {since} ms while another app plays sound"
+                    ));
+                    self.journal.write(Line::Silent {
+                        t: arrived,
+                        track: name,
+                        since,
+                    });
+                }
+                Some(Verdict::Sound) => self.journal.write(Line::Sound {
+                    t: arrived,
+                    track: name,
+                }),
+                None => {}
+            }
+        }
+        let track = &mut self.tracks[i];
+        let State::Open(live) = &mut track.state else {
+            return;
+        };
         let overrun = live.flags.overrun.swap(false, Ordering::Relaxed);
         if overrun && !paused && track.segment.is_some() {
             // Blocks were dropped before this one: end the segment first, so the gap shows
@@ -605,12 +692,26 @@ impl Recorder {
             .tracks
             .iter()
             .map(|track| {
-                let value = match &track.state {
+                let mut value = match &track.state {
                     State::Open(live) => json!({ "device": live.device.name, "ok": true }),
+                    // A short open isn't a problem to report; a long one is marked lost.
+                    State::Opening(Opening { waiting: None, .. }) => {
+                        json!({ "device": null, "ok": true, "opening": true })
+                    }
+                    State::Opening(Opening {
+                        waiting: Some(error),
+                        ..
+                    }) => json!({ "device": null, "ok": false, "opening": true, "error": error }),
                     State::Lost { error, .. } => {
                         json!({ "device": null, "ok": false, "error": error })
                     }
                 };
+                if track.silence.silent() {
+                    value["silent"] = json!(true);
+                }
+                if track.silence.heard() {
+                    value["heard"] = json!(true);
+                }
                 (track.name.clone(), value)
             })
             .collect();
@@ -649,17 +750,84 @@ impl Recorder {
         t
     }
 
-    /// Opens the track's source and writes `track`, preceded by `device` when the track got
-    /// its device back or moved to another one.
-    fn try_open(&mut self, i: usize, after_loss: bool) -> Result<(), String> {
+    /// Starts opening the track's source on a thread of its own. `Event::Opened` brings the
+    /// result to `on_opened`; a failure counts from meeting time `at`.
+    fn begin_open(&mut self, i: usize, after_loss: bool, at: u64) {
         let track = &mut self.tracks[i];
         track.generation += 1;
+        let generation = track.generation;
         let flags = Arc::new(StreamFlags::default());
-        let sink = Sink::new(self.events.clone(), i, track.generation, flags.clone());
-        let opened = self.backend.open(&track.spec, sink)?;
+        let sink = Sink::new(self.events.clone(), i, generation, flags.clone());
+        track.state = State::Opening(Opening {
+            since: Instant::now(),
+            at,
+            after_loss,
+            waiting: None,
+            flags,
+        });
+        let backend = self.backend.clone();
+        let spec = track.spec.clone();
+        let events = self.events.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("open-{}", track.name))
+            .spawn(move || {
+                let result = backend.open(&spec, sink);
+                // Blocks while the queue is full: the result must not be lost. A recorder that
+                // stopped has dropped the receiver, and the stream then stops right here.
+                let _ = events.send(Event::Opened {
+                    track: i,
+                    generation,
+                    result,
+                });
+            });
+        if let Err(e) = spawned {
+            self.open_failed(i, format!("can't start opening the device: {e}"));
+        }
+    }
+
+    /// An open finished. One that a later open, a suspend or the stop replaced is dropped, which
+    /// stops its stream.
+    fn on_opened(&mut self, i: usize, generation: u64, result: Result<Opened, String>) {
+        if self.tracks[i].generation != generation
+            || !matches!(self.tracks[i].state, State::Opening(_))
+        {
+            return;
+        }
+        match result.and_then(|opened| self.opened(i, opened)) {
+            Ok(()) => {}
+            Err(error) => self.open_failed(i, error),
+        }
+    }
+
+    /// The open of an `Opening` track failed: a first failure writes `device_lost`, a failed
+    /// retry only waits for the next one.
+    fn open_failed(&mut self, i: usize, error: String) {
+        let State::Opening(opening) = &self.tracks[i].state else {
+            return;
+        };
+        if opening.after_loss || opening.waiting.is_some() {
+            self.tracks[i].state = State::Lost {
+                error,
+                next_try: Instant::now() + RETRY,
+            };
+        } else {
+            let at = opening.at;
+            self.mark_lost(i, error, at);
+        }
+    }
+
+    /// The track's source is open: writes `track`, preceded by `device` when the track got its
+    /// device back or moved to another one.
+    fn opened(&mut self, i: usize, opened: Opened) -> Result<(), String> {
         let resampler = Resampler::new(opened.rate, opened.channels)
             .ok_or_else(|| "The device reports no sample rate or channels.".to_string())?;
         let t = self.clock.now();
+        let track = &mut self.tracks[i];
+        let State::Opening(opening) = &track.state else {
+            return Ok(());
+        };
+        let after_loss = opening.after_loss || opening.waiting.is_some();
+        let flags = opening.flags.clone();
         let moved = track
             .device_id
             .as_ref()
@@ -695,8 +863,53 @@ impl Recorder {
             resampler,
             flags,
             last_packet: Instant::now(),
+            rate: opened.rate,
+            channels: opened.channels,
+            silent_when_denied: opened.silent_when_denied,
         }));
         Ok(())
+    }
+
+    /// An open that takes longer than `OPEN_SLOW` goes on, but the track counts as lost from
+    /// when it started, so the timeline shows the gap and the status says why.
+    fn check_opening(&mut self, i: usize, now: Instant) {
+        let track = &self.tracks[i];
+        let State::Opening(opening) = &track.state else {
+            return;
+        };
+        if opening.waiting.is_some() || now.duration_since(opening.since) < OPEN_SLOW {
+            return;
+        }
+        let tap = cfg!(target_os = "macos")
+            && matches!(
+                track.spec,
+                SourceSpec::DefaultOutput | SourceSpec::Output(_)
+            );
+        let error = if tap { WAITING_FOR_TAP } else { WAITING };
+        let (t, already_lost) = (opening.at.max(track.covered_until), opening.after_loss);
+        if let State::Opening(opening) = &mut self.tracks[i].state {
+            opening.waiting = Some(error.into());
+        }
+        // A track that was lost already has its `device_lost` line.
+        if !already_lost {
+            self.journal.write(Line::DeviceLost {
+                t,
+                track: self.tracks[i].name.clone(),
+                error: error.into(),
+            });
+        }
+        self.drop_taps(i);
+    }
+
+    /// Asks whether another app plays sound, for the tracks the silence check still watches.
+    fn poll_playing(&mut self) {
+        for i in 0..self.tracks.len() {
+            let track = &self.tracks[i];
+            let watched = matches!(&track.state, State::Open(live) if live.silent_when_denied);
+            if watched && !track.silence.heard() {
+                self.tracks[i].playing = crate::source::others_playing(&self.tracks[i].spec);
+            }
+        }
     }
 
     /// Records that the track has no device from meeting time `at`, or from where its audio ends
@@ -757,9 +970,7 @@ impl Recorder {
             error: reason,
             next_try: Instant::now(),
         };
-        if let Err(error) = self.try_open(i, false) {
-            self.mark_lost(i, error, at);
-        }
+        self.begin_open(i, false, at);
     }
 
     fn check_failure(&mut self, i: usize) {
@@ -788,16 +999,11 @@ impl Recorder {
         let State::Lost { next_try, .. } = &self.tracks[i].state else {
             return;
         };
-        let next_try = *next_try;
-        if now < next_try {
+        if now < *next_try {
             return;
         }
-        if let Err(error) = self.try_open(i, true) {
-            self.tracks[i].state = State::Lost {
-                error,
-                next_try: later(next_try, RETRY, now),
-            };
-        }
+        let at = self.clock.now();
+        self.begin_open(i, true, at);
     }
 
     /// Moves a `default-*` track to the new default device.
@@ -825,7 +1031,12 @@ impl Recorder {
         let mut was_lost = Vec::with_capacity(self.tracks.len());
         for i in 0..self.tracks.len() {
             self.close_segment(i, None);
-            was_lost.push(matches!(self.tracks[i].state, State::Lost { .. }));
+            // A track that was opening counts as lost when the timeline already says so.
+            was_lost.push(match &self.tracks[i].state {
+                State::Lost { .. } => true,
+                State::Opening(o) => o.after_loss || o.waiting.is_some(),
+                State::Open(_) => false,
+            });
             self.tracks[i].state = State::Lost {
                 error: "The computer was asleep.".into(),
                 next_try: Instant::now(),
@@ -837,12 +1048,10 @@ impl Recorder {
             .advance_to(clock::after_sleep(from, current, &before, woke));
         let until = self.clock.now();
         self.journal.write(Line::Suspend { t: from, until });
+        // The devices open on their own threads, as at the start.
         for (i, lost) in was_lost.into_iter().enumerate() {
-            if let Err(error) = self.try_open(i, lost) {
-                self.mark_lost(i, error, self.clock.now());
-            }
+            self.begin_open(i, lost, until);
         }
-        // Opening the devices can take seconds; the next check counts from here.
         self.heartbeat = (self.clock.now(), Stamp::now());
     }
 
@@ -937,6 +1146,16 @@ impl Recorder {
                 .pending_end
                 .saturating_sub(samples_to_ms(track.pending.len() as u64));
             let next = next_segment_start(contiguous, estimate);
+            if next != contiguous {
+                // The device delivered more or less audio than the clock says passed, by more
+                // than RESYNC_MS: a stretch it never delivered, or a clock that drifts. The next
+                // segment starts where its audio was heard (RECORDING.md, `segment_end`).
+                log(format_args!(
+                    "{}: segment {} ends at {contiguous} ms but its audio arrived until {} ms; \
+                     the next one starts there",
+                    track.name, segment.seq, estimate,
+                ));
+            }
             self.end_segment(i);
             if !self.start_segment(i, next) {
                 return;

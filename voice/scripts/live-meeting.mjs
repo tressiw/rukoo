@@ -5,7 +5,7 @@
 //   node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
 //                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
 //                                       [--models <dir>] [--nemo-dir <dir>]
-//                                       [--sync] [--remote-fetch=<ssh target>]
+//                                       [--sync] [--remote-fetch=<ssh target>] [--real-audio]
 //                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>] | --measure=sync]
 //
 // Windows and macOS. Everything it starts lives under tmp/live/<time>/ in this checkout: Voice's data folder
@@ -28,6 +28,12 @@
 // tmp/voice-assets/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from tmp/voice-assets/speaker-assets.
 // A run without a model or a provider key still reports that as its one failed prerequisite and skips the passage
 // checks: the script seeds a model but never downloads one and never uses a key.
+//
+// --real-audio (macOS only, never by default) records the real devices instead of the speech files: the default
+// microphone and, through a Core Audio process tap, what the Mac plays. The run plays the two speech files out loud with
+// `afplay`, one after the other and looped, so the call track hears both through the tap and the microphone hears them
+// through the air. It opens the microphone, asks macOS for System Audio Recording the first time and plays sound, so it
+// needs a person at the Mac to answer the prompts, a microphone, and nobody else using the Mac's sound.
 //
 // The checks: passages with the expected words reach Rukoo on both tracks before the stop; the pill shows the
 // recording; Rukoo's windows are protected from capture; frames with their text reach Rukoo while it records and
@@ -174,12 +180,13 @@ function refuseOnMac(out) {
   if (out.chooseMonitor) no.push(`--choose-monitor: ${SCREEN_NEEDS}`);
   if (out.visibleRukoo) no.push(`--visible-rukoo: ${SCREEN_NEEDS}`);
   if (out.measure) no.push(`--measure=${out.measure}: the measurements use voice/scripts/measure.ps1, the screen's own timings and the speaker worker, which are Windows-only`);
+  if (out.realAudio && out.speakers !== null) no.push('--real-audio with --speakers: the speaker checks expect the AMI excerpt in the call alone, and the microphone would hear it too');
   if (out.sync) no.push("--sync: bucket sync's keys need the macOS Keychain protector (voice-sync/src/protect/keychain.rs) in this build, and Voice reports sync as unavailable without it; run without --sync");
   if (no.length) throw new Refusal(`The live run refuses these flags on macOS for now:\n  ${no.join('\n  ')}`);
 }
 
 function parseArgs(argv) {
-  const out = { skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
+  const out = { realAudio: false, skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -230,6 +237,9 @@ function parseArgs(argv) {
       case '--sync':
         out.sync = true;
         break;
+      case '--real-audio':
+        out.realAudio = true;
+        break;
       case '--remote-fetch':
         out.remoteFetch = next();
         if (!out.remoteFetch) throw new Error('--remote-fetch takes an ssh target');
@@ -256,6 +266,8 @@ function parseArgs(argv) {
   if (out.sync && out.realScreen) throw new Error('--sync and --real-screen are separate runs: the real screen never goes to a bucket');
   if (out.sync && (out.measure === 'screen' || out.measure === 'speakers' || REASONS.includes(out.speakers))) throw new Error('--sync runs the standard meeting; --measure=screen, --measure=speakers and --speakers=<reason> are separate runs');
   if (out.remoteFetch && !out.sync) throw new Error('--remote-fetch needs --sync');
+  if (out.realAudio && !MAC) throw new Error('--real-audio is for macOS: on Windows the live run records the speech through file sources');
+  if (out.realAudio && (out.measure || out.realScreen)) throw new Error('--real-audio runs the standard meeting; --measure and --real-screen are separate runs');
   refuseOnMac(out);
   return out;
 }
@@ -379,7 +391,7 @@ const report = {
   measurements: {},
   models: { root: MODELS, seeded: [] }
 };
-const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [], fake: [] };
+const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [], fake: [], playback: null };
 let failed = 0;
 let skipped = 0;
 let nemoDir = null;
@@ -830,6 +842,8 @@ function voiceEnv({ monitor = null, noSpeakers = null, data = VOICE_DATA } = {})
     // The recorder plays the speech in real time, looping, instead of opening the microphone and the speakers.
     RUKOO_VOICE_TEST_SOURCES: `mic=file:${path.join(RUN, 'you.wav')},loop,call=file:${call}`
   };
+  // A real-audio run records the default microphone and the process tap; the speech plays out loud instead.
+  if (ARGS.realAudio) delete env.RUKOO_VOICE_TEST_SOURCES;
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.RUKOO_VOICE_LOCAL_EXE;
   delete env.RUKOO_VOICE_SPEAKERS_EXE;
@@ -1872,6 +1886,21 @@ async function recordedTracks(id, label) {
   check(`both synthetic tracks record audio files while ${label} runs`, Boolean(beat?.samples?.mic) && Boolean(beat?.samples?.call), { ...found, samples: beat?.samples });
 }
 
+// --real-audio: the two speech files out loud through the default output, one after the other until the run stops,
+// so the process tap hears the call and the microphone hears the room. Stopped by its process id in cleanup.
+function startPlayback() {
+  const files = [path.join(RUN, 'you.wav'), AMI ? AMI_WAV : path.join(RUN, 'them.wav')];
+  let n = 0;
+  const next = () => {
+    if (started.playback === false) return;
+    const child = spawn('afplay', [files[n++ % files.length]], { stdio: 'ignore' });
+    started.playback = child.pid;
+    child.on('exit', () => setTimeout(next, 300));
+  };
+  next();
+  note(`--real-audio: afplay plays ${files.map((f) => path.basename(f)).join(' and ')} in turn, out loud`);
+}
+
 async function standardRun(voice, offsets) {
   const labels = SPEAKERS === true;
   let outage = {};
@@ -1880,6 +1909,7 @@ async function standardRun(voice, offsets) {
   // Sync: the fake bucket, then Settings > Storage as a user fills it in, before the meeting.
   const sync = SECRETS;
   if (SYNC) await syncSetup(sync);
+  if (ARGS.realAudio) startPlayback();
   // 2. A meeting started from Rukoo, with Voice's default screen mode.
   const t0 = Date.now();
   const { meetingId: id } = await rukoo.start({ title: TITLE });
@@ -3344,6 +3374,11 @@ async function main() {
 }
 
 async function cleanup() {
+  if (started.playback) {
+    const pid = started.playback;
+    started.playback = false;
+    if (alive(pid)) await stopPid(pid);
+  }
   // Rukoo first: its quit path, then its process id if it hangs.
   for (const electronApp of [app, screens]) {
     if (!electronApp) continue;

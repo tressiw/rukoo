@@ -4,7 +4,7 @@ Rukoo Voice is a desktop app for push-to-talk dictation that also records meetin
 
 ## What it does
 
-**Dictation.** Hold a key, speak and let go. Voice types the text into whichever app has focus. Hold the rewrite key over selected text to rewrite it with a spoken instruction. Audio goes to the speech provider you configured with your own key, or stays on your computer with a local model. One dictation lasts at most 10 minutes; then it stops as if you let go, and a notification says so. A key that reads up for two seconds stops a dictation even when its release got lost. On a Mac, a hold of Right Option, Command, Control or Shift that typed a character or a shortcut isn't a dictation: when another key went down during the hold, Voice drops the recording at the release and sends nothing.
+**Dictation.** Hold a key, speak and let go. Voice types the text into whichever app has focus. Hold the rewrite key over selected text to rewrite it with a spoken instruction. Audio goes to the speech provider you configured with your own key, or stays on your computer with a local model.
 
 **Meetings.** Voice records your microphone, the call audio and, if you want, your screen. It transcribes while you talk and streams the transcript to Rukoo. Rukoo shows the meeting next to your agent, so you can ask the agent questions during the call. Afterwards the agent writes the notes with its own meeting-notes skill and stores them where you keep notes.
 
@@ -48,7 +48,7 @@ While recording or paused, the pill's screen button and Rukoo's meeting header o
 | | Screen | Call audio | Hardware encoder |
 |---|---|---|---|
 | Windows | Windows.Graphics.Capture | WASAPI loopback, or one app through process loopback | Media Foundation: NVENC, AMF or Quick Sync |
-| macOS | ScreenCaptureKit, after the Screen & System Audio Recording permission | ScreenCaptureKit audio, or Core Audio process taps | VideoToolbox |
+| macOS | ScreenCaptureKit, after the Screen Recording permission | A Core Audio process tap of the default output, after the System Audio Recording Only permission | VideoToolbox |
 | Linux | xdg-desktop-portal ScreenCast over PipeWire | The PipeWire monitor of the output device | VA-API or NVENC |
 
 Rukoo can hide its window from screen capture while a meeting records, so your agent chat stays out of the recording. On Windows 10 2004 and later, that also keeps it out of Teams and Zoom screen shares. On macOS 15 and later, other apps' screen shares still show Rukoo, although Voice can leave it out of its own recording. Linux has no way to hide a window, so keep Rukoo on a monitor you don't record.
@@ -73,6 +73,8 @@ A meeting can't be repeated, so losing a recording is the worst thing Voice can 
 - The screen process runs detached like the recorder, with its own watchdog. A crashed screen process restarts into the same meeting, and the transcript marks the gap in the screen.
 - When the disk fills up or the video encoder fails, Voice drops the video first, then the frames, and never the audio. Video stops when less than 4 GiB is free and frames below 2 GiB, so the audio of a long meeting still fits. Voice tells you what it dropped.
 - Voice follows device changes: an unplugged headset, a Bluetooth headset switching profile, a new default device, sleep and resume. It marks the switch instead of recording silence.
+- A device that takes long to open never holds up the rest. The first time a Mac records the call, macOS waits for you to answer its System Audio Recording prompt; meanwhile the microphone records, and the call joins when you answer, with the gap marked.
+- On a Mac, a call track without the System Audio Recording permission records silence and no error, also when the permission went stale after an update. When the call holds nothing but exact silence for 30 s while another app plays sound, Voice says so in the pill, in a notification and in Rukoo, and names the setting. It keeps recording. A call app that plays exact silence while nobody talks can trigger it too early; the first sound on the call proves the permission works.
 
 ## Storage
 
@@ -94,7 +96,9 @@ On its first start, Voice imports Ownkey's settings and uses the speech models O
 
 The Mac build is ad-hoc signed and not notarized, as Rukoo Mail's Mac builds are. The first time you open it, macOS says it can't check the app for malicious software. Open System Settings › Privacy & Security, find Rukoo Voice and choose Open Anyway, then open it again.
 
-macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on.
+macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on. System Audio Recording has no way to be checked before a meeting: Settings shows what the last meeting's call track showed, and a meeting tells you when its call holds only silence.
+
+Voice records everything the Mac plays, its own sounds included, as it does on Windows. Its only sound is the optional ready chime when you start dictating, and macOS' system sound server plays it, so leaving Voice's own processes out of the tap wouldn't keep it out. The timeline marks every dictation, so the chime sits at the start of a marked stretch.
 
 ## How it's built
 
@@ -107,7 +111,7 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 ## What 0.1 leaves out
 
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
-- Meeting audio capture on macOS and Linux. The recorder there reads synthetic and file sources only. The app also runs on a Mac, a port still being checked by hand: speaker labels there need a development copy of the NeMo runtime. Linux has no app; its recorder, bridge and transcript pipeline are tested there.
+- Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows and macOS.
 - A signed installer and automatic updates. The opt-in update check tells you a new version exists.
 
 ## Open decisions

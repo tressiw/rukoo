@@ -1,4 +1,5 @@
-//! Audio sources: real devices through cpal (Windows), and synthetic and file sources for tests.
+//! Audio sources: real devices through cpal (Windows and macOS), and synthetic and file sources
+//! for tests.
 //!
 //! Every source delivers interleaved `f32` blocks and failures through the same [`Sink`], so a
 //! test source's simulated device loss takes exactly the path a real one does.
@@ -29,22 +30,43 @@ pub enum SourceSpec {
     /// A healthy loopback endpoint with nothing playing: it delivers no packets, for tests of
     /// the call-track padding.
     Idle { faults: Faults },
+    /// A macOS process tap, for tests: it delivers blocks of exact zeros all the time, as a tap
+    /// does while nothing plays or when macOS doesn't let Voice record system audio. With
+    /// `sound` it plays a tone between those two times, in ms since the recorder started.
+    /// `playing` says another app plays sound the whole time.
+    Tap {
+        faults: Faults,
+        sound: Option<(u64, Option<u64>)>,
+        playing: bool,
+    },
     /// A WAV file played in real time, then silence, or looped.
     File { path: PathBuf, looped: bool },
 }
 
 /// What happens to a synthetic device, in ms since the recorder started: it disappears at
 /// `fail_at` and comes back at `back_at`, and at `switch_at` another device becomes the default.
-/// Opening it takes `open_ms`, as a slow Bluetooth endpoint can.
+/// Opening it takes `open_ms`, as a slow Bluetooth endpoint can. From `skip_at` it delivers
+/// nothing for `skip_ms` and then goes on in time, the audio of that stretch lost, as a device
+/// that glitches does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Faults {
     pub fail_at: Option<u64>,
     pub back_at: Option<u64>,
     pub switch_at: Option<u64>,
     pub open_ms: Option<u64>,
+    pub skip_at: Option<u64>,
+    pub skip_ms: Option<u64>,
 }
 
 impl Faults {
+    /// Whether the device delivers nothing at this moment, without failing.
+    fn skipping(&self, elapsed_ms: u64) -> bool {
+        match (self.skip_at, self.skip_ms) {
+            (Some(at), Some(ms)) => elapsed_ms >= at && elapsed_ms < at + ms,
+            _ => false,
+        }
+    }
+
     pub fn unavailable(&self, elapsed_ms: u64) -> bool {
         self.fail_at.is_some_and(|f| elapsed_ms >= f) && self.back_at.is_none_or(|b| elapsed_ms < b)
     }
@@ -64,7 +86,10 @@ impl SourceSpec {
     pub fn is_loopback(&self) -> bool {
         matches!(
             self,
-            SourceSpec::DefaultOutput | SourceSpec::Output(_) | SourceSpec::Idle { .. }
+            SourceSpec::DefaultOutput
+                | SourceSpec::Output(_)
+                | SourceSpec::Idle { .. }
+                | SourceSpec::Tap { .. }
         )
     }
 
@@ -73,9 +98,9 @@ impl SourceSpec {
     pub fn follows_default(&self) -> bool {
         match self {
             SourceSpec::DefaultInput | SourceSpec::DefaultOutput => true,
-            SourceSpec::Tone { faults, .. } | SourceSpec::Idle { faults } => {
-                faults.switch_at.is_some()
-            }
+            SourceSpec::Tone { faults, .. }
+            | SourceSpec::Idle { faults }
+            | SourceSpec::Tap { faults, .. } => faults.switch_at.is_some(),
             _ => false,
         }
     }
@@ -113,7 +138,12 @@ impl FromStr for SourceSpec {
             let mut parts = rest.split(',');
             let kind = parts.next().unwrap_or_default();
             let mut faults = Faults::default();
+            let (mut sound_at, mut sound_until, mut playing) = (None, None, false);
             for option in parts {
+                if option == "playing" && kind == "tap" {
+                    playing = true;
+                    continue;
+                }
                 let (key, value) = option
                     .split_once('=')
                     .ok_or_else(|| format!("source {s:?}: expected key=value, got {option:?}"))?;
@@ -125,6 +155,10 @@ impl FromStr for SourceSpec {
                     "back-at" => faults.back_at = Some(ms),
                     "switch-at" => faults.switch_at = Some(ms),
                     "open-ms" => faults.open_ms = Some(ms),
+                    "skip-at" => faults.skip_at = Some(ms),
+                    "skip-ms" => faults.skip_ms = Some(ms),
+                    "sound-at" if kind == "tap" => sound_at = Some(ms),
+                    "sound-until" if kind == "tap" => sound_until = Some(ms),
                     _ => return Err(format!("source {s:?}: unknown option {key:?}")),
                 }
             }
@@ -139,10 +173,20 @@ impl FromStr for SourceSpec {
             if kind == "idle" {
                 return Ok(SourceSpec::Idle { faults });
             }
+            if kind == "tap" {
+                if sound_until.is_some() && sound_at.is_none() {
+                    return Err(format!("source {s:?}: sound-until needs sound-at"));
+                }
+                return Ok(SourceSpec::Tap {
+                    faults,
+                    sound: sound_at.map(|at| (at, sound_until)),
+                    playing,
+                });
+            }
         }
         Err(format!(
             "unknown source {s:?}; use default-input, default-output, input:<id>, output:<id>, \
-             synthetic:tone:<hz>, synthetic:idle or file:<path>"
+             synthetic:tone:<hz>, synthetic:idle, synthetic:tap or file:<path>"
         ))
     }
 }
@@ -242,40 +286,53 @@ impl Sink {
     }
 }
 
-/// A running stream; dropping it stops the capture.
-pub trait Capture {}
+/// A running stream; dropping it stops the capture. Streams open on a thread of their own and
+/// move to the recorder thread, so they are `Send`.
+pub trait Capture: Send {}
 
 pub struct Opened {
     pub capture: Box<dyn Capture>,
     pub device: DeviceInfo,
     pub rate: u32,
     pub channels: u16,
+    /// The source records exact zeros, without an error, when the system doesn't let Voice record
+    /// it: a macOS process tap without the System Audio Recording grant. The silence check
+    /// watches such a track (`silence.rs`).
+    pub silent_when_denied: bool,
 }
 
 /// Opens sources. Synthetic faults count from `started`, when the backend was ready; the
 /// recorder starts the session's clock right after.
+///
+/// Opening a device can block for long: macOS holds the first open of a process tap until the
+/// user answers the System Audio Recording prompt, and a Bluetooth headset can take seconds to
+/// switch profile. The recorder therefore opens on a thread of its own and shares the backend.
 pub struct Backend {
     started: Instant,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     host: cpal::Host,
 }
 
 impl Backend {
     pub fn prepare() -> Self {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let host = {
             use cpal::traits::{DeviceTrait, HostTrait};
             let host = cpal::default_host();
-            // The first device query in a process sets up COM and the device enumerator; do it
-            // before the meeting clock starts instead of inside the first track's open.
-            if let Some(device) = host.default_input_device() {
-                let _ = device.default_input_config();
+            // The first device query in a process sets up COM and the device enumerator on
+            // Windows and Core Audio's device list on macOS; do it before the meeting clock
+            // starts instead of inside the first track's open. A Mac without a microphone has
+            // nothing to ask.
+            if !no_microphone() {
+                if let Some(device) = host.default_input_device() {
+                    let _ = device.default_input_config();
+                }
             }
             host
         };
         Self {
             started: Instant::now(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             host,
         }
     }
@@ -286,6 +343,11 @@ impl Backend {
                 self.open_synthetic(Signal::Tone(*hz), *faults, spec, sink)
             }
             SourceSpec::Idle { faults } => self.open_synthetic(Signal::Idle, *faults, spec, sink),
+            SourceSpec::Tap { faults, sound, .. } => {
+                let mut opened = self.open_synthetic(Signal::Tap(*sound), *faults, spec, sink)?;
+                opened.silent_when_denied = true;
+                Ok(opened)
+            }
             SourceSpec::File { path, looped } => {
                 let wav = voice_audio::read_wav(path)
                     .map_err(|e| format!("can't read {}: {e}", path.display()))?;
@@ -336,6 +398,7 @@ impl Backend {
         let number = faults.device_number(elapsed);
         let mut name = match &signal {
             Signal::Tone(hz) => format!("Synthetic {hz} Hz tone"),
+            Signal::Tap(_) => "Synthetic process tap".into(),
             _ => "Synthetic idle output".into(),
         };
         if number > 1 {
@@ -358,7 +421,9 @@ impl Backend {
     /// The id of the current default device, for following it.
     pub fn default_device_id(&self, spec: &SourceSpec) -> Option<String> {
         match spec {
-            SourceSpec::Tone { faults, .. } | SourceSpec::Idle { faults } => {
+            SourceSpec::Tone { faults, .. }
+            | SourceSpec::Idle { faults }
+            | SourceSpec::Tap { faults, .. } => {
                 let elapsed = self.started.elapsed().as_millis() as u64;
                 faults
                     .switch_at
@@ -368,10 +433,11 @@ impl Backend {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn default_cpal_id(&self, spec: &SourceSpec) -> Option<String> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let device = match spec {
+            SourceSpec::DefaultInput if no_microphone() => None,
             SourceSpec::DefaultInput => self.host.default_input_device(),
             SourceSpec::DefaultOutput => self.host.default_output_device(),
             _ => None,
@@ -379,19 +445,69 @@ impl Backend {
         device.id().ok().map(|id| id.to_string())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn default_cpal_id(&self, _spec: &SourceSpec) -> Option<String> {
         None
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn open_device(&self, spec: &SourceSpec, sink: Sink) -> Result<Opened, String> {
         cpal_capture::open(&self.host, spec, sink)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn open_device(&self, _spec: &SourceSpec, _sink: Sink) -> Result<Opened, String> {
         Err(UNSUPPORTED.into())
+    }
+}
+
+/// Whether another app plays sound now, for a track whose source records silence when it isn't
+/// allowed to record (`Opened::silent_when_denied`). `None` when nobody can tell.
+pub fn others_playing(spec: &SourceSpec) -> Option<bool> {
+    match spec {
+        SourceSpec::Tap { playing: true, .. } => Some(true),
+        SourceSpec::Tap { .. } => None,
+        #[cfg(target_os = "macos")]
+        SourceSpec::DefaultOutput | SourceSpec::Output(_) => crate::coreaudio::others_playing(),
+        _ => None,
+    }
+}
+
+/// The message for a computer without a microphone. Dictation says the same
+/// (`voice-engine/src/dictation/capture.rs`).
+pub const NO_MICROPHONE: &str = "No microphone is available.";
+
+/// Whether this computer has no microphone at all. On a Mac, cpal 0.18.2 hands out a device for
+/// Core Audio's `kAudioObjectUnknown` then, and every call on it fails.
+pub fn no_microphone() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::coreaudio::no_microphone()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// How a loopback source on macOS records an output device. cpal turns an input stream on an
+/// output device into a process tap only when the device has no inputs of its own; on a device
+/// that has inputs, such as a USB headset or an audio interface, it opens those inputs instead,
+/// which would put the user's microphone on the call track. The recorder makes the tap itself
+/// then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapPath {
+    /// cpal's own tap, for a device without inputs.
+    Cpal,
+    /// The recorder's tap (`coreaudio::Tap`), opened through cpal as an input device.
+    Own,
+}
+
+pub fn tap_path(device_has_inputs: bool) -> TapPath {
+    if device_has_inputs {
+        TapPath::Own
+    } else {
+        TapPath::Cpal
     }
 }
 
@@ -404,15 +520,18 @@ fn synthetic_id(spec: &SourceSpec, number: u32) -> String {
 }
 
 pub const UNSUPPORTED: &str =
-    "Recording from audio devices is only supported on Windows in this version.";
+    "Recording from audio devices is only supported on Windows and macOS in this version.";
 
 /// Whether this build can open the source at all. Platform limits are refused at start, not
 /// retried every second.
 pub fn supported(spec: &SourceSpec) -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "macos"))
         || matches!(
             spec,
-            SourceSpec::Tone { .. } | SourceSpec::Idle { .. } | SourceSpec::File { .. }
+            SourceSpec::Tone { .. }
+                | SourceSpec::Idle { .. }
+                | SourceSpec::Tap { .. }
+                | SourceSpec::File { .. }
         )
 }
 
@@ -431,6 +550,12 @@ impl fmt::Display for SourceSpec {
             if let Some(ms) = faults.open_ms {
                 write!(f, ",open-ms={ms}")?;
             }
+            if let Some(ms) = faults.skip_at {
+                write!(f, ",skip-at={ms}")?;
+            }
+            if let Some(ms) = faults.skip_ms {
+                write!(f, ",skip-ms={ms}")?;
+            }
             Ok(())
         }
         match self {
@@ -445,6 +570,24 @@ impl fmt::Display for SourceSpec {
             SourceSpec::Idle { faults: x } => {
                 f.write_str("synthetic:idle")?;
                 faults(f, x)
+            }
+            SourceSpec::Tap {
+                faults: x,
+                sound,
+                playing,
+            } => {
+                f.write_str("synthetic:tap")?;
+                faults(f, x)?;
+                if let Some((at, until)) = sound {
+                    write!(f, ",sound-at={at}")?;
+                    if let Some(until) = until {
+                        write!(f, ",sound-until={until}")?;
+                    }
+                }
+                if *playing {
+                    f.write_str(",playing")?;
+                }
+                Ok(())
             }
             SourceSpec::File { path, looped } => {
                 write!(f, "file:{}", path.display())?;
@@ -467,6 +610,8 @@ const TONE_LEVEL: f32 = 0.5;
 enum Signal {
     Tone(f32),
     Idle,
+    /// Exact zeros, with a tone between the two times (ms since the recorder started).
+    Tap(Option<(u64, Option<u64>)>),
     File {
         channels: u16,
         samples: Vec<f32>,
@@ -514,8 +659,24 @@ impl Synthetic {
             device,
             rate,
             channels,
+            silent_when_denied: false,
         }
     }
+}
+
+/// The tone a synthetic tap plays while it has sound.
+const TAP_TONE_HZ: f32 = 600.0;
+
+fn tone_block(hz: f32, produced: u64, frames: usize, rate: u32, channels: usize) -> Vec<f32> {
+    let mut block = Vec::with_capacity(frames * channels);
+    for i in 0..frames as u64 {
+        let n = produced + i;
+        // The phase from an exact integer position, so long runs don't drift.
+        let cycles = (n as f64 * hz as f64 / rate as f64).fract();
+        let v = TONE_LEVEL * (std::f64::consts::TAU * cycles).sin() as f32;
+        block.extend(std::iter::repeat_n(v, channels));
+    }
+    block
 }
 
 fn run_synthetic(
@@ -541,17 +702,18 @@ fn run_synthetic(
         while produced + block_frames as u64 <= due {
             let block = match &signal {
                 Signal::Idle => None,
-                Signal::Tone(hz) => {
-                    let mut block = Vec::with_capacity(block_frames * channels);
-                    for i in 0..block_frames as u64 {
-                        let n = produced + i;
-                        // The phase from an exact integer position, so long runs don't drift.
-                        let cycles = (n as f64 * *hz as f64 / rate as f64).fract();
-                        let v = TONE_LEVEL * (std::f64::consts::TAU * cycles).sin() as f32;
-                        block.extend(std::iter::repeat_n(v, channels));
-                    }
-                    Some(block)
+                Signal::Tap(sound) => {
+                    let now = started.elapsed().as_millis() as u64;
+                    let sounding = sound.is_some_and(|(at, until)| {
+                        now >= at && until.is_none_or(|until| now < until)
+                    });
+                    Some(if sounding {
+                        tone_block(TAP_TONE_HZ, produced, block_frames, rate, channels)
+                    } else {
+                        vec![0.0; block_frames * channels]
+                    })
                 }
+                Signal::Tone(hz) => Some(tone_block(*hz, produced, block_frames, rate, channels)),
                 Signal::File {
                     channels: file_channels,
                     samples,
@@ -571,7 +733,8 @@ fn run_synthetic(
                     Some(block)
                 }
             };
-            if let Some(block) = block {
+            let skipping = faults.skipping(started.elapsed().as_millis() as u64);
+            if let Some(block) = block.filter(|_| !skipping) {
                 sink.audio(block);
             }
             produced += block_frames as u64;
@@ -580,22 +743,27 @@ fn run_synthetic(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod cpal_capture {
-    use super::{Capture, DeviceInfo, Failure, Opened, Sink, SourceSpec};
+    use super::{Capture, DeviceInfo, Failure, Opened, Sink, SourceSpec, NO_MICROPHONE};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{Data, ErrorKind, SampleFormat};
 
-    struct CpalStream(#[allow(dead_code)] cpal::Stream);
+    /// The stream, then on macOS the tap it reads, if the recorder made one: fields drop in
+    /// order, so the stream stops before its device goes.
+    struct CpalStream {
+        _stream: cpal::Stream,
+        #[cfg(target_os = "macos")]
+        _tap: Option<crate::coreaudio::Tap>,
+    }
 
     impl Capture for CpalStream {}
 
     pub fn open(host: &cpal::Host, spec: &SourceSpec, sink: Sink) -> Result<Opened, String> {
         let loopback = spec.is_loopback();
         let device = match spec {
-            SourceSpec::DefaultInput => host
-                .default_input_device()
-                .ok_or("No microphone is available.")?,
+            SourceSpec::DefaultInput if super::no_microphone() => return Err(NO_MICROPHONE.into()),
+            SourceSpec::DefaultInput => host.default_input_device().ok_or(NO_MICROPHONE)?,
             SourceSpec::DefaultOutput => host
                 .default_output_device()
                 .ok_or("No audio output device is available.")?,
@@ -606,20 +774,37 @@ mod cpal_capture {
             }
             _ => return Err("not a device source".into()),
         };
+        // `to_string` on a device whose name can't be read panics in cpal 0.18.2 on macOS; the
+        // id, then a plain word, stand in.
+        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
         let name = device
             .description()
             .map(|d| d.name().to_string())
-            .unwrap_or_else(|_| device.to_string());
-        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
-        // An input stream on an output device is WASAPI loopback. Capture in the device's own
-        // format: cpal doesn't ask Windows to convert capture streams, so only native formats
-        // are reliable. Voice resamples itself.
+            .ok()
+            .or_else(|| (!id.is_empty()).then(|| id.clone()))
+            .unwrap_or_else(|| "unnamed device".into());
+        // An input stream on an output device is WASAPI loopback on Windows and a Core Audio
+        // process tap on macOS. Capture in the device's own format: cpal doesn't ask the system
+        // to convert capture streams, so only native formats are reliable. Voice resamples
+        // itself.
         let config = if loopback {
             device.default_output_config()
         } else {
             device.default_input_config()
         }
         .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        let (device, config, tap) = if loopback {
+            let has_inputs = device
+                .supported_input_configs()
+                .is_ok_and(|mut configs| configs.next().is_some());
+            match super::tap_path(has_inputs) {
+                super::TapPath::Cpal => (device, config, None),
+                super::TapPath::Own => own_tap(host, &id)?,
+            }
+        } else {
+            (device, config, None)
+        };
         let format = config.sample_format();
         if !decodable(format) {
             return Err(format!("unsupported sample format {format:?}"));
@@ -633,7 +818,8 @@ mod cpal_capture {
         let on_error = move |e: cpal::Error| match e.kind() {
             // Glitches and refused real-time priority don't stop the stream.
             ErrorKind::Xrun | ErrorKind::RealtimeDenied => {}
-            // The default device changed; cpal doesn't reroute capture streams, so rebuild.
+            // The default device changed, or on macOS its sample rate did; cpal doesn't reroute
+            // capture streams, so rebuild.
             ErrorKind::StreamInvalidated | ErrorKind::DeviceChanged => {
                 sink.failed(Failure::Rebuild(e.to_string()))
             }
@@ -645,11 +831,48 @@ mod cpal_capture {
             .map_err(|e| e.to_string())?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Opened {
-            capture: Box::new(CpalStream(stream)),
+            capture: Box::new(CpalStream {
+                _stream: stream,
+                #[cfg(target_os = "macos")]
+                _tap: tap,
+            }),
             device: DeviceInfo { name, id },
             rate: config.sample_rate(),
             channels: config.channels(),
+            // A tap without the System Audio Recording grant records exact zeros (spike S2).
+            silent_when_denied: cfg!(target_os = "macos") && loopback,
         })
+    }
+
+    /// Taps an output device that has inputs of its own, and finds the tap's private aggregate
+    /// among this process's devices to open it as an input. The track keeps the output device's
+    /// name and id, so following the default and the timeline see the device the user chose.
+    #[cfg(target_os = "macos")]
+    fn own_tap(
+        host: &cpal::Host,
+        output_id: &str,
+    ) -> Result<
+        (
+            cpal::Device,
+            cpal::SupportedStreamConfig,
+            Option<crate::coreaudio::Tap>,
+        ),
+        String,
+    > {
+        let uid = output_id
+            .strip_prefix("coreaudio:")
+            .ok_or("The output device has no Core Audio id.")?;
+        let tap = crate::coreaudio::Tap::of_output(uid)?;
+        let aggregate_id = format!("coreaudio:{}", tap.uid);
+        let aggregate = host
+            .devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.id().is_ok_and(|id| id.to_string() == aggregate_id))
+            .ok_or("macOS made the device for the process tap, but it isn't in the device list.")?;
+        let config = aggregate
+            .default_input_config()
+            .map_err(|e| e.to_string())?;
+        Ok((aggregate, config, Some(tap)))
     }
 
     fn decodable(format: SampleFormat) -> bool {
@@ -743,6 +966,27 @@ mod tests {
                 },
             ),
             (
+                "synthetic:tap",
+                SourceSpec::Tap {
+                    faults: Faults::default(),
+                    sound: None,
+                    playing: false,
+                },
+            ),
+            (
+                "synthetic:tap,open-ms=7000,skip-at=800,skip-ms=300,sound-at=0,sound-until=500,playing",
+                SourceSpec::Tap {
+                    faults: Faults {
+                        open_ms: Some(7000),
+                        skip_at: Some(800),
+                        skip_ms: Some(300),
+                        ..Faults::default()
+                    },
+                    sound: Some((0, Some(500))),
+                    playing: true,
+                },
+            ),
+            (
                 r"file:C:\audio\ami.wav",
                 SourceSpec::File {
                     path: PathBuf::from(r"C:\audio\ami.wav"),
@@ -775,6 +1019,9 @@ mod tests {
             "synthetic:tone:440,fail-at=soon",
             "synthetic:tone:440,explode=1",
             "synthetic:noise",
+            "synthetic:tone:440,playing",
+            "synthetic:idle,sound-at=5",
+            "synthetic:tap,sound-until=5",
         ] {
             assert!(text.parse::<SourceSpec>().is_err(), "{text}");
         }
@@ -817,6 +1064,43 @@ mod tests {
                 generation: 1
             })
         ));
+    }
+
+    #[test]
+    fn a_process_tap_is_a_padded_loopback_that_follows_the_default() {
+        let tap: SourceSpec = "synthetic:tap,switch-at=10".parse().unwrap();
+        assert!(tap.is_loopback() && tap.follows_default());
+        assert!(SourceSpec::DefaultOutput.is_loopback());
+    }
+
+    /// cpal records an output device's own inputs when it has any, which would put the user's
+    /// microphone on the call track; the recorder taps such a device itself.
+    #[test]
+    fn an_output_device_with_inputs_gets_the_recorders_own_tap() {
+        assert_eq!(tap_path(false), TapPath::Cpal);
+        assert_eq!(tap_path(true), TapPath::Own);
+    }
+
+    #[test]
+    fn only_a_tap_says_whether_other_apps_play() {
+        let playing: SourceSpec = "synthetic:tap,playing".parse().unwrap();
+        assert_eq!(others_playing(&playing), Some(true));
+        let unknown: SourceSpec = "synthetic:tap".parse().unwrap();
+        assert_eq!(others_playing(&unknown), None);
+        assert_eq!(others_playing(&SourceSpec::DefaultInput), None);
+    }
+
+    #[test]
+    fn a_skip_delivers_nothing_for_its_length() {
+        let f = Faults {
+            skip_at: Some(800),
+            skip_ms: Some(300),
+            ..Faults::default()
+        };
+        assert!(!f.skipping(799));
+        assert!(f.skipping(800) && f.skipping(1_099));
+        assert!(!f.skipping(1_100));
+        assert!(!f.unavailable(900), "a skip isn't a failure");
     }
 
     #[test]

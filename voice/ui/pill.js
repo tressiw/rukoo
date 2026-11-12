@@ -35,6 +35,7 @@ const NOTICES = new Set([
   'pill.framesDropped.disk',
   'pill.screenFailed',
   'pill.screenPermission',
+  'pill.callSilent',
   'pill.screenChangeFailed',
   'pill.screenMoved'
 ]);
@@ -223,6 +224,9 @@ function meetingView(m, notice, view, args) {
   } else if (notice === 'pill.micBack') {
     view.indicator = glyph('mic', 14, 'green');
     view.label = text(t('pill.micBack'));
+  } else if (notice === 'pill.callSilent') {
+    view.indicator = glyph('info', 14, 'orange');
+    view.label = text(t('pill.callSilent'));
   } else if (SCREEN_NOTICES[notice]) {
     view.indicator = glyph('screen', 14, SCREEN_NOTICES[notice]);
     view.label = text(t(notice, notice === 'pill.screenMoved' ? { name: String(args.name ?? '') } : args));

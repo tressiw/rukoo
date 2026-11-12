@@ -744,6 +744,18 @@ test('the transcript says why the screen video stopped after a lost graphics dev
   assert.doesNotMatch(res.transcript, /frames go on/);
 });
 
+test('the transcript says when the call held only silence while another app played', async (t) => {
+  const { feed, call } = await setup(t);
+  feed([
+    startedEv(M),
+    ev('mark', M, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null })
+  ]);
+  const res = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.deepEqual(untag(res.transcript).trim().split('\n'), [
+    '[00:00:00] [Only silence on the call audio from here while another app played sound: the computer may not let Rukoo Voice record it]'
+  ]);
+});
+
 test('the transcript says the screen recording stopped when the screen recorder gave up', async (t) => {
   const { feed, call } = await setup(t);
   feed([
