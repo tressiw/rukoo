@@ -9,6 +9,7 @@ use tauri::{
 };
 use voice_engine::{EngineApi, Theme, UiOptions};
 
+use crate::appearance;
 use crate::catalog::{keys, Catalog};
 use crate::pill::place::Rect;
 
@@ -54,13 +55,6 @@ pub fn background(theme: Theme) -> Color {
     }
 }
 
-fn native_theme(theme: Theme) -> tauri::Theme {
-    match theme {
-        Theme::Dark => tauri::Theme::Dark,
-        Theme::Light => tauri::Theme::Light,
-    }
-}
-
 /// The top left that centres a window of `size` in `work`, kept inside it.
 pub fn centered(work: &Rect, size: (i32, i32)) -> (i32, i32) {
     let x = work.left + ((work.width() - size.0) / 2).max(0);
@@ -94,7 +88,6 @@ pub fn open(
             .min_inner_size(MIN, MIN)
             .resizable(true)
             .background_color(background(ui.theme))
-            .theme(Some(native_theme(ui.theme)))
             .focused(focus)
             .visible(false)
             .disable_drag_drop_handler();
@@ -102,6 +95,9 @@ pub fn open(
         builder = builder.data_directory(dir);
     }
     let window = builder.build()?;
+    // Not through the builder's `.theme(..)`: on macOS tao would pin the whole app with it.
+    appearance::apply_to_window(&window, &ui);
+    appearance::log_state(&window, "settings window built");
     place_under_cursor(&window);
     window.show()?;
     if focus {
@@ -135,7 +131,8 @@ pub fn apply_ui(app: &AppHandle, ui: &UiOptions, catalog: &Catalog) {
     };
     let _ = window.set_title(&catalog.text(ui.locale, keys::SETTINGS_TITLE));
     let _ = window.set_background_color(Some(background(ui.theme)));
-    let _ = window.set_theme(Some(native_theme(ui.theme)));
+    appearance::apply_to_window(&window, ui);
+    appearance::log_state(&window, "settings window restyled");
 }
 
 #[cfg(test)]

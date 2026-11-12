@@ -5,6 +5,7 @@
 // A release build has no console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appearance;
 mod args;
 #[cfg(any(windows, target_os = "macos"))]
 mod capture;
@@ -33,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use voice_engine::{ApiError, Edge, Notification, Theme, UiOptions};
@@ -155,9 +157,7 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             event: WindowEvent::ThemeChanged(_),
             ..
         } => {
-            if let Some(shared) = app.try_state::<Shared>() {
-                shared.sink.refresh_ui();
-            }
+            system_appearance_changed(app);
         }
         RunEvent::Exit => shut_down(app),
         _ => {}
@@ -166,6 +166,28 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
         0 => code,
         failed => failed,
     }
+}
+
+/// The system's theme changed: the engine learns the new look for the Settings that follow the
+/// system, and the windows take what it says. macOS says so through
+/// [`appearance::watch_system`], Windows through tao's `ThemeChanged`. It runs on a thread of its
+/// own because the engine and the windows both take their own locks.
+///
+/// macOS posts its notification before the user defaults the engine reads always show the new
+/// style, so a second look follows a moment later. It finds nothing to do when the first one
+/// already saw the change.
+fn system_appearance_changed(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        for pause in [Duration::ZERO, Duration::from_millis(500)] {
+            thread::sleep(pause);
+            let Some(shared) = app.try_state::<Shared>() else {
+                return;
+            };
+            shared.engine.system_looks_changed();
+            shared.sink.refresh_ui();
+        }
+    });
 }
 
 /// The webview's profile in the data folder, so a development copy never shares the installed
@@ -197,6 +219,7 @@ fn setup(
         } else {
             Theme::Dark
         },
+        theme_follows_system: true,
         locale: system::locale(),
         pill_edge: Edge::Bottom,
         hide_pill_from_capture: true,
@@ -265,6 +288,8 @@ fn setup(
     });
 
     sink.refresh_ui();
+    let handle = app.clone();
+    appearance::watch_system(move || system_appearance_changed(&handle));
     tray.update(engine.tray_state());
     let handle = app.clone();
     if let Err(error) = tray.install(move |action| tray_action(&handle, action)) {

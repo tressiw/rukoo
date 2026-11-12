@@ -2,6 +2,8 @@
 //! in, and a way to say why it can't start.
 
 use voice_engine::Locale;
+#[cfg(target_os = "macos")]
+use voice_engine::Theme;
 
 /// Windows' "app mode" setting. Missing means light, Windows' default.
 #[cfg(windows)]
@@ -25,11 +27,13 @@ pub fn prefers_light_theme() -> bool {
     result.is_err() || value != 0
 }
 
-/// macOS' appearance as the app shows it, Dark Aqua included when the user chose an automatic
-/// appearance that is dark now.
+/// What System Settings > Appearance shows now, read from the user defaults the way the engine
+/// does. Not from `NSApp.effectiveAppearance`: that only answers on the main thread, and an app
+/// that was given an appearance of its own reports that one instead of the system's.
 #[cfg(target_os = "macos")]
 pub fn prefers_light_theme() -> bool {
-    mac::appearance_name().is_none_or(|name| !is_dark_appearance(&name))
+    use voice_engine::services::System;
+    voice_engine::SystemInfo.theme() == Theme::Light
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -59,13 +63,6 @@ pub fn locale() -> Locale {
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn locale() -> Locale {
     locale_from_language(std::env::var("LANG").ok().as_deref())
-}
-
-/// The appearance names that mean dark mode: `NSAppearanceNameDarkAqua`, and the high-contrast
-/// variant System Settings' Increase contrast turns on.
-#[cfg(any(target_os = "macos", test))]
-fn is_dark_appearance(name: &str) -> bool {
-    name.contains("Dark")
 }
 
 /// The language Voice speaks, from a language tag such as `nl-NL` or `nl_NL.UTF-8`: Dutch for
@@ -105,17 +102,7 @@ pub fn fail(text: &str) {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
     use objc2_foundation::NSLocale;
-
-    /// NSApp's effective appearance: the system's, since Voice sets none of its own. AppKit only
-    /// answers this on the main thread.
-    pub fn appearance_name() -> Option<String> {
-        let mtm = MainThreadMarker::new()?;
-        let app = NSApplication::sharedApplication(mtm);
-        Some(app.effectiveAppearance().name().to_string())
-    }
 
     /// System Settings' first preferred language, such as `nl-NL`.
     pub fn preferred_language() -> Option<String> {
@@ -128,7 +115,8 @@ mod mac {
     /// waits for OK, because without its data folder Voice has nothing to show.
     #[cfg(not(debug_assertions))]
     pub fn show_alert(text: &str) {
-        use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplicationActivationPolicy};
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy};
         use objc2_foundation::NSString;
 
         let Some(mtm) = MainThreadMarker::new() else {
@@ -152,18 +140,6 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_dark_appearance_names_are_dark() {
-        assert!(is_dark_appearance("NSAppearanceNameDarkAqua"));
-        assert!(is_dark_appearance(
-            "NSAppearanceNameAccessibilityHighContrastDarkAqua"
-        ));
-        assert!(!is_dark_appearance("NSAppearanceNameAqua"));
-        assert!(!is_dark_appearance(
-            "NSAppearanceNameAccessibilityHighContrastAqua"
-        ));
-    }
 
     #[test]
     fn only_dutch_preferences_are_dutch() {

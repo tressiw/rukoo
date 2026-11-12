@@ -66,7 +66,7 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
 | `meeting.stopEnabled` | bool | Draw the stop button. `false` during a dictation in a meeting and in `processing` and `failed`. |
 | `meeting.rukooConnected` | bool | Not drawn in 0.1. |
 | `edge` | string | `bottom` or `top`: the direction of the entry animation. |
-| `theme` | string | `light` or `dark`, resolved from Settings (System follows Windows). |
+| `theme` | string | `light` or `dark`, resolved from Settings. System follows Windows or macOS, and a state with the new theme arrives when the system changes while Voice runs. |
 | `locale` | string | `en` or `nl`, resolved from Settings. |
 | `dev` | bool, optional | Shows a small "Dev" tag, so a development pill can't be mistaken for the installed one. Send `true` when `RUKOO_VOICE_DATA_DIR` is set. |
 

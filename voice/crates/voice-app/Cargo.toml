@@ -29,7 +29,8 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The objc2 family tauri 2.12.5, tao 0.37.2 and wry 0.57.1 build against, so the WKWebView handle is one
-# type. The app reads its theme and language from AppKit, says in an NSAlert why it can't start,
+# type. The app reads its language from AppKit, gives its windows an appearance, hears the system's
+# theme change, says in an NSAlert why it can't start,
 # captures its own pages through WKWebView, posts notifications through Notification Center and
 # chooses folders with NSOpenPanel.
 # `objc2-user-notifications` loses its default features so it doesn't bring in Core Location.
@@ -64,12 +65,16 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 ] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
+  "block2",
   "NSArray",
   "NSBundle",
   "NSData",
   "NSDictionary",
+  "NSDistributedNotificationCenter",
   "NSError",
   "NSLocale",
+  "NSNotification",
+  "NSOperation",
   "NSString",
   "NSURL",
 ] }

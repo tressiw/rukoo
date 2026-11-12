@@ -197,6 +197,10 @@ impl Pill {
         self.sent.clone()
     }
 
+    pub fn looks(&self) -> Looks {
+        self.looks
+    }
+
     pub fn set_looks(&mut self, looks: Looks) {
         self.looks = looks;
     }
