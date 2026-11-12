@@ -24,6 +24,47 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The same objc2 0.6 and framework versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 use, so their classes are one
+# type. The app reads its language from AppKit, gives its windows an appearance, hears the system's theme change,
+# says in an NSAlert why it can't start and posts notifications through Notification Center.
+# `objc2-user-notifications` loses its default features so it doesn't bring in Core Location for nothing.
+block2 = "=0.6.2"
+objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSBundle",
+  "NSDistributedNotificationCenter",
+  "NSError",
+  "NSGeometry",
+  "NSLocale",
+  "NSNotification",
+  "NSOperation",
+  "NSString",
+  "block2",
+] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationSound",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSAlert",
+  "NSAppearance",
+  "NSApplication",
+  "NSColor",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSView",
+  "NSWindow",
+] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -49,31 +90,3 @@ windows = { version = "=0.62.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# The same objc2 versions tauri 2.12.5, tao 0.37.2 and wry 0.57.1 use: the app reads its language
-# from AppKit, gives its windows an appearance, hears the system's theme change and says in an
-# NSAlert why it can't start.
-block2 = "=0.6.2"
-objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
-  "std",
-  "NSAlert",
-  "NSAppearance",
-  "NSApplication",
-  "NSColor",
-  "NSResponder",
-  "NSRunningApplication",
-  "NSView",
-  "NSWindow",
-] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = [
-  "std",
-  "NSArray",
-  "NSDistributedNotificationCenter",
-  "NSGeometry",
-  "NSLocale",
-  "NSNotification",
-  "NSOperation",
-  "NSString",
-  "block2",
-] }
