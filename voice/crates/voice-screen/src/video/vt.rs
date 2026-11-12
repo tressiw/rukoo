@@ -235,7 +235,8 @@ impl Encoder {
     }
 
     /// Encodes `picture` at meeting time `at_ms`, forcing a keyframe when `keyframe` is set, and
-    /// returns its samples. The samples are AVCC, as `voice_screen_files::fmp4` writes them.
+    /// returns its samples, none when the encoder dropped the frame. The samples are AVCC, as
+    /// `voice_screen_files::fmp4` writes them.
     pub fn encode(
         &mut self,
         picture: &PixelBuffer,
@@ -394,18 +395,27 @@ unsafe extern "C-unwind" fn output_callback(
     refcon: *mut c_void,
     _source: *mut c_void,
     status: i32,
-    _flags: VTEncodeInfoFlags,
+    flags: VTEncodeInfoFlags,
     sample_buffer: *mut CMSampleBuffer,
 ) {
     let Some(sink) = NonNull::new(refcon.cast::<Sink>()).map(|p| unsafe { p.as_ref() }) else {
         return;
     };
-    if status != 0 || sample_buffer.is_null() {
-        let mut state = sink.state();
-        state.completed += 1;
-        state.failure.get_or_insert(status);
-        sink.ready.notify_all();
-        return;
+    match outcome(status, flags, !sample_buffer.is_null()) {
+        Outcome::Encoded => {}
+        Outcome::Dropped => {
+            // Done, without a sample: `encode` returns none for this frame.
+            sink.state().completed += 1;
+            sink.ready.notify_all();
+            return;
+        }
+        Outcome::Failed(status) => {
+            let mut state = sink.state();
+            state.completed += 1;
+            state.failure.get_or_insert(status);
+            sink.ready.notify_all();
+            return;
+        }
     }
     // SAFETY: the callback's sample buffer is valid for the call.
     let sample = unsafe { &*sample_buffer };
@@ -434,6 +444,27 @@ unsafe extern "C-unwind" fn output_callback(
         state.completed += 1;
     }
     sink.ready.notify_all();
+}
+
+/// What one callback says about its frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Encoded,
+    /// The encoder dropped the frame, as a real-time session may: no sample and no failure.
+    /// `VTCompressionSession.h` says the sample buffer is NULL "if compression was not
+    /// successful or the frame was dropped", with `kVTEncodeInfo_FrameDropped` in the flags.
+    Dropped,
+    Failed(i32),
+}
+
+fn outcome(status: i32, flags: VTEncodeInfoFlags, has_sample: bool) -> Outcome {
+    if status != 0 {
+        Outcome::Failed(status)
+    } else if !has_sample || flags.contains(VTEncodeInfoFlags::FrameDropped) {
+        Outcome::Dropped
+    } else {
+        Outcome::Encoded
+    }
 }
 
 /// A sample buffer's bytes, copied out of the block buffer.
@@ -662,6 +693,27 @@ fn profile_key() -> &'static CFString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame the real-time encoder drops is no failure: only a status says that.
+    #[test]
+    fn a_dropped_frame_is_not_a_failure() {
+        let none = VTEncodeInfoFlags(0);
+        assert_eq!(outcome(0, none, true), Outcome::Encoded);
+        assert_eq!(outcome(0, none, false), Outcome::Dropped);
+        assert_eq!(
+            outcome(0, VTEncodeInfoFlags::FrameDropped, true),
+            Outcome::Dropped
+        );
+        assert_eq!(
+            outcome(0, VTEncodeInfoFlags::FrameDropped, false),
+            Outcome::Dropped
+        );
+        assert_eq!(outcome(-12902, none, false), Outcome::Failed(-12902));
+        assert_eq!(
+            outcome(-12902, VTEncodeInfoFlags::FrameDropped, false),
+            Outcome::Failed(-12902)
+        );
+    }
 
     #[test]
     fn the_list_has_an_h264_encoder() {

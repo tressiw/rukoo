@@ -149,7 +149,9 @@ impl MacVideoWriter {
             .encoder
             .encode(&input, at, sync)
             .map_err(VideoError::Encoder)?;
-        self.first = false;
+        // A frame the encoder dropped leaves no sample, so the file's first keyframe is still
+        // to come and the next frame asks for it again.
+        self.first &= samples.is_empty();
         for sample in samples {
             mp4.add(at, sample.sync, &sample.data).map_err(classify)?;
         }
