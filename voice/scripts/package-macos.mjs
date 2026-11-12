@@ -70,7 +70,7 @@ const HELPER_IDS = {
   'rukoo-voice-screen': 'screen',
 };
 const NEMO_FOLDER = 'nemo_speech';
-// The six dylibs voice/nemo-runtime/build-macos.sh builds, from spike S3.
+// The six dylibs voice/nemo-runtime/build-macos.sh builds.
 const NEMO_DYLIBS = [
   'libnemo_speech_asr_c.dylib',
   'libnemo_speech_asr.dylib',
@@ -209,9 +209,9 @@ function buildEnv() {
 
 // Where voice-core's speaker lookup finds the runtime. On macOS it is not here yet: `locate_runtime` looks in
 // `<exe dir>/nemo_speech` and owns the process only when `PLATFORM_SUPPORTED` covers macOS, and `verify_voice` accepts
-// manifest format 1 only. The speaker task makes Contents/Resources/nemo_speech (exe_dir/../Resources/nemo_speech) a
-// folder it searches and teaches it the format-2 macos-aarch64 file list. Until then this runtime is packaged and
-// signed but a release copy won't find it, which this script says out loud rather than hiding.
+// manifest format 1 only. Once the macOS speaker worker lands, voice-core also searches Contents/Resources/nemo_speech
+// (exe_dir/../Resources/nemo_speech) and reads the format-2 macos-aarch64 file list. Until then this runtime is
+// packaged and signed but a release copy won't find it, which this script says out loud rather than hiding.
 function resolveRuntime() {
   if (ARGS.noSpeakers) {
     console.warn('');
@@ -335,7 +335,7 @@ function addRuntime(appDir, runtime) {
   // The copied files are what ships; check them against runtime.json again rather than trusting the copy.
   verifyRuntime(resources);
   console.log(`  ${NEMO_FOLDER}: ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files checked against runtime.json`);
-  console.log(`  note: voice-core does not search Contents/Resources/nemo_speech yet and speaker labels are Windows-only in this build; the speaker task changes that lookup`);
+  console.log(`  note: voice-core does not search Contents/Resources/nemo_speech yet and speaker labels are Windows-only in this build; the macOS speaker worker adds that lookup`);
 }
 
 // ---------- signing ----------
