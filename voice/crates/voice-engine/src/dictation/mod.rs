@@ -47,6 +47,9 @@ const DEFER_LIMIT: Duration = Duration::from_secs(300);
 const DEFER_POLL: Duration = Duration::from_millis(20);
 /// How often a held dictation checks that the meeting's current recorder knows about it.
 const MARK_RETRY: Duration = Duration::from_millis(100);
+/// How long a session release waits to be handled. Closing a microphone takes milliseconds, but
+/// a press whose microphone is still opening is handled first.
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
 
 pub(crate) struct Dictation {
     ptt: Mutex<PushToTalk>,
@@ -252,7 +255,38 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
 /// lock screen, or the Mac sleeping. The app hears those from the system and
 /// calls this, which treats the held hotkey as released and stops the
 /// dictation. A key-up that arrives later changes nothing.
+///
+/// The release runs on the hotkey handler's thread, after the presses and
+/// releases already queued there, so push-to-talk changes on one thread only.
+/// A release that came in while a press was still opening the microphone
+/// therefore stops the recording that press stored, instead of finding nothing
+/// to stop and leaving the microphone on. Returns once the release was
+/// handled, or after [`RELEASE_WAIT`].
 pub(crate) fn release_all(core: &Arc<Core>) {
+    if core.shutting_down() {
+        return;
+    }
+    let in_order = lock(&core.dictation.poller)
+        .as_ref()
+        .and_then(HotkeyPoller::in_order);
+    let Some(in_order) = in_order else {
+        // No poller, so no press can be in flight.
+        release_now(core);
+        return;
+    };
+    let weak = Arc::downgrade(core);
+    let queued = in_order.run(move || {
+        if let Some(core) = weak.upgrade() {
+            release_now(&core);
+        }
+    });
+    if let Some(done) = queued {
+        let _ = done.recv_timeout(RELEASE_WAIT);
+    }
+}
+
+/// [`release_all`] on the hotkey handler's thread.
+fn release_now(core: &Arc<Core>) {
     if core.shutting_down() {
         return;
     }

@@ -47,15 +47,28 @@ impl HotkeyEvent {
     }
 }
 
+/// What the `hotkey-callbacks` thread handles, one at a time, in the order it arrived.
+enum Dispatch {
+    Event(HotkeyEvent),
+    Run(Box<dyn FnOnce() + Send>),
+}
+
 #[derive(Debug, Default)]
 struct Shared {
     stopped: Mutex<bool>,
     wake: Condvar,
+    /// The dispatcher's queue for [`InOrder`]. Stopping drops it, so the
+    /// dispatcher ends once the polling thread has dropped its sender too.
+    queue: Mutex<Option<Sender<Dispatch>>>,
 }
 
 impl Shared {
     fn stop(&self) {
         *self.stopped.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         self.wake.notify_all();
     }
 
@@ -85,6 +98,30 @@ impl Stopper {
 
     pub fn is_stopped(&self) -> bool {
         self.0.is_stopped()
+    }
+}
+
+/// Runs work on a [`HotkeyPoller`]'s `hotkey-callbacks` thread, after the
+/// presses and releases already queued there. Whatever the handler keeps,
+/// such as push-to-talk's state, then changes on that one thread only, so work
+/// from another thread can't land between a press and the start it causes.
+#[derive(Clone, Debug)]
+pub struct InOrder(Arc<Shared>);
+
+impl InOrder {
+    /// Queues `work` behind the events already waiting. The receiver yields
+    /// once it has run, and disconnects without yielding when the poller stops
+    /// first or the work panics. `None` once the poller has stopped. Don't wait
+    /// on the receiver from the handler itself: the work runs after it.
+    pub fn run(&self, work: impl FnOnce() + Send + 'static) -> Option<Receiver<()>> {
+        let (done, finished) = mpsc::channel();
+        let queue = self.0.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let work = Box::new(move || {
+            work();
+            let _ = done.send(());
+        });
+        queue.as_ref()?.send(Dispatch::Run(work)).ok()?;
+        Some(finished)
     }
 }
 
@@ -149,7 +186,8 @@ impl HotkeyPoller {
         C: FnMut() -> Instant + Send + 'static,
     {
         let shared = Arc::new(Shared::default());
-        let poller = start_polling(keys, key_state, clock, interval, tx, &shared)?;
+        let send = move |event| tx.send(event).is_ok();
+        let poller = start_polling(keys, key_state, clock, interval, send, &shared)?;
         Ok(HotkeyPoller {
             shared,
             poller: Some(poller),
@@ -187,6 +225,7 @@ impl HotkeyPoller {
     {
         let shared = Arc::new(Shared::default());
         let (tx, rx) = mpsc::channel();
+        *shared.queue.lock().unwrap_or_else(PoisonError::into_inner) = Some(tx.clone());
         let dispatcher = thread::Builder::new()
             .name("hotkey-callbacks".into())
             .spawn({
@@ -194,8 +233,16 @@ impl HotkeyPoller {
                 move || dispatch(rx, &shared, handler)
             })
             .map_err(thread_error)?;
-        // If polling can't start, its sender is dropped and the dispatcher ends.
-        let poller = start_polling(keys, key_state, clock, interval, tx, &shared)?;
+        // If polling can't start, its sender is dropped, the queue's goes with
+        // the stop and the dispatcher ends.
+        let send = move |event| tx.send(Dispatch::Event(event)).is_ok();
+        let poller = match start_polling(keys, key_state, clock, interval, send, &shared) {
+            Ok(poller) => poller,
+            Err(err) => {
+                shared.stop();
+                return Err(err);
+            }
+        };
         Ok(HotkeyPoller {
             shared,
             poller: Some(poller),
@@ -207,6 +254,14 @@ impl HotkeyPoller {
     /// queued but not yet handled are dropped, as in Ownkey.
     pub fn stop(&self) {
         self.shared.stop();
+    }
+
+    /// A handle that runs work on the handler's thread, in order with the
+    /// events. `None` for a poller that sends its events to a channel.
+    pub fn in_order(&self) -> Option<InOrder> {
+        self.dispatcher
+            .as_ref()
+            .map(|_| InOrder(Arc::clone(&self.shared)))
     }
 
     /// A handle that stops this poller, for handlers and other threads.
@@ -243,17 +298,18 @@ impl Drop for HotkeyPoller {
     }
 }
 
-fn start_polling<S, C>(
+fn start_polling<S, C, T>(
     keys: Vec<Key>,
     key_state: S,
     clock: C,
     interval: Duration,
-    tx: Sender<HotkeyEvent>,
+    send: T,
     shared: &Arc<Shared>,
 ) -> Result<JoinHandle<()>, InputError>
 where
     S: FnMut(Key) -> bool + Send + 'static,
     C: FnMut() -> Instant + Send + 'static,
+    T: FnMut(HotkeyEvent) -> bool + Send + 'static,
 {
     let mut unique = Vec::with_capacity(keys.len());
     for key in keys {
@@ -264,20 +320,23 @@ where
     let shared = Arc::clone(shared);
     thread::Builder::new()
         .name("hotkeys".into())
-        .spawn(move || poll(&unique, key_state, clock, interval, &tx, &shared))
+        .spawn(move || poll(&unique, key_state, clock, interval, send, &shared))
         .map_err(thread_error)
 }
 
-fn poll<S, C>(
+/// Reads every key each `interval` and sends each change; `send` returns
+/// `false` once nobody listens.
+fn poll<S, C, T>(
     keys: &[Key],
     mut key_state: S,
     mut clock: C,
     interval: Duration,
-    tx: &Sender<HotkeyEvent>,
+    mut send: T,
     shared: &Shared,
 ) where
     S: FnMut(Key) -> bool,
     C: FnMut() -> Instant,
+    T: FnMut(HotkeyEvent) -> bool,
 {
     // Starts with nothing held, so a key that is already down counts as a
     // press, as key repeat did for Ownkey's old hook.
@@ -286,7 +345,7 @@ fn poll<S, C>(
     loop {
         let now = clock();
         if now.saturating_duration_since(last_read) > STALL_LIMIT
-            && !release_after_stall(keys, &mut held, &mut key_state, tx, shared)
+            && !release_after_stall(keys, &mut held, &mut key_state, &mut send, shared)
         {
             return;
         }
@@ -305,7 +364,7 @@ fn poll<S, C>(
             } else {
                 HotkeyEvent::Released(key)
             };
-            if tx.send(event).is_err() {
+            if !send(event) {
                 return; // nobody is listening any more
             }
         }
@@ -332,7 +391,7 @@ fn release_after_stall<S>(
     keys: &[Key],
     held: &mut [bool],
     key_state: &mut S,
-    tx: &Sender<HotkeyEvent>,
+    send: &mut dyn FnMut(HotkeyEvent) -> bool,
     shared: &Shared,
 ) -> bool
 where
@@ -349,25 +408,28 @@ where
         if shared.is_stopped() {
             return false;
         }
-        if tx.send(HotkeyEvent::Released(key)).is_err() {
+        if !send(HotkeyEvent::Released(key)) {
             return false;
         }
     }
     true
 }
 
-fn dispatch<H>(rx: Receiver<HotkeyEvent>, shared: &Shared, mut handler: H)
+fn dispatch<H>(rx: Receiver<Dispatch>, shared: &Shared, mut handler: H)
 where
     H: FnMut(HotkeyEvent),
 {
-    // Ends when the polling thread exits and drops its sender.
-    for event in rx {
+    // Ends when the polling thread exits and the stop dropped the queue.
+    for item in rx {
         if shared.is_stopped() {
             return;
         }
         // One failed recording must not end push-to-talk. The panic hook has
         // already reported the panic.
-        let _ = panic::catch_unwind(AssertUnwindSafe(|| handler(event)));
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| match item {
+            Dispatch::Event(event) => handler(event),
+            Dispatch::Run(work) => work(),
+        }));
     }
 }
 
@@ -390,7 +452,7 @@ mod tests {
             &[Key::F13, Key::F14],
             &mut held,
             &mut state,
-            &tx,
+            &mut |event| tx.send(event).is_ok(),
             &Shared::default()
         ));
         assert_eq!(
@@ -404,7 +466,7 @@ mod tests {
             &[Key::F13, Key::F14],
             &mut held,
             &mut state,
-            &tx,
+            &mut |event| tx.send(event).is_ok(),
             &Shared::default()
         ));
         assert_eq!(
@@ -424,7 +486,7 @@ mod tests {
             &[Key::F13],
             &mut held,
             &mut state,
-            &tx,
+            &mut |event| tx.send(event).is_ok(),
             &Shared::default()
         ));
     }

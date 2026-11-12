@@ -403,12 +403,20 @@ pub fn tone(blocks: usize, amplitude: f32) -> MicPlan {
 #[derive(Default)]
 pub struct FakeMic {
     pub plans: Mutex<VecDeque<MicPlan>>,
+    /// Opens started.
     pub opens: AtomicUsize,
+    /// Opens that finished, after [`FakeMic::open_delay`].
+    pub opened: AtomicUsize,
+    /// Streams open right now.
+    pub streams: Arc<AtomicUsize>,
+    /// How long an open takes, as a Bluetooth headset switching to its microphone does.
+    pub open_delay: Mutex<Duration>,
     pub delivered: Arc<AtomicUsize>,
 }
 
 struct FakeStream {
     closed: Arc<AtomicBool>,
+    streams: Arc<AtomicUsize>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -416,6 +424,7 @@ impl MicStream for FakeStream {}
 
 impl Drop for FakeStream {
     fn drop(&mut self) {
+        self.streams.fetch_sub(1, Ordering::SeqCst);
         self.closed.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -426,6 +435,9 @@ impl Drop for FakeStream {
 impl Microphone for FakeMic {
     fn open(&self, mut on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
+        let delay = *lock(&self.open_delay);
+        thread::sleep(delay);
+        self.opened.fetch_add(1, Ordering::SeqCst);
         let plan = lock(&self.plans)
             .pop_front()
             .unwrap_or_else(|| tone(40, 8000.0));
@@ -448,8 +460,10 @@ impl Microphone for FakeMic {
                 }
             }
         });
+        self.streams.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FakeStream {
             closed,
+            streams: Arc::clone(&self.streams),
             thread: Some(thread),
         }))
     }

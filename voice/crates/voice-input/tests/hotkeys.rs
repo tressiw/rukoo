@@ -316,6 +316,66 @@ fn a_key_still_down_across_a_stalled_poll_keeps_its_hold() {
     poller.join();
 }
 
+/// Work from another thread, such as the app releasing a held key when the screen locks, runs on
+/// the handler's thread after the events queued before it: a release that arrives while a slow
+/// press is still handled can't overtake that press.
+#[test]
+fn work_from_another_thread_runs_after_the_events_queued_before_it() {
+    let (keyboard, opening) = (Keyboard::new(1, &[]), Arc::new(Latch::new(false)));
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let poller = listen(&keyboard, {
+        let (log, opening) = (Arc::clone(&log), Arc::clone(&opening));
+        move |event| {
+            log.lock().unwrap().push(format!("{event:?}"));
+            if event == Pressed(Key::RightAlt) {
+                opening.wait();
+            }
+        }
+    });
+    keyboard.set(Key::RightAlt, true);
+    assert!(wait_for(|| log.lock().unwrap().len() == 1));
+    keyboard.set(Key::RightAlt, false);
+    // The release is queued while the press is still handled.
+    thread::sleep(INTERVAL * 4);
+    let done = poller
+        .in_order()
+        .expect("a handler poller runs work in order")
+        .run({
+            let log = Arc::clone(&log);
+            move || log.lock().unwrap().push("work".into())
+        })
+        .expect("the poller runs");
+    assert_eq!(
+        done.recv_timeout(Duration::from_millis(100)),
+        Err(RecvTimeoutError::Timeout),
+        "the work waits for the press"
+    );
+    opening.open();
+    assert_eq!(done.recv_timeout(PATIENCE), Ok(()));
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["Pressed(RightAlt)", "Released(RightAlt)", "work"]
+    );
+    poller.join();
+}
+
+/// Only a poller with a handler thread runs work, and only until it stops. A handle that is still
+/// around doesn't keep the handler thread alive: `join` returns.
+#[test]
+fn work_runs_only_on_a_running_handler_poller() {
+    let keyboard = Keyboard::new(1, &[]);
+    let (tx, _rx) = mpsc::channel();
+    let channel = HotkeyPoller::spawn_with(vec![Key::F13], tx, keyboard.state(), INTERVAL).unwrap();
+    assert!(channel.in_order().is_none(), "no handler thread to run on");
+    channel.join();
+    let poller = listen(&keyboard, |_| {});
+    let in_order = poller.in_order().unwrap();
+    let done = in_order.run(|| {}).unwrap();
+    assert_eq!(done.recv_timeout(PATIENCE), Ok(()));
+    poller.join();
+    assert!(in_order.run(|| {}).is_none(), "stopped: nothing runs");
+}
+
 #[test]
 fn the_poller_ends_when_nobody_listens() {
     let keyboard = Keyboard::new(1, &[]);

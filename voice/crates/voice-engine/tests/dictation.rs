@@ -4,7 +4,7 @@
 mod support;
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use support::{lock, tone, wait_for, Harness, MicPlan};
@@ -487,6 +487,44 @@ fn a_lost_key_up_stops_the_recording_once() {
     wait_for("the second insertion", || {
         h.input.texts() == ["spoken", "again"]
     });
+    engine.shutdown();
+}
+
+/// The screen locks while the microphone is still opening, which takes a Bluetooth headset a second
+/// or more. The release has to stop the recording once the microphone is open: if it ran before the
+/// recording existed, it would find nothing to stop, the real key-up would be ignored and the
+/// microphone would stay open with the pill on Listening.
+#[test]
+fn a_release_while_the_microphone_opens_stops_the_recording() {
+    let h = Harness::new("slow-open");
+    h.config(json!({}));
+    *lock(&h.mic.open_delay) = Duration::from_millis(500);
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    wait_for("the microphone to start opening", || {
+        h.mic.opens.load(Ordering::SeqCst) == 1
+    });
+    engine.release_hotkeys();
+    h.keys.up(Key::F13);
+    wait_for("the microphone to finish opening", || {
+        h.mic.opened.load(Ordering::SeqCst) == 1
+    });
+    // Well inside the watchdog's two reads a second apart, so this is the release's doing.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while h.mic.streams.load(Ordering::SeqCst) != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the microphone stayed open after the release"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_ne!(h.sink.last_pill().unwrap().phase, PillPhase::Listening);
+    // Push-to-talk let go of the key, so the next hold dictates.
+    *lock(&h.mic.open_delay) = Duration::ZERO;
+    h.speech.say("next");
+    h.hold(Key::F13);
+    wait_for("the next insertion", || h.input.texts() == ["next"]);
     engine.shutdown();
 }
 
