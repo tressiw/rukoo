@@ -560,10 +560,28 @@ fn kinds(lines: &[serde_json::Value]) -> Vec<String> {
 /// The environment `orphan_after` reads is per process, so tests that set it take turns.
 static ENV: Mutex<()> = Mutex::new(());
 
+/// True, after printing why, when CI's host probe found the host too stalled for timing windows
+/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). Windows and
+/// Linux CI never set it.
+fn skip_on_slow_host(test: &str) -> bool {
+    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    if slow {
+        eprintln!(
+            "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
+        );
+    }
+    slow
+}
+
 /// A whole session with a fake backend: the journal lines a meeting's screen folder gets, the
 /// frames, the video file and its `video_end`, and the stop the recorder asks for.
 #[test]
 fn a_session_runs_to_the_recorders_stop() {
+    // The session is paced in real time against a fake clock and the wait below has a 15 s deadline;
+    // a host that runs it at under half speed times out with nothing wrong.
+    if skip_on_slow_host("a_session_runs_to_the_recorders_stop") {
+        return;
+    }
     let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let meeting = Meeting::new("stop");
     let platform = FakePlatform::new(true);
