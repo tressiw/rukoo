@@ -237,9 +237,11 @@ mod tests {
         let (boot, awake) = paired(|| reads.next().unwrap());
         assert!(boot.abs_diff(3_001_000) <= 2, "{boot}");
         assert!(awake.abs_diff(3_000_000) <= 2, "{awake}");
-        // The real counters pair up, and the pair is now.
+        // The real counters pair up, and the pair is now. The continuous counter is never behind
+        // the absolute one; its two reads bracket the absolute read, so their middle may be up to
+        // half the gap before it.
         let (boot, awake) = paired(|| unsafe { (mach_continuous_time(), mach_absolute_time()) });
-        assert!(boot >= awake, "{boot} vs {awake}");
+        assert!(boot + PAIR_GAP >= awake, "{boot} vs {awake}");
         assert!(boot_100ns() >= boot);
     }
 
