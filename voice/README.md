@@ -4,7 +4,7 @@ Rukoo Voice is a desktop app for push-to-talk dictation that also records meetin
 
 ## What it does
 
-**Dictation.** Hold a key, speak and let go. Voice types the text into whichever app has focus. Hold the rewrite key over selected text to rewrite it with a spoken instruction. Audio goes to the speech provider you configured with your own key, or stays on your computer with a local model.
+**Dictation.** Hold a key, speak and let go. Voice types the text into whichever app has focus. Hold the rewrite key over selected text to rewrite it with a spoken instruction. Audio goes to the speech provider you configured with your own key, or stays on your computer with a local model. One dictation lasts at most 10 minutes; then it stops as if you let go, and a notification says so. A key that reads up for two seconds stops a dictation even when its release got lost. On a Mac, a hold of Right Option, Command, Control or Shift that typed a character or a shortcut isn't a dictation: when another key went down during the hold, Voice drops the recording at the release and sends nothing.
 
 **Meetings.** Voice records your microphone, the call audio and, if you want, your screen. It transcribes while you talk and streams the transcript to Rukoo. Rukoo shows the meeting next to your agent, so you can ask the agent questions during the call. Afterwards the agent writes the notes with its own meeting-notes skill and stores them where you keep notes.
 

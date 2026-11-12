@@ -131,8 +131,24 @@ impl Key {
     /// the capture against the release is far less reliable. Holding Right Alt
     /// or Right Shift while Ctrl+C is sent would make it Ctrl+Alt+C or
     /// Ctrl+Shift+C, so those wait for the release.
+    ///
+    /// On a Mac the copy is Cmd+C, and only Right Command (Command itself) and
+    /// keys that are no modifier leave it alone. Right Control would make it
+    /// Ctrl+Cmd+C unless the posted flags beat the held key, which nobody has
+    /// seen happen, so it waits for the release too.
     pub fn can_copy_while_held(self) -> bool {
-        !matches!(self, Key::RightAlt | Key::RightShift)
+        self.copies_while_held_on(cfg!(target_os = "macos"))
+    }
+
+    fn copies_while_held_on(self, mac: bool) -> bool {
+        if mac {
+            matches!(
+                self,
+                Key::RightCommand | Key::F13 | Key::F14 | Key::F15 | Key::Pause | Key::ScrollLock
+            )
+        } else {
+            !matches!(self, Key::RightAlt | Key::RightShift)
+        }
     }
 }
 
@@ -264,7 +280,7 @@ mod tests {
         // REWRITE_PRESS_CAPTURE_HOTKEYS, ownkey.py:195-199, plus Right Command.
         let press_capture: Vec<&str> = Key::ALL
             .into_iter()
-            .filter(|k| k.can_copy_while_held())
+            .filter(|k| k.copies_while_held_on(false))
             .map(Key::name)
             .collect();
         assert_eq!(
@@ -278,6 +294,22 @@ mod tests {
                 "pause",
                 "scroll lock"
             ]
+        );
+    }
+
+    /// Cmd+C goes out while the key is held only when the key can't add a
+    /// modifier to it: Right Command and keys that are no modifier.
+    #[test]
+    fn a_mac_copies_while_held_only_for_command_and_the_function_keys() {
+        let press_capture: Vec<&str> = Key::MACOS
+            .into_iter()
+            .filter(|k| k.copies_while_held_on(true))
+            .map(Key::name)
+            .collect();
+        assert_eq!(press_capture, ["right command", "f13", "f14", "f15"]);
+        assert_eq!(
+            Key::RightCtrl.can_copy_while_held(),
+            !cfg!(target_os = "macos")
         );
     }
 }

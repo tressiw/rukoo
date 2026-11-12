@@ -41,6 +41,7 @@ objc2-application-services = { version = "=0.3.2", default-features = false, fea
   "AXError",
   "AXUIElement",
   "HIServices",
+  "libc",
 ] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",

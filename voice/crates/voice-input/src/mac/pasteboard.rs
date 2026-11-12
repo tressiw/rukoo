@@ -13,8 +13,11 @@
 
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
+use std::sync::{Mutex, PoisonError};
+
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
+    NSPasteboard, NSPasteboardAccessBehavior, NSPasteboardContentsOptions, NSPasteboardItem,
+    NSPasteboardType, NSPasteboardTypeString, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
@@ -95,6 +98,24 @@ pub(crate) fn plan_restore(current: u32, expected: Option<u32>) -> RestorePlan {
     }
 }
 
+/// The general pasteboard's access setting, `None` before macOS 15.4, which has no such setting.
+fn access_behavior() -> Option<NSPasteboardAccessBehavior> {
+    if objc2::available!(macos = 15.4) {
+        Some(autoreleasepool(|_| {
+            NSPasteboard::generalPasteboard().accessBehavior()
+        }))
+    } else {
+        None
+    }
+}
+
+/// Whether Voice may read what another app copied without macOS asking the user. The general
+/// pasteboard's default from macOS 15.4 is to ask at a programmatic read, and Voice's snapshot
+/// is one, so only the user's "Always allow" counts, or a system without the setting.
+pub(crate) fn reads_allowed(behavior: Option<NSPasteboardAccessBehavior>) -> bool {
+    behavior.is_none_or(|behavior| behavior == NSPasteboardAccessBehavior::AlwaysAllow)
+}
+
 /// The general pasteboard. Its methods take `&mut self` only to fit
 /// [`Clipboard`]; the pasteboard is process-wide.
 pub(crate) struct Pasteboard;
@@ -104,6 +125,10 @@ impl Clipboard for Pasteboard {
 
     fn sequence(&self) -> u32 {
         autoreleasepool(|_| count(&NSPasteboard::generalPasteboard()))
+    }
+
+    fn may_read(&self) -> bool {
+        reads_allowed(access_behavior())
     }
 
     fn snapshot(&mut self) -> Result<PasteboardSnapshot, InputError> {
@@ -127,10 +152,16 @@ impl Clipboard for Pasteboard {
         })
     }
 
+    /// Voice's own text stays on this Mac: with Handoff on, Universal Clipboard would offer it to
+    /// the user's other devices, where the Concealed and Transient markers mean nothing. The
+    /// count `prepareForNewContentsWithOptions` returns is the one this text keeps; the writes
+    /// after it don't change it, and a count read at the end could be someone else's copy.
     fn set_text(&mut self, text: &str) -> Result<u32, InputError> {
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
-            board.clearContents();
+            let ours = board
+                .prepareForNewContentsWithOptions(NSPasteboardContentsOptions::CurrentHostOnly)
+                as u32;
             let string = NSString::from_str(text);
             if !board.setString_forType(&string, string_type()) {
                 return Err(InputError::Clipboard(
@@ -148,7 +179,7 @@ impl Clipboard for Pasteboard {
                     )));
                 }
             }
-            Ok(count(&board))
+            Ok(ours)
         })
     }
 
@@ -172,6 +203,15 @@ impl Clipboard for Pasteboard {
     ) -> Result<bool, InputError> {
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
+            // Built before the last look: a type that is refused can't leave
+            // the pasteboard empty, and the look stays close to the write.
+            let items = items(snapshot);
+            if items.is_empty() && !snapshot.items.is_empty() {
+                // Nothing of the user's would go back: leave what is there.
+                return Err(InputError::Clipboard(
+                    "The pasteboard refused the copied items.".into(),
+                ));
+            }
             // The last look before the write. AppKit can't hold the
             // pasteboard closed, so a copy landing after this check and
             // before `clearContents` is the one case Voice can't see.
@@ -179,40 +219,41 @@ impl Clipboard for Pasteboard {
                 return Ok(false);
             }
             board.clearContents();
-            if snapshot.items.is_empty() {
+            if items.is_empty() {
                 return Ok(true);
             }
-            write_items(&board, snapshot)?;
+            let objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+                .into_iter()
+                .map(ProtocolObject::from_retained)
+                .collect();
+            if !board.writeObjects(&NSArray::from_retained_slice(&objects)) {
+                return Err(InputError::Clipboard(
+                    "The pasteboard refused the copied items.".into(),
+                ));
+            }
             Ok(true)
         })
     }
 }
 
-/// Puts every item and type of `snapshot` back on the open pasteboard.
-fn write_items(board: &NSPasteboard, snapshot: &PasteboardSnapshot) -> Result<(), InputError> {
-    let mut objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
-        Vec::with_capacity(snapshot.items.len());
+/// The items of `snapshot`, ready to write. A type an item refuses is left out and the rest go
+/// back, as on Windows, where a format that fails is skipped; an item left with no type at all
+/// is left out too.
+fn items(snapshot: &PasteboardSnapshot) -> Vec<Retained<NSPasteboardItem>> {
+    let mut items = Vec::with_capacity(snapshot.items.len());
     for item in &snapshot.items {
         let pasteboard_item = NSPasteboardItem::new();
+        let mut kept = false;
         for format in &item.types {
             let name = NSString::from_str(&format.name);
             let data = NSData::with_bytes(&format.data);
-            if !pasteboard_item.setData_forType(&data, &name) {
-                return Err(InputError::Clipboard(format!(
-                    "The pasteboard refused {}.",
-                    format.name
-                )));
-            }
+            kept |= pasteboard_item.setData_forType(&data, &name);
         }
-        objects.push(ProtocolObject::from_retained(pasteboard_item));
+        if kept {
+            items.push(pasteboard_item);
+        }
     }
-    let objects = NSArray::from_retained_slice(&objects);
-    if !board.writeObjects(&objects) {
-        return Err(InputError::Clipboard(
-            "The pasteboard refused the copied items.".into(),
-        ));
-    }
-    Ok(())
+    items
 }
 
 /// `NSPasteboard.changeCount` cut to the trait's width. It only has to be
@@ -232,14 +273,32 @@ pub(crate) fn enter_gate() -> crate::clipboard::Turn {
     CLIPBOARD_GATE.enter()
 }
 
+/// The app Cmd+V went to, when its restore is due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetState {
+    /// It quit, or no app was in front at the paste.
+    Gone,
+    /// Another app is in front now: the user switched away.
+    Behind,
+    /// Still in front, and it answered an Accessibility request in time.
+    Answers,
+    /// Still in front, and its main thread didn't answer in time.
+    Hung,
+}
+
+/// Whether the user's clipboard may go back. An app that quit or that the user left will read
+/// nothing more, so the clipboard is theirs again, as on Windows, where a window that is gone
+/// counts as answering. A hung app in front may still paste when it wakes up, and must get the
+/// dictation then, not the old clipboard.
+pub(crate) fn may_restore(state: TargetState) -> bool {
+    state != TargetState::Hung
+}
+
 /// The app Cmd+V went to.
 ///
-/// AppKit has no way to ask whether an app still reads its event queue, which
-/// is what Windows' `WM_NULL` asks. Voice asks the weaker question it can: is
-/// that app still running and still in front? When the user switched away or
-/// it quit, nothing will read the dictation any more. A hung app keeps the
-/// dictation on the clipboard, which is the safe direction and what Windows
-/// does for a window it can't reach.
+/// Windows asks the target window `WM_NULL`. On macOS Voice first looks at
+/// whether the app still runs and is still in front, and only then asks it one
+/// Accessibility request (`ax::app_answers`), which a hung app can't answer.
 pub(crate) fn target() -> PasteTarget {
     PasteTarget(
         super::Frontmost::read()
@@ -251,9 +310,24 @@ pub(crate) fn target() -> PasteTarget {
 /// An app by pid, asked from the restore thread.
 pub(crate) struct PasteTarget(i32);
 
+impl PasteTarget {
+    fn state(&self, timeout: std::time::Duration) -> TargetState {
+        let pid = self.0;
+        if pid == 0 || !super::is_running(pid) {
+            TargetState::Gone
+        } else if !super::is_in_front(pid) {
+            TargetState::Behind
+        } else if super::ax::app_answers(pid, timeout) {
+            TargetState::Answers
+        } else {
+            TargetState::Hung
+        }
+    }
+}
+
 impl crate::clipboard::Target for PasteTarget {
-    fn answers(&self, _timeout: std::time::Duration) -> bool {
-        self.0 == 0 || super::is_still_in_front(self.0)
+    fn answers(&self, timeout: std::time::Duration) -> bool {
+        may_restore(self.state(timeout))
     }
 }
 
@@ -261,22 +335,53 @@ pub(crate) fn wait_for_clipboard_restore() {
     drop(CLIPBOARD_GATE.enter());
 }
 
+/// The last text [`copy_hidden`] wrote, by a hash rather than the secret itself, with the change
+/// count it got. While the count is still that one, the pasteboard holds exactly that text, and
+/// [`clear_if`] needs no read to know it.
+static HIDDEN: Mutex<Option<(u64, u32)>> = Mutex::new(None);
+
+fn fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Whether the pasteboard still holds Voice's hidden text, from the change counts alone: `None`
+/// when Voice didn't write `text` itself in this run, and only a read can tell.
+pub(crate) fn still_hidden(current: u32, written: Option<u32>) -> Option<bool> {
+    written.map(|written| current == written)
+}
+
 pub(crate) fn copy_hidden(text: &str) -> Result<(), InputError> {
     // After a pending paste restore, which would otherwise put the user's old
     // clipboard back over this text.
     let _turn = CLIPBOARD_GATE.enter();
     let mut pasteboard = Pasteboard;
-    pasteboard.set_text(text).map(|_| ())
+    let written = pasteboard.set_text(text)?;
+    *HIDDEN.lock().unwrap_or_else(PoisonError::into_inner) = Some((fingerprint(text), written));
+    Ok(())
 }
 
 pub(crate) fn clear_if(text: &str) -> Result<bool, InputError> {
     let _turn = CLIPBOARD_GATE.enter();
+    let written = HIDDEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .filter(|(hash, _)| *hash == fingerprint(text))
+        .map(|(_, written)| written);
     autoreleasepool(|_| {
         let board = NSPasteboard::generalPasteboard();
         let before = count(&board);
-        let holds = board
-            .stringForType(string_type())
-            .is_some_and(|current| current.to_string() == text);
+        let holds = match still_hidden(before, written) {
+            Some(holds) => holds,
+            // Reading it would make macOS ask the user, and an alert about a code Voice copied
+            // minutes ago helps nobody: it stays.
+            None if !reads_allowed(access_behavior()) => false,
+            None => board
+                .stringForType(string_type())
+                .is_some_and(|current| current.to_string() == text),
+        };
         // Only touch the pasteboard while it still holds what Voice put there:
         // a copy that lands during this check wins, as on Windows, where the
         // clipboard stays open between the read and the empty.
@@ -304,6 +409,41 @@ mod tests {
     }
 
     #[test]
+    fn the_clipboard_goes_back_unless_the_app_in_front_hangs() {
+        assert!(may_restore(TargetState::Gone), "the app quit");
+        assert!(may_restore(TargetState::Behind), "the user switched away");
+        assert!(may_restore(TargetState::Answers), "it pasted and answers");
+        assert!(
+            !may_restore(TargetState::Hung),
+            "a hung app in front may still paste"
+        );
+    }
+
+    #[test]
+    fn only_always_allow_lets_voice_read_unasked() {
+        assert!(reads_allowed(None), "before macOS 15.4 nothing asks");
+        assert!(reads_allowed(Some(NSPasteboardAccessBehavior::AlwaysAllow)));
+        for behavior in [
+            NSPasteboardAccessBehavior::Default,
+            NSPasteboardAccessBehavior::Ask,
+            NSPasteboardAccessBehavior::AlwaysDeny,
+        ] {
+            assert!(!reads_allowed(Some(behavior)), "{behavior:?}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_copy_is_known_by_its_change_count() {
+        assert_eq!(still_hidden(7, Some(7)), Some(true));
+        assert_eq!(
+            still_hidden(8, Some(7)),
+            Some(false),
+            "the user copied since"
+        );
+        assert_eq!(still_hidden(7, None), None, "not written in this run");
+    }
+
+    #[test]
     fn a_snapshot_keeps_every_item_type_and_its_bytes_in_order() {
         let items = vec![
             vec![
@@ -324,6 +464,44 @@ mod tests {
         assert_eq!(snapshot.items[1].types[0].name, "public.file-url");
         assert_eq!(snapshot.items[1].types[0].data, b"file:///tmp/a");
         assert!(PasteboardSnapshot::new(Vec::new()).items.is_empty());
+    }
+
+    /// Building the items touches no pasteboard: they are plain objects until they are written.
+    #[test]
+    fn the_items_to_restore_keep_every_type_and_its_bytes() {
+        let snapshot = PasteboardSnapshot::new(vec![
+            vec![
+                ("public.utf8-plain-text".into(), b"plain".to_vec()),
+                ("public.rtf".into(), b"{\\rtf1}".to_vec()),
+            ],
+            vec![("public.file-url".into(), b"file:///tmp/a".to_vec())],
+        ]);
+        let built = autoreleasepool(|_| {
+            items(&snapshot)
+                .iter()
+                .map(|item| {
+                    item.types()
+                        .to_vec()
+                        .into_iter()
+                        .map(|name| {
+                            let data = item.dataForType(&name).map(|d| d.to_vec());
+                            (name.to_string(), data.unwrap_or_default())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        let expected: Vec<Vec<(String, Vec<u8>)>> = snapshot
+            .items
+            .iter()
+            .map(|item| {
+                item.types
+                    .iter()
+                    .map(|t| (t.name.clone(), t.data.clone()))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(built, expected);
     }
 
     #[test]

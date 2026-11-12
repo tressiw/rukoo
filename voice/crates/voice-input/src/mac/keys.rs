@@ -9,11 +9,15 @@
 //!
 //! This is deliberately not an event tap: a tap needs Input Monitoring and
 //! can stop delivering, and a missed key-up must never leave recording on
-//! (Ownkey #11). What polling can't see is a release that happens while Voice
-//! itself is suspended, so the app also treats a resigning session, a locked
-//! screen and sleep as releases (see `voice-app`'s session observer).
+//! (Ownkey #11). A release that happens while Voice itself is suspended shows
+//! on the next read. One the HID state might never report, around a session
+//! switch, the lock screen or sleep, is why the app also treats those as
+//! releases (see `voice-app`'s session observer), and why dictation's watchdog
+//! stops a recording whose key reads up.
 
-use objc2_core_graphics::{CGEventSource, CGEventSourceStateID};
+use std::time::Duration;
+
+use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 
 use crate::{InputError, Key};
 
@@ -34,9 +38,34 @@ fn read(code: u16) -> bool {
     CGEventSource::key_state(CGEventSourceStateID::HIDSystemState, code)
 }
 
+/// How long ago any key went down on the HID system, modifiers aside: macOS reports those as
+/// flag changes, not key-downs. `CGEventSourceSecondsSinceLastEventType` is meant to answer
+/// without a grant, which nobody has checked at a real keyboard yet. It also counts keys an app
+/// posted at the HID level.
+pub(crate) fn since_key_down() -> Option<Duration> {
+    duration(CGEventSource::seconds_since_last_event_type(
+        CGEventSourceStateID::HIDSystemState,
+        CGEventType::KeyDown,
+    ))
+}
+
+/// The answer as a duration, or `None` for one that can't be a time ago.
+fn duration(seconds: f64) -> Option<Duration> {
+    Duration::try_from_secs_f64(seconds).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_time_ago_reads_as_one() {
+        assert_eq!(duration(1.5), Some(Duration::from_millis(1500)));
+        assert_eq!(duration(0.0), Some(Duration::ZERO));
+        for nonsense in [-1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(duration(nonsense), None, "{nonsense}");
+        }
+    }
 
     #[test]
     fn every_mac_key_has_a_code_and_a_keyboard_without_it_does_not() {
