@@ -232,14 +232,32 @@ pub(crate) fn enter_gate() -> crate::clipboard::Turn {
     CLIPBOARD_GATE.enter()
 }
 
+/// The app Cmd+V went to, when its restore is due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetState {
+    /// It quit, or no app was in front at the paste.
+    Gone,
+    /// Another app is in front now: the user switched away.
+    Behind,
+    /// Still in front, and it answered an Accessibility request in time.
+    Answers,
+    /// Still in front, and its main thread didn't answer in time.
+    Hung,
+}
+
+/// Whether the user's clipboard may go back. An app that quit or that the user left will read
+/// nothing more, so the clipboard is theirs again, as on Windows, where a window that is gone
+/// counts as answering. A hung app in front may still paste when it wakes up, and must get the
+/// dictation then, not the old clipboard.
+pub(crate) fn may_restore(state: TargetState) -> bool {
+    state != TargetState::Hung
+}
+
 /// The app Cmd+V went to.
 ///
-/// AppKit has no way to ask whether an app still reads its event queue, which
-/// is what Windows' `WM_NULL` asks. Voice asks the weaker question it can: is
-/// that app still running and still in front? When the user switched away or
-/// it quit, nothing will read the dictation any more. A hung app keeps the
-/// dictation on the clipboard, which is the safe direction and what Windows
-/// does for a window it can't reach.
+/// Windows asks the target window `WM_NULL`. On macOS Voice first looks at
+/// whether the app still runs and is still in front, and only then asks it one
+/// Accessibility request (`ax::app_answers`), which a hung app can't answer.
 pub(crate) fn target() -> PasteTarget {
     PasteTarget(
         super::Frontmost::read()
@@ -251,9 +269,24 @@ pub(crate) fn target() -> PasteTarget {
 /// An app by pid, asked from the restore thread.
 pub(crate) struct PasteTarget(i32);
 
+impl PasteTarget {
+    fn state(&self, timeout: std::time::Duration) -> TargetState {
+        let pid = self.0;
+        if pid == 0 || !super::is_running(pid) {
+            TargetState::Gone
+        } else if !super::is_in_front(pid) {
+            TargetState::Behind
+        } else if super::ax::app_answers(pid, timeout) {
+            TargetState::Answers
+        } else {
+            TargetState::Hung
+        }
+    }
+}
+
 impl crate::clipboard::Target for PasteTarget {
-    fn answers(&self, _timeout: std::time::Duration) -> bool {
-        self.0 == 0 || super::is_still_in_front(self.0)
+    fn answers(&self, timeout: std::time::Duration) -> bool {
+        may_restore(self.state(timeout))
     }
 }
 
@@ -300,6 +333,17 @@ mod tests {
             plan_restore(8, None),
             RestorePlan::Replace,
             "without a count, the caller wants the snapshot back"
+        );
+    }
+
+    #[test]
+    fn the_clipboard_goes_back_unless_the_app_in_front_hangs() {
+        assert!(may_restore(TargetState::Gone), "the app quit");
+        assert!(may_restore(TargetState::Behind), "the user switched away");
+        assert!(may_restore(TargetState::Answers), "it pasted and answers");
+        assert!(
+            !may_restore(TargetState::Hung),
+            "a hung app in front may still paste"
         );
     }
 

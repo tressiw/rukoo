@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use objc2::rc::autoreleasepool;
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
 use crate::clipboard::{self, BeforeKeys, Guarded, Keyboard, SystemClock};
 use crate::target::{self, WindowInfo};
@@ -176,12 +176,20 @@ impl Frontmost {
     }
 }
 
-/// Whether the pid an app had is still the app in front and still running.
-fn is_still_in_front(pid: i32) -> bool {
+/// Whether the app with this pid still runs.
+fn is_running(pid: i32) -> bool {
+    autoreleasepool(|_| {
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .is_some_and(|app| !app.isTerminated())
+    })
+}
+
+/// Whether the app with this pid is the one in front.
+fn is_in_front(pid: i32) -> bool {
     autoreleasepool(|_| {
         NSWorkspace::sharedWorkspace()
             .frontmostApplication()
-            .is_some_and(|app| app.processIdentifier() == pid && !app.isTerminated())
+            .is_some_and(|app| app.processIdentifier() == pid)
     })
 }
 
