@@ -1,0 +1,62 @@
+# Upstream build-file edits NeMo-Speech.cpp needs to build the runtime this folder pins on macOS
+# arm64. `build-macos.sh` applies this with `git apply` after it checks out the pinned commit, and
+# refuses a checkout where it doesn't apply. Re-check it when the pin moves.
+#
+# 1. scripts/build_sentencepiece_static.sh: its last four lines are GNU `install -D`, which BSD
+#    `install` rejects. The archive and the licenses are staged the same way afterwards.
+# 2. src/asr/CMakeLists.txt: the static SentencePiece search is gated on `UNIX AND NOT APPLE`, so
+#    macOS takes upstream's Homebrew path and links a dynamic libsentencepiece.dylib. The runtime
+#    folder has to hold everything it needs, so the archive is preferred there too.
+# 3. src/asr/CMakeLists.txt, one block later: `--exclude-libs` is an ELF linker option that
+#    Apple's ld rejects. SentencePiece is linked statically either way; on macOS its symbols stay
+#    exported from libnemo_speech_asr.dylib.
+#
+# Not a patch, but the other half of the macOS build: CMake 4 refuses SentencePiece 0.2.x's
+# `cmake_minimum_required(3.1)`, so the script passes CMAKE_POLICY_VERSION_MINIMUM=3.5 to it.
+diff --git a/scripts/build_sentencepiece_static.sh b/scripts/build_sentencepiece_static.sh
+index 05f5b20..70fe338 100755
+--- a/scripts/build_sentencepiece_static.sh
++++ b/scripts/build_sentencepiece_static.sh
+@@ -32,7 +32,8 @@ install -m 0644 "$BUILD/src/libsentencepiece.a" "$PREFIX/lib/libsentencepiece.a"
+ install -m 0644 "$SOURCE/src/sentencepiece_processor.h" "$PREFIX/include/sentencepiece_processor.h"
+ 
+ LICENSE_DIR="$PREFIX/share/licenses/nemo-speech/third_party/sentencepiece"
+-install -Dm0644 "$SOURCE/LICENSE" "$LICENSE_DIR/LICENSE"
+-install -Dm0644 "$SOURCE/third_party/absl/LICENSE" "$LICENSE_DIR/absl-LICENSE"
+-install -Dm0644 "$SOURCE/third_party/darts_clone/LICENSE" "$LICENSE_DIR/darts-clone-LICENSE"
+-install -Dm0644 "$SOURCE/third_party/protobuf-lite/LICENSE" "$LICENSE_DIR/protobuf-lite-LICENSE"
++install -d "$LICENSE_DIR"
++install -m 0644 "$SOURCE/LICENSE" "$LICENSE_DIR/LICENSE"
++install -m 0644 "$SOURCE/third_party/absl/LICENSE" "$LICENSE_DIR/absl-LICENSE"
++install -m 0644 "$SOURCE/third_party/darts_clone/LICENSE" "$LICENSE_DIR/darts-clone-LICENSE"
++install -m 0644 "$SOURCE/third_party/protobuf-lite/LICENSE" "$LICENSE_DIR/protobuf-lite-LICENSE"
+diff --git a/src/asr/CMakeLists.txt b/src/asr/CMakeLists.txt
+index 5026575..6a82209 100644
+--- a/src/asr/CMakeLists.txt
++++ b/src/asr/CMakeLists.txt
+@@ -68,8 +68,9 @@ target_link_libraries(nemo_speech_asr PUBLIC nemo_speech_runtime_ggml)
+ # phrases with the model's embedded tokenizer (context biasing in
+ # rnnt_greedy_decoder.cpp / RnntModel::encode_phrase); the flashlight decoder
+ # also encodes OOV boost phrases with it. Prefer a static archive on ELF
+-# platforms so its bundled protobuf symbols stay private.
+-if(UNIX AND NOT APPLE)
++# platforms and on macOS, so its bundled protobuf symbols stay private and
++# the runtime folder needs no libsentencepiece.dylib.
++if(UNIX)
+     set(_NEMO_SPEECH_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+     set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+     find_library(SENTENCEPIECE_STATIC_LIB sentencepiece
+@@ -85,8 +86,11 @@ if(SENTENCEPIECE_STATIC_LIB)
+     endif()
+     target_link_libraries(nemo_speech_asr PRIVATE ${SENTENCEPIECE_STATIC_LIB})
+     target_include_directories(nemo_speech_asr PRIVATE ${SENTENCEPIECE_INCLUDE_DIR})
+-    target_link_options(
+-        nemo_speech_asr PRIVATE "LINKER:--exclude-libs,libsentencepiece.a")
++    # --exclude-libs is an ELF linker option; Apple's ld rejects it.
++    if(NOT APPLE)
++        target_link_options(
++            nemo_speech_asr PRIVATE "LINKER:--exclude-libs,libsentencepiece.a")
++    endif()
+ elseif(NEMO_SPEECH_WITH_NORM AND UNIX AND NOT APPLE)
+     message(FATAL_ERROR
+         "normalization requires private static SentencePiece; "

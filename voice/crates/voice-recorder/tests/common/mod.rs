@@ -17,6 +17,19 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_rukoo-voice-recorder");
 pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// True, after printing why, when CI's host probe found the host too stalled for timing windows
+/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
+/// tight window on a late tick returns early on it. Windows and Linux CI never set it.
+pub fn skip_on_slow_host(test: &str) -> bool {
+    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    if slow {
+        eprintln!(
+            "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
+        );
+    }
+    slow
+}
+
 /// A temp folder holding a meeting folder and the recorder's stderr logs. It's removed after a
 /// passing test and kept after a failing one, so the files can be inspected.
 pub struct TempMeeting {

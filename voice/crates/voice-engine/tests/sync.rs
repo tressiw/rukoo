@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use support::{
-    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, sync_state, wait_for, Harness,
+    bucket_kinds, connect_bucket, decrypt_all, fake_s3, fast_sync, skip_on_slow_host, sync_state,
+    wait_for, Harness,
 };
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
 use voice_engine::media::ScreenMedia;
@@ -462,6 +463,10 @@ fn assert_steady(data: &Path, id: &str) {
 }
 
 fn a_failing_bucket_never_slows_the_recorder() {
+    // Its heartbeat limit (1,300 ms for a 1 s heartbeat) is a timing window.
+    if skip_on_slow_host("a_failing_bucket_never_slows_the_recorder") {
+        return;
+    }
     let h = harness("sync-failing", json!({"meetings_retention": "keep"}));
     let fake = fake_s3();
     let engine = h.start();

@@ -4,16 +4,30 @@
 //
 //   node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
 //                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
+//                                       [--models <dir>] [--nemo-dir <dir>]
 //                                       [--sync] [--remote-fetch=<ssh target>]
 //                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>] | --measure=sync]
 //
-// Windows only. Everything it starts lives under tmp\live\<time>\ in this checkout: Voice's data folder
+// Windows and macOS. Everything it starts lives under tmp/live/<time>/ in this checkout: Voice's data folder
 // (RUKOO_VOICE_DATA_DIR), Rukoo's profile (SEM_DATA_DIR), the discovery file both get as RUKOO_VOICE_BRIDGE, and the
-// speech. Captures of the apps' own windows go to tmp\live-shots\. Orukeet is read from Ownkey's model folder, read
-// only. Nothing touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process
-// it started is stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice\target, and
-// the programs run from there: debug builds unless --release is given, release builds for --measure=screen. Rukoo's
-// MCP server listens on port 47810, not the 47800 an installed Rukoo uses.
+// speech. Captures of the apps' own windows go to tmp/live-shots/. --models seeds the run's data folder with a models
+// root in Voice's layout (<root>/orukeet/<revision>) without another copy: an APFS clone on macOS, a hard link
+// elsewhere, a copy as the last resort. Without --models it uses tmp/voice-assets/models in this checkout when that
+// holds Orukeet, so a Mac run transcribes; Windows still reads Ownkey's model folder when it isn't given one. Nothing
+// touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process it started is
+// stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice/target, and the programs
+// run from there: debug builds unless --release is given, release builds for --measure=screen. Rukoo's MCP server
+// listens on port 47810, not the 47800 an installed Rukoo uses.
+//
+// On macOS the default run is --screen off, because the macOS screen process doesn't record yet: --screen frames or
+// video, --real-screen, --choose-monitor, --visible-rukoo, --measure and --sync refuse with a message that says what
+// they would need. The speech comes from `say` with two installed English voices (the SAPI path stays on Windows). The
+// screen process, window-protection, WebView2 capture and video checks are skipped, each with a line in the report that
+// says why. --speakers is decided by Voice: when its Settings > Speaker labels reports reason "platform" the run
+// refuses with that message, and on a build where the macOS speaker worker exists it runs with --nemo-dir (or
+// tmp/voice-assets/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from tmp/voice-assets/speaker-assets.
+// A run without a model or a provider key still reports that as its one failed prerequisite and skips the passage
+// checks: the script seeds a model but never downloads one and never uses a key.
 //
 // The checks: passages with the expected words reach Rukoo on both tracks before the stop; the pill shows the
 // recording; Rukoo's windows are protected from capture; frames with their text reach Rukoo while it records and
@@ -40,25 +54,39 @@
 //   --visible-rukoo        (needs --real-screen) Rukoo's window sits over half the slide; two meetings from Voice,
 //                          with Rukoo's hide-from-capture switch off (its demo strings must show in the first frame)
 //                          and on (they must not, and the frame must show the slide where Rukoo's window is).
-//   --measure=screen       CPU and GPU of Voice's processes in four 10-minute meetings with live transcription, sampled
-//                          by measure.ps1; release build. --seconds=<n> shortens each meeting for a trial. On the
-//                          synthetic screen by default, at the sizes of this computer's displays as Windows reports
-//                          them (off, frames and video at the main display's size, then video at the other display's
-//                          size), with a new slide every 10 s; nothing shows on the desktop. With --real-screen, on the
-//                          demo slide display instead: slides every 10 s, then a scrolling page, then still. Live
-//                          speaker labels are off, so the screen's cost stands alone; with --speakers they are on, the
-//                          call is the AMI excerpt and the speaker worker is measured too, for the combined load.
+//   --measure=screen       (Windows) CPU and GPU of Voice's processes in four 10-minute meetings with live
+//                          transcription, sampled by measure.ps1; release build. --seconds=<n> shortens each meeting for
+//                          a trial. On the synthetic screen by default, at the sizes of this computer's displays as
+//                          Windows reports them (off, frames and video at the main display's size, then video at the
+//                          other display's size), with a new slide every 10 s; nothing shows on the desktop. With
+//                          --real-screen, on the demo slide display instead: slides every 10 s, then a scrolling page,
+//                          then still. Live speaker labels are off, so the screen's cost stands alone; with --speakers
+//                          they are on, the call is the AMI excerpt and the speaker worker is measured too, for the
+//                          combined load.
 //
-// --speakers plays the AMI meeting excerpt (fetched by scripts\speaker-assets.ps1 into tmp\speaker-assets, never
+// --speakers plays the AMI meeting excerpt (fetched by scripts/speaker-assets.ps1 into tmp/speaker-assets, never
 // committed) as the call, looped; the microphone keeps its SAPI speech. On top of the checks above: at least three
 // call speakers reach Rukoo before the stop, and the three main AMI speakers get ids of their own; the id of MEE071
 // gets a name; the speaker worker is killed and its voice keeps that id afterwards, and again after the Voice
 // restart; after done at least 90% of the call's passage time went to the right speaker
-// (scripts\lib\speaker-score.mjs) and no passage moved from one id to another between revisions. It doesn't combine
-// with --real-screen, whose slides follow the SAPI call.
+// (scripts/lib/speaker-score.mjs) and no passage moved from one id to another between revisions. It doesn't combine
+// with --real-screen, whose slides follow the SAPI call. `--nemo-dir` names the NeMo-Speech.cpp runtime (else
+// RUKOO_VOICE_NEMO_DIR, else the shared folder, else Voice's lookup), and the AMI excerpt and Nemotron come from the
+// shared speaker-assets folder. When Voice reports speaker labels unavailable for the platform (Settings' reason
+// "platform"), the run refuses instead of recording a meeting without labels.
 //
 // --speakers=cpu|runtime|model runs a short meeting with RUKOO_VOICE_TEST_NO_SPEAKERS set to that reason: the call
 // is one speaker, call-1, Settings > Speaker labels says why, and Voice captures that page.
+//
+// --models <dir> seeds each fresh Voice data folder from a models root in Voice's layout (<root>/orukeet/<revision>):
+// an APFS clone with cp -c on macOS, a hard link or a copy elsewhere, so the model costs no second 487 MB and Voice
+// finds it, hashes it once and keeps its stamp, as after an install. It defaults to tmp/voice-assets/models in this
+// checkout when that holds Orukeet, on every platform. The run never downloads a model; --models points at one
+// fetched once, for example with Voice's own Settings > Transcription code.
+//
+// --nemo-dir <dir> is the NeMo-Speech.cpp runtime folder for --speakers (a local macOS arm64 build, for instance); it
+// becomes RUKOO_VOICE_NEMO_DIR for Voice. Without it tmp/voice-assets/nemo-arm64/nemo_speech is used when it holds a
+// runtime.
 //
 // --measure=speakers measures labels on and off (spec RUK-109 section 7): the worker's real-time factor through its
 // --self-test, then two meetings started from Voice in fresh data folders, labels on and labels off, each --minutes
@@ -100,9 +128,58 @@ const VOICE = path.join(ROOT, 'voice');
 const MEASURES = ['screen', 'speakers', 'sync'];
 const REASONS = ['cpu', 'runtime', 'model'];
 const SCREENS = ['off', 'frames', 'video'];
+const WIN = process.platform === 'win32';
+const MAC = process.platform === 'darwin';
+// macOS has no .exe suffix, and the screen recorder doesn't record there yet: the default run keeps it off.
+const EXE_SUFFIX = WIN ? '.exe' : '';
+const DEFAULT_SCREEN = MAC ? 'off' : 'frames';
+
+// Why a flag that needs the screen refuses on macOS, and why the checks that need a screen (or a capture to protect
+// Rukoo from) are skipped there.
+const SCREEN_NEEDS = 'the screen process does not record on macOS yet (voice/crates/voice-screen exits with "needs Windows"; the macOS screen recorder is a later step), so the live run needs --screen off';
+const SCREEN_SKIP = 'the macOS screen process does not record yet (the screen recorder is a later step), so this run has no screen to record, switch or inspect';
+const PROTECTION_SKIP = 'window protection belongs to the Windows screen-capture checks; the macOS screen recorder is not in this build, so there is no capture to hide Rukoo from';
+const CAPTURE_SKIP = 'WebView2 captures are Windows-only; the macOS WKWebView capture is a later step, so only Rukoo\'s own window is captured';
+
+// The shared folder under this checkout's ignored tmp/: the downloaded models, the speaker runtime and the speaker
+// assets. Each run's data folder is seeded from it, so a fresh run doesn't download 487 MB or 100 MB again. --models
+// and --nemo-dir point elsewhere.
+const SHARED = path.join(ROOT, 'tmp', 'voice-assets');
+const SHARED_MODELS = path.join(SHARED, 'models');
+const SHARED_ASSETS = path.join(SHARED, 'speaker-assets');
+const SHARED_NEMO = path.join(SHARED, 'nemo-arm64', 'nemo_speech');
+// ModelSpec::orukeet() in voice-core: the folder and revision under a models root, the same path under Voice's data
+// folder, and the files it checks.
+const ORUKEET = {
+  id: 'orukeet-onnx-int8',
+  folder: 'orukeet',
+  revision: '55a984d46f68323301837194ce647c702f55facc',
+  files: ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt', 'bpe.vocab', 'LICENSE-WEIGHTS', 'NOTICE.md']
+};
+const ORUKEET_REL = path.join(ORUKEET.folder, ORUKEET.revision);
+const ORUKEET_DIR = path.join('models', ORUKEET_REL);
+// What --speakers needs when Voice itself says the platform can't label speakers.
+const SPEAKER_NEEDS =
+  "Speaker labels are unavailable on this Mac: Voice's Settings > Speaker labels reports reason \"platform\" through the status hook. " +
+  'Speaker labels on macOS need the arm64 NeMo-Speech.cpp runtime (voice/nemo-runtime/build-macos.sh) pointed at with --nemo-dir or ' +
+  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and a Voice build with the macOS speaker worker`;
+
+class Refusal extends Error {}
+
+function refuseOnMac(out) {
+  if (!MAC) return;
+  const no = [];
+  if (out.screenGiven && out.screen !== 'off') no.push(`--screen ${out.screen}: ${SCREEN_NEEDS}`);
+  if (out.realScreen) no.push(`--real-screen: ${SCREEN_NEEDS}`);
+  if (out.chooseMonitor) no.push(`--choose-monitor: ${SCREEN_NEEDS}`);
+  if (out.visibleRukoo) no.push(`--visible-rukoo: ${SCREEN_NEEDS}`);
+  if (out.measure) no.push(`--measure=${out.measure}: the measurements use voice/scripts/measure.ps1, the screen's own timings and the speaker worker, which are Windows-only`);
+  if (out.sync) no.push("--sync: bucket sync's keys need the macOS Keychain protector (voice-sync/src/protect/keychain.rs) in this build, and Voice reports sync as unavailable without it; run without --sync");
+  if (no.length) throw new Refusal(`The live run refuses these flags on macOS for now:\n  ${no.join('\n  ')}`);
+}
 
 function parseArgs(argv) {
-  const out = { skipBuild: false, release: false, screen: 'frames', realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5 };
+  const out = { skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -116,6 +193,14 @@ function parseArgs(argv) {
       case '--release':
         out.release = true;
         break;
+      case '--models':
+        out.models = next();
+        if (!out.models) throw new Error('--models takes a models root: <root>/orukeet/<revision>/ holds the model');
+        break;
+      case '--nemo-dir':
+        out.nemoDir = next();
+        if (!out.nemoDir) throw new Error('--nemo-dir takes the folder holding the NeMo-Speech.cpp runtime (runtime.json and the libraries)');
+        break;
       case '--speakers':
         if (value !== null && !REASONS.includes(value)) throw new Error(`--speakers takes no value or one of ${REASONS.join(', ')}`);
         out.speakers = value ?? true;
@@ -126,6 +211,7 @@ function parseArgs(argv) {
         break;
       case '--screen':
         out.screen = next();
+        out.screenGiven = true;
         if (!SCREENS.includes(out.screen)) throw new Error(`--screen takes ${SCREENS.join(', ')}`);
         break;
       case '--real-screen':
@@ -170,10 +256,22 @@ function parseArgs(argv) {
   if (out.sync && out.realScreen) throw new Error('--sync and --real-screen are separate runs: the real screen never goes to a bucket');
   if (out.sync && (out.measure === 'screen' || out.measure === 'speakers' || REASONS.includes(out.speakers))) throw new Error('--sync runs the standard meeting; --measure=screen, --measure=speakers and --speakers=<reason> are separate runs');
   if (out.remoteFetch && !out.sync) throw new Error('--remote-fetch needs --sync');
+  refuseOnMac(out);
   return out;
 }
 
-const ARGS = parseArgs(process.argv.slice(2));
+// A refused flag prints its message without a stack trace, before anything is started or written.
+function parsedArgs(argv) {
+  try {
+    return parseArgs(argv);
+  } catch (err) {
+    if (!(err instanceof Refusal)) throw err;
+    console.error(err.message);
+    process.exit(2);
+  }
+}
+
+const ARGS = parsedArgs(process.argv.slice(2));
 // --release builds and runs the release programs, as the measurements should; --measure=screen always does.
 const RELEASE = ARGS.release || ARGS.measure === 'screen';
 const PROFILE = RELEASE ? 'release' : 'debug';
@@ -189,12 +287,26 @@ const RUN = path.join(ROOT, 'tmp', 'live', STAMP);
 const SHOTS = path.join(ROOT, 'tmp', 'live-shots');
 const TARGET = process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(VOICE, 'target');
 const BIN = path.join(TARGET, PROFILE);
-const EXE = path.join(BIN, 'rukoo-voice.exe');
-const SPEAKERS_EXE = path.join(BIN, 'rukoo-voice-speakers.exe');
-const SCREEN_EXE = path.join(BIN, 'rukoo-voice-screen.exe');
-const FAKE_S3 = path.join(BIN, 'rukoo-voice-fake-s3.exe');
+const EXE = path.join(BIN, `rukoo-voice${EXE_SUFFIX}`);
+const SPEAKERS_EXE = path.join(BIN, `rukoo-voice-speakers${EXE_SUFFIX}`);
+const SCREEN_EXE = path.join(BIN, `rukoo-voice-screen${EXE_SUFFIX}`);
+const FAKE_S3 = path.join(BIN, `rukoo-voice-fake-s3${EXE_SUFFIX}`);
 const SHERPA = process.env.SHERPA_ONNX_ARCHIVE_DIR || path.join(ROOT, 'tmp', 'sherpa-archive');
-const ASSETS = path.join(ROOT, 'tmp', 'speaker-assets');
+// The models root this run seeds from: --models, else the shared folder when it holds the pinned Orukeet.
+const MODELS = ARGS.models
+  ? path.resolve(ARGS.models)
+  : fs.existsSync(path.join(SHARED_MODELS, ORUKEET_REL, 'encoder.int8.onnx'))
+    ? SHARED_MODELS
+    : null;
+const NEMO_DIR = ARGS.nemoDir ? path.resolve(ARGS.nemoDir) : null;
+// The speaker assets: tmp/voice-assets/speaker-assets when it holds them, else tmp/speaker-assets, which the asset
+// scripts fill.
+const ASSETS =
+  MAC &&
+  fs.existsSync(path.join(SHARED_ASSETS, 'ami', 'ami_en2002d_2132.wav')) &&
+  fs.existsSync(path.join(SHARED_ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf'))
+    ? SHARED_ASSETS
+    : path.join(ROOT, 'tmp', 'speaker-assets');
 const AMI_WAV = path.join(ASSETS, 'ami', 'ami_en2002d_2132.wav');
 const AMI_RTTM = path.join(ASSETS, 'ami', 'ami_en2002d_2132.rttm');
 const NEMOTRON = path.join(ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf');
@@ -256,16 +368,40 @@ const THEM = {
 const SECRETS = { secret: `test-secret-${crypto.randomBytes(12).toString('hex')}`, code: null };
 
 // The ssh target stays out of the report.
-const report = { started: new Date().toISOString(), run: RUN, options: { ...ARGS, remoteFetch: Boolean(ARGS.remoteFetch) }, checks: [], notes: [], screen: {}, measurements: {} };
+const report = {
+  started: new Date().toISOString(),
+  run: RUN,
+  platform: process.platform,
+  options: { ...ARGS, remoteFetch: Boolean(ARGS.remoteFetch) },
+  checks: [],
+  notes: [],
+  screen: {},
+  measurements: {},
+  models: { root: MODELS, seeded: [] }
+};
 const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [], fake: [] };
 let failed = 0;
+let skipped = 0;
 let nemoDir = null;
+// Whether this run's data folder holds the seeded Orukeet, so its stamp is worth checking.
+let seededOrukeet = false;
+// Whether meetings transcribe in this run (macOS decides it from Voice's Settings; Windows keeps its Orukeet in
+// Ownkey's folder and doesn't ask).
+let TRANSCRIPT = { ready: true };
 
 function check(name, ok, detail = null) {
   report.checks.push({ name, ok: Boolean(ok), detail });
   if (!ok) failed += 1;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
   return ok;
+}
+
+// A check that can't hold on this platform yet. It says why, in the report and on the console, and isn't a pass.
+function skip(name, reason) {
+  report.checks.push({ name, skipped: true, reason });
+  skipped += 1;
+  console.log(`skip ${name}: ${reason}`);
+  return false;
 }
 
 function note(text) {
@@ -295,7 +431,7 @@ function alive(pid) {
   }
 }
 
-// TerminateProcess on this one process id: a hard kill, as a crash would be.
+// TerminateProcess on Windows and SIGKILL here: a hard kill of this one process id, as a crash would be.
 function killPid(pid) {
   try {
     process.kill(pid, 'SIGKILL');
@@ -303,6 +439,46 @@ function killPid(pid) {
   } catch (_) {
     return false;
   }
+}
+
+// A polite stop of one process id: SIGTERM first, SIGKILL when it is still there after ms. Windows stops it the way it
+// always did, with TerminateProcess.
+async function stopPid(pid, ms = 10000) {
+  if (!pid || !alive(pid)) return;
+  if (WIN) return void killPid(pid);
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (_) {
+    return;
+  }
+  const end = Date.now() + ms;
+  while (Date.now() < end && alive(pid)) await sleep(100);
+  if (alive(pid)) killPid(pid);
+}
+
+// A process and its descendants, by pid: on Windows one taskkill /T, else the children first (ps ppid), so Electron's
+// helpers go with it.
+function killTree(pid) {
+  if (!pid) return;
+  if (WIN) {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    return;
+  }
+  const out = spawnSync('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' });
+  const children = new Map();
+  for (const line of String(out.stdout || '').split('\n')) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    if (!child) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(child);
+  }
+  const tree = [];
+  const walk = (p) => {
+    tree.push(p);
+    for (const c of children.get(p) || []) walk(c);
+  };
+  walk(pid);
+  for (const p of tree.reverse()) killPid(p);
 }
 
 function powershell(script, args = []) {
@@ -337,17 +513,35 @@ function build() {
 
 // The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
 // names a published archive (the script skips it before that).
+// On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS the same
+// folder comes from tmp/voice-assets/speaker-assets, or from voice/scripts/speaker-assets.mjs once that script exists
+// (the runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
 function assets() {
-  const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
-    encoding: 'utf8',
-    windowsHide: true
-  });
-  if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.ps1 failed: ${out.stderr || out.stdout}`);
-  if (process.env.RUKOO_VOICE_NEMO_DIR) nemoDir = process.env.RUKOO_VOICE_NEMO_DIR;
+  if (WIN) {
+    const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.ps1 failed: ${out.stderr || out.stdout}`);
+  } else {
+    const script = path.join(VOICE, 'scripts', 'speaker-assets.mjs');
+    if (fs.existsSync(script)) {
+      const args = [script, '--out', ASSETS, '--model', '--ami'];
+      if (NEMO_DIR) args.push('--nemo-dir', NEMO_DIR);
+      const out = spawnSync(process.execPath, args, { encoding: 'utf8' });
+      if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.mjs failed: ${out.stderr || out.stdout}`);
+    } else if (!fs.existsSync(AMI_WAV) || !fs.existsSync(NEMOTRON)) {
+      throw new Error(`speaker assets are missing: ${AMI_WAV} and ${NEMOTRON}. Fetch them with voice/scripts/speaker-assets.mjs, or put them in ${ASSETS}`);
+    }
+  }
+  if (NEMO_DIR && fs.existsSync(path.join(NEMO_DIR, 'runtime.json'))) nemoDir = NEMO_DIR;
+  else if (process.env.RUKOO_VOICE_NEMO_DIR) nemoDir = process.env.RUKOO_VOICE_NEMO_DIR;
   else if (fs.existsSync(path.join(ASSETS, 'nemo_speech', 'runtime.json'))) nemoDir = path.join(ASSETS, 'nemo_speech');
+  else if (fs.existsSync(path.join(SHARED_NEMO, 'runtime.json'))) nemoDir = SHARED_NEMO;
   if (nemoDir) {
     const runtime = JSON.parse(fs.readFileSync(path.join(nemoDir, 'runtime.json'), 'utf8').replace(/^﻿/, ''));
-    note(`NeMo runtime: ${nemoDir} (${runtime.name || 'unnamed'}, commit ${String(runtime.commit || '').slice(0, 7)}, MSVC ${runtime.toolset?.msvc || '?'})`);
+    const toolset = runtime.toolset?.msvc ? `MSVC ${runtime.toolset.msvc}` : runtime.build ? 'this platform' : '?';
+    note(`NeMo runtime: ${nemoDir} (${runtime.name || 'unnamed'}, commit ${String(runtime.commit || '').slice(0, 7)}, ${toolset})`);
   } else {
     note("NeMo runtime: Voice's own lookup (next to the exe, then Ownkey's copy, read only)");
   }
@@ -370,7 +564,7 @@ function loadAmi() {
 }
 
 // SAPI speech as 16 kHz mono 16-bit WAV, with a pause after every sentence so the pipeline can cut windows there.
-function speech(file, { parts, lead = 0 }) {
+function sapiSpeech(file, { parts, lead = 0 }) {
   const script = path.join(RUN, 'speak.ps1');
   fs.writeFileSync(
     script,
@@ -394,11 +588,157 @@ function speech(file, { parts, lead = 0 }) {
   return fs.statSync(file).size;
 }
 
+// The pause SAPI's prompt builder puts after every sentence, and the silence before a lead.
+const SPEECH_GAP_MS = 2500;
+const PEAK = { voices: null, offsets: new Map() };
+const SAMPLES_PER_MS = 16;
+
+// `say -v '?'` lists the installed voices; two ordinary English ones are picked, never the novelty voices (Bells and
+// the like sing), so the two tracks are different voices as well as different words. macOS installs at least one
+// English voice, and Samantha and Daniel are the usual pair.
+function sayVoices() {
+  if (PEAK.voices) return PEAK.voices;
+  const out = spawnSync('say', ['-v', '?'], { encoding: 'utf8' });
+  if (out.status !== 0) throw new Error(`say -v '?' failed: ${out.stderr || `exit ${out.status}`}`);
+  const names = [];
+  const locales = new Map();
+  // Each line is "<voice> <locale>    # <sample>"; a localized voice has spaces and parentheses in its name.
+  for (const line of String(out.stdout || '').split('\n')) {
+    const sample = /^(.*?)\s+#/.exec(line);
+    const head = sample ? sample[1].trim() : line.trim();
+    if (!head) continue;
+    const locale = /^(.*)\s+([a-z]{2}_[A-Z]{2})$/.exec(head);
+    const name = locale ? locale[1].trim() : head;
+    if (!name || names.includes(name)) continue;
+    names.push(name);
+    if (locale) locales.set(name, locale[2]);
+  }
+  const novelty = new Set(['Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Deranged', 'Good News', 'Hysterical', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox']);
+  const preferred = ['Samantha', 'Daniel', 'Karen', 'Moira', 'Tessa', 'Fiona', 'Alex', 'Fred', 'Ralph', 'Kathy', 'Junior', 'Agnes', 'Vicki', 'Victoria', 'Eddy', 'Flo', 'Reed'];
+  // `say` names a localized voice "Samantha (English (US))" and a plain one "Karen"; the preference is by that base name.
+  const base = (n) => n.replace(/\s*\(.*\)$/, '').trim();
+  const ordinary = names.filter((n) => !novelty.has(base(n)));
+  const english = ordinary.filter((n) => (locales.get(n) || '').startsWith('en'));
+  const pool = english.length >= 2 ? english : ordinary;
+  const rank = (n) => {
+    const i = preferred.indexOf(base(n));
+    return i < 0 ? preferred.length : i;
+  };
+  const order = [...pool].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).concat(names.filter((n) => !pool.includes(n)));
+  if (order.length < 2) throw new Error("say lists fewer than two voices, so the two tracks can't differ");
+  PEAK.voices = { you: order[0], them: order[1], list: order };
+  return PEAK.voices;
+}
+
+// The samples of a 16-bit mono 16 kHz PCM WAV, checked, whatever chunks the file carries around the data.
+function wavSamples(buf, what) {
+  let at = 12;
+  let fmt = null;
+  while (at + 8 <= buf.length) {
+    const id = buf.toString('latin1', at, at + 4);
+    const size = buf.readUInt32LE(at + 4);
+    if (id === 'fmt ') {
+      fmt = { format: buf.readUInt16LE(at + 8), channels: buf.readUInt16LE(at + 10), rate: buf.readUInt32LE(at + 12), bits: buf.readUInt16LE(at + 22) };
+    }
+    if (id === 'data') {
+      if (!fmt || fmt.format !== 1 || fmt.channels !== 1 || fmt.rate !== 16000 || fmt.bits !== 16) throw new Error(`${what}: expected 16 kHz mono 16-bit PCM, got ${JSON.stringify(fmt)}`);
+      const bytes = Buffer.from(buf.subarray(at + 8, at + 8 + size - (size % 2)));
+      return new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
+    }
+    at += 8 + size + (size % 2);
+  }
+  throw new Error(`${what}: no data chunk`);
+}
+
+// One canonical 44-byte-header WAV, so the sizes and the offsets are exact.
+function writeWav(file, samples) {
+  const data = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) data.writeInt16LE(samples[i], i * 2);
+  const head = Buffer.alloc(44);
+  head.write('RIFF', 0, 'latin1');
+  head.writeUInt32LE(36 + data.length, 4);
+  head.write('WAVE', 8, 'latin1');
+  head.write('fmt ', 12, 'latin1');
+  head.writeUInt32LE(16, 16);
+  head.writeUInt16LE(1, 20);
+  head.writeUInt16LE(1, 22);
+  head.writeUInt32LE(16000, 24);
+  head.writeUInt32LE(32000, 28);
+  head.writeUInt16LE(2, 32);
+  head.writeUInt16LE(16, 34);
+  head.write('data', 36, 'latin1');
+  head.writeUInt32LE(data.length, 40);
+  fs.writeFileSync(file, Buffer.concat([head, data]));
+}
+
+// One sentence through `say`, as samples: straight to a 16 kHz WAV, else to AIFF and afconvert when this `say` writes
+// another format.
+function sayPart(text, voice, file) {
+  const direct = spawnSync('say', ['-v', voice, '-o', file, '--data-format=LEI16@16000', text], { encoding: 'utf8' });
+  if (direct.status === 0 && fs.existsSync(file)) {
+    try {
+      return wavSamples(fs.readFileSync(file), file);
+    } catch (_) {
+      // Another format: afconvert below.
+    }
+  }
+  const aiff = file.replace(/\.wav$/, '.aiff');
+  const said = spawnSync('say', ['-v', voice, '-o', aiff, text], { encoding: 'utf8' });
+  if (said.status !== 0 || !fs.existsSync(aiff)) throw new Error(`say failed for ${voice}: ${said.stderr || said.error?.message || `exit ${said.status}`}`);
+  const converted = spawnSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, file], { encoding: 'utf8' });
+  fs.rmSync(aiff, { force: true });
+  if (converted.status !== 0 || !fs.existsSync(file)) throw new Error(`afconvert failed: ${converted.stderr}`);
+  return wavSamples(fs.readFileSync(file), file);
+}
+
+// `say` speech as 16 kHz mono 16-bit WAV, one sentence at a time with the same pause SAPI leaves, so the words and the
+// part offsets match the Windows run.
+function saySpeech(file, { parts, lead = 0, voice }) {
+  const chosen = voice || sayVoices().you;
+  const silence = (ms) => new Int16Array(Math.round((ms / 1000) * 16000));
+  const samples = [];
+  const offsets = [];
+  let at = lead;
+  if (lead > 0) samples.push(silence(lead));
+  offsets[0] = at;
+  for (const [i, part] of parts.entries()) {
+    if (i > 0) {
+      samples.push(silence(SPEECH_GAP_MS));
+      at += SPEECH_GAP_MS;
+      offsets[i] = at;
+    }
+    const partFile = path.join(RUN, `part-${path.basename(file, '.wav')}-${i}.wav`);
+    const pcm = sayPart(part, chosen, partFile);
+    samples.push(pcm);
+    at += Math.round(pcm.length / SAMPLES_PER_MS);
+    fs.rmSync(partFile, { force: true });
+  }
+  let total = 0;
+  for (const s of samples) total += s.length;
+  const all = new Int16Array(total);
+  let o = 0;
+  for (const s of samples) {
+    all.set(s, o);
+    o += s.length;
+  }
+  writeWav(file, all);
+  PEAK.offsets.set(speechKey({ parts, lead }), offsets);
+  return fs.statSync(file).size;
+}
+
+function speech(file, track) {
+  return WIN ? sapiSpeech(file, track) : saySpeech(file, track);
+}
+
 const wavMs = (bytes) => Math.round(((bytes - 44) / 32000) * 1000);
 
-// Where each part of the call starts in its WAV: SAPI is deterministic, so the length of the WAV of the parts before
-// it is that offset.
+const speechKey = (track) => `${(track.parts || []).join('\u0000')}|${track.lead || 0}`;
+
+// Where each part of the call starts in its WAV: the lengths of the parts before it. SAPI is deterministic, so on
+// Windows the WAV of the parts before it gives that offset; `say` records it while it writes the file.
 function partOffsets(track) {
+  const known = PEAK.offsets.get(speechKey(track));
+  if (known) return known;
   const offsets = [track.lead || 0];
   for (let k = 1; k < track.parts.length; k++) {
     const file = path.join(RUN, `prefix-${k}.wav`);
@@ -412,9 +752,60 @@ function partOffsets(track) {
 
 // A fresh data folder: the model as a hard link in Voice's own models folder, so the run doesn't depend on Ownkey
 // having it (Voice still prefers Ownkey's copy when there is one), and the settings the run asks for.
+// A file into the new data folder without a second copy on disk: an APFS clone with `cp -c` on macOS (Node's
+// COPYFILE_FICLONE answers ENOSYS on this build), a hard link elsewhere, and a plain copy as the last resort.
+function seedFile(src, dst) {
+  if (MAC) {
+    const out = spawnSync('/bin/cp', ['-c', src, dst], { encoding: 'utf8' });
+    if (out.status === 0) return 'clone';
+  } else {
+    try {
+      fs.linkSync(src, dst);
+      return 'link';
+    } catch (_) {
+      // Another filesystem, or a platform that refuses links: copy below.
+    }
+  }
+  fs.copyFileSync(src, dst);
+  return 'copy';
+}
+
+// A model in Voice's own layout under the data folder, as an install would have it. The cost is one clone per file on
+// APFS and nothing on disk; a copy counts against free space and is reported.
+function seedModel(name, from, to, files) {
+  fs.mkdirSync(to, { recursive: true });
+  const free = () => {
+    const s = fs.statfsSync(VOICE_DATA);
+    return s.bavail * s.bsize;
+  };
+  const before = free();
+  const how = new Set();
+  let bytes = 0;
+  for (const file of files) {
+    const dst = path.join(to, file);
+    if (fs.existsSync(dst)) continue;
+    bytes += fs.statSync(path.join(from, file)).size;
+    how.add(seedFile(path.join(from, file), dst));
+  }
+  const freeDropBytes = Math.max(0, before - free());
+  const entry = { model: name, from, to, files: files.length, bytes, how: [...how], freeDropBytes };
+  report.models.seeded.push(entry);
+  note(`seeded ${name} from ${from}: ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB by ${entry.how.join('/')}, ${(freeDropBytes / 1e6).toFixed(1)} MB of disk used`);
+  return entry;
+}
+
 function prepareVoiceData(config = null) {
   fs.mkdirSync(VOICE_DATA, { recursive: true });
   started.dataDirs.push(VOICE_DATA);
+  if (MODELS) {
+    const from = path.join(MODELS, ORUKEET_REL);
+    if (ORUKEET.files.every((file) => fs.existsSync(path.join(from, file)))) {
+      seedModel('Orukeet', from, path.join(VOICE_DATA, ORUKEET_DIR), ORUKEET.files);
+      seededOrukeet = true;
+    } else {
+      note(`no Orukeet under ${from}: meetings can't transcribe until a model is there`);
+    }
+  }
   if (AMI && fs.existsSync(NEMOTRON)) {
     const dir = path.join(VOICE_DATA, NEMOTRON_DIR);
     fs.mkdirSync(dir, { recursive: true });
@@ -1333,6 +1724,35 @@ function checkVideos(id, label) {
 
 // ---------- the run ----------
 
+// Whether a meeting can transcribe here: Orukeet in one of Voice's folders, or a cloud provider with its key. This
+// run never downloads a model and never uses a key, so on a Mac without either the passage checks are skipped and the
+// report says what to install.
+function transcriptionOf(settings) {
+  const cfg = settings.config || {};
+  // Meetings follow the dictation provider when they are set to it; otherwise they have their own.
+  const meeting = cfg.meetings || {};
+  const dictation = cfg.transcription || {};
+  const followsDictation = !meeting.provider || meeting.provider === 'same';
+  const provider = followsDictation ? dictation.provider || 'orukeet' : meeting.provider;
+  const where = followsDictation ? dictation : meeting;
+  const model = settings.models?.orukeet || {};
+  if (provider === 'orukeet') {
+    if (model.stage === 'installed') return { ready: true, provider, via: `Orukeet at ${model.path}` };
+    const missing = MODELS ? path.join(MODELS, ORUKEET_REL) : 'no --models folder and no shared model folder';
+    return {
+      ready: false,
+      provider,
+      reason:
+        `Voice transcribes meetings with Orukeet, and this run found no model: ${missing} is missing the pinned files. ` +
+        `Put them under <root>/${ORUKEET_REL} and pass --models <root>, or install Orukeet in Settings > Transcription; ` +
+        `no cloud meeting provider has a key either, and this run never downloads a model or uses a key`
+    };
+  }
+  const local = /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(where.endpoint || '');
+  if (where.keySaved === true || local) return { ready: true, provider, via: `${provider}${local ? ` at ${where.endpoint}` : ''}` };
+  return { ready: false, provider, reason: `meetings are set to ${provider} with no key in this profile, and this run may not use one; set that provider's key in Settings > Meetings and run again` };
+}
+
 async function pair(monitor) {
   // A measurement says whether live speaker labels run; the other runs keep Voice's default, which is on.
   writeConfig(ARGS.measure === 'screen' ? { meetings_live_speakers: SPEAKERS === true } : {});
@@ -1340,9 +1760,24 @@ async function pair(monitor) {
   await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
   const first = await hook('status');
   check('Voice runs the real engine in a development copy', first.settings.devMode === true && first.pid === voice.pid, { pid: first.pid });
-  if (SPEAKERS === true) {
-    const sp = first.settings.speakers;
-    check('Settings > Speaker labels is ready with Nemotron', sp.ready === true && sp.engine === 'nemotron', { reason: sp.reason, detail: sp.detail, runtime: sp.runtime });
+  if (MAC || ARGS.models) {
+    TRANSCRIPT = transcriptionOf(first.settings);
+    report.transcription = TRANSCRIPT;
+    if (TRANSCRIPT.ready) note(`transcription: ${TRANSCRIPT.via}`);
+    else {
+      // A missing prerequisite is not a platform gap: the run says so once and keeps going, so every other check still
+      // runs, but the report and the exit code carry the one failure.
+      note(`transcription: not available: ${TRANSCRIPT.reason}`);
+      check('meetings can transcribe on this Mac', false, TRANSCRIPT.reason);
+    }
+  }
+  if (SPEAKERS !== null) {
+    // Decided by what Voice reports, not by the platform: a Voice build with the macOS speaker worker reports ready and the run goes on.
+    const sp = first.settings.speakers || {};
+    if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
+    if (SPEAKERS === true) {
+      check('Settings > Speaker labels is ready with Nemotron', sp.ready === true && sp.engine === 'nemotron', { reason: sp.reason, detail: sp.detail, runtime: sp.runtime });
+    }
   }
   await startRukoo();
   await until('Rukoo to connect to Voice', rukoo.connected, 30000);
@@ -1351,9 +1786,14 @@ async function pair(monitor) {
     return s.settings.rukoo.state === 'connected' && s.settings.rukoo;
   }, 15000);
   check('Settings > Rukoo shows the connected client from its hello', settled.clientVersion && settled.protocol === 2, settled);
-  const caps = await until('the screen probe', async () => (await hook('status')).settings.screen, 30000);
-  report.screen.capabilities = caps;
-  check('Voice found its screen process and can record the screen', caps.available === true, caps);
+  if (MAC) {
+    report.screen.capabilities = null;
+    skip('Voice found its screen process and can record the screen', 'the macOS screen process does not record yet (it exits with "needs Windows"), so Voice reports no screen capability and the run keeps --screen off');
+  } else {
+    const caps = await until('the screen probe', async () => (await hook('status')).settings.screen, 30000);
+    report.screen.capabilities = caps;
+    check('Voice found its screen process and can record the screen', caps.available === true, caps);
+  }
   const def = await until("Voice's default screen mode in Rukoo", async () => (await rukoo.state()).screenDefault === ARGS.screen, 15000).catch(() => false);
   check("Rukoo knows Voice's default screen mode from status", def, { expected: ARGS.screen });
   return voice;
@@ -1408,6 +1848,30 @@ async function killScreen(id) {
   return back;
 }
 
+// Voice hashes a model the first time it loads it and keeps the result in <data>/models/verified.json.
+function seededModelStamp() {
+  const stamps = readJson(path.join(VOICE_DATA, 'models', 'verified.json'));
+  const dir = path.join(VOICE_DATA, ORUKEET_DIR);
+  return Boolean((stamps?.entries || []).some((e) => e.model === ORUKEET.id && e.revision === ORUKEET.revision && e.dir === dir));
+}
+
+// Without a transcriber, what the run can still prove about the audio: both synthetic tracks write their files, and
+// the recorder's heartbeats count samples on each.
+async function recordedTracks(id, label) {
+  const bytes = (track) => {
+    const dir = path.join(meetingDir(id), 'audio', track);
+    return (fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.wav')) : []).reduce((n, f) => n + fs.statSync(path.join(dir, f)).size, 0);
+  };
+  const found = await until('both tracks to write their files', () => {
+    const mic = bytes('mic');
+    const call = bytes('call');
+    const tracks = timeline(id).filter((l) => l.kind === 'track').map((l) => l.track);
+    return mic > 32000 && call > 32000 && tracks.includes('mic') && tracks.includes('call') && { mic, call, tracks };
+  }, 60000, 500);
+  const beat = timeline(id).filter((l) => l.kind === 'heartbeat').at(-1);
+  check(`both synthetic tracks record audio files while ${label} runs`, Boolean(beat?.samples?.mic) && Boolean(beat?.samples?.call), { ...found, samples: beat?.samples });
+}
+
 async function standardRun(voice, offsets) {
   const labels = SPEAKERS === true;
   let outage = {};
@@ -1424,8 +1888,12 @@ async function standardRun(voice, offsets) {
   const stopSlides = offsets ? scheduleSlides(id, offsets) : () => {};
   try {
     await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === id, 15000);
-    const shielded = await rukoo.protectedWindows();
-    check("Rukoo's windows are protected from capture while it records", shielded.length > 0 && shielded.every(Boolean), shielded);
+    if (MAC) {
+      skip("Rukoo's windows are protected from capture while it records", PROTECTION_SKIP);
+    } else {
+      const shielded = await rukoo.protectedWindows();
+      check("Rukoo's windows are protected from capture while it records", shielded.length > 0 && shielded.every(Boolean), shielded);
+    }
     const status = await hook('status');
     const pill = status.pill;
     check('the pill shows the recording', pill.visible && pill.phase === 'meeting' && pill.meeting?.state === 'recording', { phase: pill.phase, meeting: pill.meeting });
@@ -1442,7 +1910,12 @@ async function standardRun(voice, offsets) {
       await checkFrames(id, { realOffsets: ARGS.realScreen ? offsets : null });
     }
 
-    if (!ARGS.realScreen) {
+    if (MAC) {
+      check('the initial screen mode remains historical', (await rukoo.get(id)).meeting.initialScreen === ARGS.screen, { screen: ARGS.screen });
+      skip('the pill enables frames and Rukoo receives its timestamped mode mark', SCREEN_SKIP);
+      skip('windows are protected before enabled capture', PROTECTION_SKIP);
+      skip('screen mode changes keep the same audio recorder', SCREEN_SKIP);
+    } else if (!ARGS.realScreen) {
       const recorderPid = recorderOf(id).pid;
       await rukoo.setScreen(id, 'off');
       await until('notifications released with screen Off', () => app.evaluate(() => !global.__semVoice.screenRecording()), 5000);
@@ -1458,16 +1931,22 @@ async function standardRun(voice, offsets) {
     }
 
     // 3. Passages on both tracks, while it records.
-    const live = await until('passages with the expected words on both tracks', async () => {
-      const m = await rukoo.get(id);
-      return m && trackHas(m, 'mic', YOU.words) && trackHas(m, 'call', THEM.words) && m;
-    }, 240000, 500);
-    const stillRecording = (await rukoo.state()).recording === id;
-    check('passages with the expected words reached Rukoo on both tracks before the stop', stillRecording, {
-      after: `${Math.round((Date.now() - t0) / 1000)} s`,
-      mic: live.passages.filter((p) => p.track === 'mic').length,
-      call: live.passages.filter((p) => p.track === 'call').length
-    });
+    if (TRANSCRIPT.ready) {
+      const live = await until('passages with the expected words on both tracks', async () => {
+        const m = await rukoo.get(id);
+        return m && trackHas(m, 'mic', YOU.words) && trackHas(m, 'call', THEM.words) && m;
+      }, 240000, 500);
+      const stillRecording = (await rukoo.state()).recording === id;
+      check('passages with the expected words reached Rukoo on both tracks before the stop', stillRecording, {
+        after: `${Math.round((Date.now() - t0) / 1000)} s`,
+        mic: live.passages.filter((p) => p.track === 'mic').length,
+        call: live.passages.filter((p) => p.track === 'call').length
+      });
+      if (seededOrukeet) check('Voice hashed the seeded Orukeet once and wrote its stamp', seededModelStamp(), { stamp: path.join(VOICE_DATA, 'models', 'verified.json') });
+    } else {
+      skip('passages with the expected words reached Rukoo on both tracks before the stop', TRANSCRIPT.reason);
+      await recordedTracks(id, 'the meeting from Rukoo');
+    }
 
     // 3a. Speaker labels: three voices on the call before the stop, one of them named, then the worker killed.
     let named = null;
@@ -1478,13 +1957,20 @@ async function standardRun(voice, offsets) {
     if (SYNC) outage = await syncWhileLive(id, t0);
 
     // Captures while it records: Rukoo's meeting view, the pill and Settings > Rukoo.
-    if (!ARGS.realScreen) {
+    if (!ARGS.realScreen && !MAC) {
       await win.keyboard.press('Control+3');
       await win.locator('.meeting .mt-transcript .mt-passage').first().waitFor({ timeout: 20000 });
       await sleep(1000);
       await captureRukoo(path.join(SHOTS, 'rukoo-meeting-live.png'));
       const shots = await hook('capture', { dir: SHOTS, page: 'rukoo' }, 90000);
       check('Voice captured its pill and Settings > Rukoo from WebView2', !shots.pill.error && !shots.settings.error, shots);
+    } else if (MAC) {
+      // The meeting view as Rukoo paints it; Voice's own pill and Settings captures come from WebView2.
+      await win.keyboard.press('Control+3');
+      await win.locator('.meeting').first().waitFor({ timeout: 20000 });
+      await sleep(1000);
+      await captureRukoo(path.join(SHOTS, 'rukoo-meeting-live.png'));
+      skip('Voice captured its pill and Settings > Rukoo from WebView2', CAPTURE_SKIP);
     }
 
     // 3b. The screen process dies; Voice's watchdog starts it again and the audio doesn't notice.
@@ -1501,9 +1987,10 @@ async function standardRun(voice, offsets) {
       note(`Voice killed with ${pending.waiting} file(s) waiting to upload, state ${pending.state}`);
     }
     const before = await rukoo.get(id);
-    const lastEnd = Math.max(...before.passages.map((p) => p.end));
+    const lastEnd = before.passages.length ? Math.max(...before.passages.map((p) => p.end)) : 0;
     const recorder = recorderOf(id);
     const restartAt = meetingNow(id);
+    const restartWall = Date.now();
     killPid(voice.pid);
     await until('Voice to exit', () => !alive(voice.pid), 15000);
     await sleep(1500);
@@ -1520,12 +2007,19 @@ async function standardRun(voice, offsets) {
       await sleep(2000);
       check('the new Voice kept the same screen process', screenOf(id)?.pid === screenPid && alive(screenPid), { pid: screenOf(id)?.pid });
     }
-    const resumed = await until('passages after the restart', async () => {
-      const m = await rukoo.get(id);
-      return m.passages.some((p) => p.start > lastEnd) && m;
-    }, 120000, 500);
-    check('the meeting goes on after the restart without passages twice', overlaps(resumed.passages).length === 0, { overlaps: overlaps(resumed.passages), passages: resumed.passages.length });
-    check("Rukoo's windows stayed protected through the restart", (await rukoo.protectedWindows()).every(Boolean));
+    if (TRANSCRIPT.ready) {
+      const resumed = await until('passages after the restart', async () => {
+        const m = await rukoo.get(id);
+        return m.passages.some((p) => p.start > lastEnd) && m;
+      }, 120000, 500);
+      check('the meeting goes on after the restart without passages twice', overlaps(resumed.passages).length === 0, { overlaps: overlaps(resumed.passages), passages: resumed.passages.length });
+    } else {
+      skip('the meeting goes on after the restart without passages twice', TRANSCRIPT.reason);
+      const first = await until('the recorder\'s clock after the restart', () => timeline(id).find((l) => l.kind === 'heartbeat' && l.t > restartAt + 2000 && l.wall >= restartWall), 120000, 500).catch(() => null);
+      check('the recorder clock keeps going after the Voice restart', Boolean(first) && first.t > restartAt + 1000, { restartAt, at: first?.t ?? null });
+    }
+    if (MAC) skip("Rukoo's windows stayed protected through the restart", PROTECTION_SKIP);
+    else check("Rukoo's windows stayed protected through the restart", (await rukoo.protectedWindows()).every(Boolean));
     if (labels && named) await keepsItsId(id, named, restartAt, 'after the Voice restart');
     if (screenPid) {
       const framesBefore = (await rukoo.get(id)).frames.length;
@@ -1554,9 +2048,19 @@ async function standardRun(voice, offsets) {
     await sleep(labels ? 20000 : 6000);
     stopAt = Date.now();
     await rukoo.stop(id);
-    await until('done', async () => (await rukoo.get(id)).meeting.state === 'done', 240000, 200);
-    const states = await voiceStates(id);
-    check('the stop went to processing, then done', stoppedThenDone(states), states);
+    if (TRANSCRIPT.ready) {
+      await until('done', async () => (await rukoo.get(id)).meeting.state === 'done', 240000, 200);
+      const states = await voiceStates(id);
+      check('the stop went to processing, then done', stoppedThenDone(states), states);
+    } else {
+      const ended = await until('the meeting to end', async () => {
+        const state = (await rukoo.get(id)).meeting.state;
+        return ['done', 'failed'].includes(state) && state;
+      }, 300000, 300);
+      report.meetingStateAfterStop = ended;
+      note(`the meeting ended ${ended} after the stop: without a transcriber Voice cannot finish its transcript and keeps the audio`);
+      skip('the stop went to processing, then done', TRANSCRIPT.reason);
+    }
     if (ARGS.screen !== 'off') {
       const j = journal(id);
       const last = j.at(-1);
@@ -1567,23 +2071,32 @@ async function standardRun(voice, offsets) {
     } else {
       check('a meeting without the screen has no screen folder', !fs.existsSync(path.join(meetingDir(id), 'screen')));
     }
-    const ended = await until('protection to end', async () => (await rukoo.protectedWindows()).every((p) => !p), 15000);
-    check("Rukoo's windows are capturable again after the meeting", ended);
+    if (MAC) skip("Rukoo's windows are capturable again after the meeting", PROTECTION_SKIP);
+    else {
+      const ended = await until('protection to end', async () => (await rukoo.protectedWindows()).every((p) => !p), 15000);
+      check("Rukoo's windows are capturable again after the meeting", ended);
+    }
     await until('the recorder to exit', () => !alive(back.pid), 20000);
 
     // 7. Rukoo's meeting.get against Voice's.
     const mine = await rukoo.get(id);
     const theirs = await rukoo.voiceGet(id);
-    const key = (p) => `${p.id}@${p.revision}`;
-    const missing = theirs.passages.filter((p) => !mine.passages.some((q) => key(q) === key(p)));
-    const extra = mine.passages.filter((p) => !theirs.passages.some((q) => q.id === p.id));
-    check("Rukoo's meeting.get has every passage Voice has", missing.length === 0 && extra.length === 0 && theirs.passages.length > 0, {
-      voice: theirs.passages.length,
-      rukoo: mine.passages.length,
-      missing: missing.map(key),
-      extra: extra.map(key)
-    });
-    check('no passage covers the same audio twice', overlaps(mine.passages).length === 0, overlaps(mine.passages));
+    if (TRANSCRIPT.ready) {
+      const key = (p) => `${p.id}@${p.revision}`;
+      const missing = theirs.passages.filter((p) => !mine.passages.some((q) => key(q) === key(p)));
+      const extra = mine.passages.filter((p) => !theirs.passages.some((q) => q.id === p.id));
+      check("Rukoo's meeting.get has every passage Voice has", missing.length === 0 && extra.length === 0 && theirs.passages.length > 0, {
+        voice: theirs.passages.length,
+        rukoo: mine.passages.length,
+        missing: missing.map(key),
+        extra: extra.map(key)
+      });
+      check('no passage covers the same audio twice', overlaps(mine.passages).length === 0, overlaps(mine.passages));
+    } else {
+      check("Rukoo's meeting.get carries the meeting Voice has", theirs.meeting?.id === id && mine.meeting?.id === id, { voice: theirs.meeting?.state, rukoo: mine.meeting?.state });
+      skip("Rukoo's meeting.get has every passage Voice has", TRANSCRIPT.reason);
+      skip('no passage covers the same audio twice', TRANSCRIPT.reason);
+    }
     snapshot = theirs;
     if (ARGS.screen !== 'off') {
       const ids = (x) => (x.frames || []).map((f) => f.id).sort().join(',');
@@ -1604,7 +2117,8 @@ async function standardRun(voice, offsets) {
   }, 30000);
   check('a meeting Voice started shows in Rukoo as recording', seen.meeting.startedBy === 'voice', { id: fromVoice, eventId: seen.meeting.eventId, event: seen.event });
   check("the meeting Voice started records Voice's default screen mode", seen.meeting.screen === ARGS.screen, { screen: seen.meeting.screen });
-  check("Rukoo protects its windows for Voice's meeting too", (await rukoo.protectedWindows()).every(Boolean));
+  if (MAC) skip("Rukoo protects its windows for Voice's meeting too", PROTECTION_SKIP);
+  else check("Rukoo protects its windows for Voice's meeting too", (await rukoo.protectedWindows()).every(Boolean));
   if (!seen.meeting.eventId) note('no calendar event in the demo account fits this time of day, so Rukoo linked none (it links one only when exactly one fits)');
   if (ARGS.screen !== 'off') {
     if (ARGS.realScreen) await guardMonitor(fromVoice, report.screen.slideDisplay);
@@ -1612,14 +2126,25 @@ async function standardRun(voice, offsets) {
     const startLine = (await voiceLog("SELECT COUNT(*) AS n FROM events WHERE event = 'meeting.starting' AND meeting = ?", fromVoice))[0].n;
     check('Voice asked Rukoo to protect before it captured (meeting.starting)', startLine >= 1, { events: startLine });
   }
+  if (!TRANSCRIPT.ready) await recordedTracks(fromVoice, "Voice's meeting");
   await sleep(4000);
   await hook('stop_meeting');
-  await until("Voice's meeting to be done", async () => (await rukoo.get(fromVoice)).meeting.state === 'done', 120000, 500);
-  const fromVoiceStates = await voiceStates(fromVoice);
-  check('the meeting Voice started went to processing, then done', stoppedThenDone(fromVoiceStates), fromVoiceStates);
+  if (TRANSCRIPT.ready) {
+    await until("Voice's meeting to be done", async () => (await rukoo.get(fromVoice)).meeting.state === 'done', 120000, 500);
+    const fromVoiceStates = await voiceStates(fromVoice);
+    check('the meeting Voice started went to processing, then done', stoppedThenDone(fromVoiceStates), fromVoiceStates);
+  } else {
+    await until("Voice's meeting to end", async () => {
+      const state = (await rukoo.get(fromVoice)).meeting.state;
+      return ['done', 'failed'].includes(state) && state;
+    }, 300000, 500);
+    skip('the meeting Voice started went to processing, then done', TRANSCRIPT.reason);
+  }
 
   // 9. Rukoo asks for video once, whatever Voice's default.
-  if (ARGS.screen !== 'video') {
+  if (MAC) {
+    skip('an audio-only meeting can enable screen video on the same clock', SCREEN_SKIP);
+  } else if (ARGS.screen !== 'video') {
     const { meetingId: vid } = await rukoo.start({ title: 'Live run: audio only, then video', screen: 'off' });
     await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === vid, 15000);
     await rukoo.setScreen(vid, 'video');
@@ -2028,6 +2553,8 @@ async function withoutLabels(reason) {
   await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
   const status = await hook('status');
   const sp = status.settings.speakers;
+  // A platform that can't label speakers can't show any of the other reasons either.
+  if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
   check(`Settings > Speaker labels says why: ${reason}`, sp.ready === false && sp.reason === reason, { reason: sp.reason, missing: sp.missing, detail: sp.detail });
   await startRukoo();
   await until('Rukoo to connect to Voice', rukoo.connected, 30000);
@@ -2043,8 +2570,11 @@ async function withoutLabels(reason) {
   const entry = await labelsOf(id);
   check(`the meeting's labels are off with reason ${reason}`, entry?.mode === 'off' && entry?.reason === reason, entry);
   const dir = path.join(SHOTS, `speakers-${reason}`);
-  const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
-  check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
+  if (MAC) skip('Voice captured Settings > Speaker labels', CAPTURE_SKIP);
+  else {
+    const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
+    check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
+  }
 
   // Every AMI voice has spoken once a whole loop has gone by.
   await until('a whole loop of the AMI excerpt', () => meetingNow(id) > AMI_MS + 15000, 180000, 1000);
@@ -2752,11 +3282,13 @@ async function restoreChecks(ctx) {
 async function pairedRun() {
   folders(RUN);
   prepareVoiceData();
-  const youBytes = speech(path.join(RUN, 'you.wav'), YOU);
+  const voices = MAC ? sayVoices() : null;
+  const youBytes = speech(path.join(RUN, 'you.wav'), { ...YOU, voice: voices?.you });
+  if (MAC) report.speech = { engine: 'say', voices: { you: voices.you, them: voices.them } };
   if (AMI) note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s; the call is the AMI excerpt, ${(AMI_MS / 1000).toFixed(1)} s, looped`);
   else {
-    const themBytes = speech(path.join(RUN, 'them.wav'), THEM);
-    note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s, them.wav ${(themBytes / 32000).toFixed(1)} s`);
+    const themBytes = speech(path.join(RUN, 'them.wav'), { ...THEM, voice: voices?.them });
+    note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s, them.wav ${(themBytes / 32000).toFixed(1)} s${voices ? ` (say: ${voices.you} and ${voices.them})` : ''}`);
   }
 
   let offsets = null;
@@ -2796,11 +3328,12 @@ async function pairedRun() {
 // ---------- main ----------
 
 async function main() {
-  if (process.platform !== 'win32') throw new Error('The live run needs Windows: Voice records there only.');
+  if (!WIN && !MAC) throw new Error('The live run needs Windows or macOS: Voice records there only.');
   fs.mkdirSync(RUN, { recursive: true });
   fs.mkdirSync(SHOTS, { recursive: true });
   if (!ARGS.skipBuild) build();
-  for (const exe of [EXE, SCREEN_EXE, ...(SYNC ? [FAKE_S3] : [])]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
+  // The screen program builds on both platforms, but only Windows runs it; the check is for the programs this run uses.
+  for (const exe of [EXE, ...(WIN ? [SCREEN_EXE] : []), ...(SYNC ? [FAKE_S3] : [])]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
   if (AMI) {
     assets();
     loadAmi();
@@ -2821,11 +3354,14 @@ async function cleanup() {
     } catch (_) {
       // Gone already.
     }
-    if (alive(pid)) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    if (alive(pid)) {
+      if (WIN) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else killTree(pid);
+    }
   }
-  for (const pid of started.measure) if (alive(pid)) killPid(pid);
-  for (const pid of started.voice) if (alive(pid)) killPid(pid);
-  for (const pid of started.fake) if (alive(pid)) killPid(pid);
+  for (const pid of started.measure) if (alive(pid)) await stopPid(pid);
+  for (const pid of started.voice) if (alive(pid)) await stopPid(pid);
+  for (const pid of started.fake) if (alive(pid)) await stopPid(pid);
   // A recorder or a screen process still recording after a failure: by the id in its recorder.json or screen.json.
   for (const data of started.dataDirs) {
     const meetings = path.join(data, 'meetings');
@@ -2833,7 +3369,7 @@ async function cleanup() {
       const dir = path.join(meetings, id);
       for (const [what, info] of [['recorder', readJson(path.join(dir, 'recorder.json'))], ['screen process', readJson(path.join(dir, 'screen', 'screen.json'))]]) {
         if (info && alive(info.pid)) {
-          killPid(info.pid);
+          await stopPid(info.pid);
           note(`stopped a ${what} that was still running: ${info.pid}`);
         }
       }
@@ -2847,11 +3383,15 @@ async function cleanup() {
 }
 
 let error = null;
+let refused = null;
 try {
   await main();
 } catch (err) {
-  error = err;
-  check('the run finished', false, err.message);
+  if (err instanceof Refusal) refused = err;
+  else {
+    error = err;
+    check('the run finished', false, err.message);
+  }
 } finally {
   await cleanup();
   // With every process stopped, nothing holds a file open: the whole run folder, both data folders, the hooks, the
@@ -2867,9 +3407,12 @@ try {
   }
   report.finished = new Date().toISOString();
   report.failed = failed;
+  report.skipped = skipped;
+  if (refused) report.refused = refused.message;
   fs.mkdirSync(RUN, { recursive: true });
   fs.writeFileSync(path.join(RUN, 'report.json'), JSON.stringify(report, null, 2));
-  console.log(`\n${failed ? `${failed} check(s) failed` : 'every check passed'}; report: ${path.join(RUN, 'report.json')}`);
+  if (refused) console.error(`\n${refused.message}\nNothing was recorded; report: ${path.join(RUN, 'report.json')}`);
+  else console.log(`\n${failed ? `${failed} check(s) failed` : 'every check passed'}${skipped ? `, ${skipped} skipped (see the skip lines and the report)` : ''}; report: ${path.join(RUN, 'report.json')}`);
   if (error) console.error(error);
-  process.exit(failed ? 1 : 0);
+  process.exit(failed ? 1 : refused ? 2 : 0);
 }

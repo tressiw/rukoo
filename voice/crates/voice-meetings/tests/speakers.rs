@@ -495,9 +495,14 @@ fn frames_and_speakers_together() {
 
 /// Call passages of the first revision that end past the settled position: what the gate
 /// should have held. Each with the settled position it was seen at.
+///
+/// The events come first and the settled position after: it only moves forward, so the value
+/// read belongs to a moment at or after the commits, and a commit the gate made legally is
+/// never reported because the position advanced while the log was read.
 fn past_settled(log: &EventLog, id: &str, handle: &PipelineHandle, seen: &mut Vec<(Found, u64)>) {
+    let passages = all_passages(&events(log, id));
     let settled = handle.labels().settled_ms.unwrap_or(0);
-    for p in all_passages(&events(log, id)) {
+    for p in passages {
         if p.track == "call"
             && p.revision == 1
             && p.end > settled
@@ -509,7 +514,9 @@ fn past_settled(log: &EventLog, id: &str, handle: &PipelineHandle, seen: &mut Ve
 }
 
 /// 2a: a pause longer than the stall doesn't release the gate when the recording resumes: the
-/// follower padded the gap and waits for audio, which isn't a stall.
+/// follower padded the gap and waits for audio, which isn't a stall. Neither is the wait for the
+/// recorder's next samples once every chunk is in: the gate holds until the stop, however long
+/// that wait takes on a slow machine.
 #[test]
 fn a_long_pause_keeps_the_gate_after_the_resume() {
     let tmp = TempDir::new("speakers-long-pause");
@@ -553,7 +560,11 @@ fn a_long_pause_keeps_the_gate_after_the_resume() {
         std::thread::sleep(Duration::from_millis(5));
         past_settled(&log, &rec.id(), &handle, &mut seen);
     }
-    for _ in 0..60 {
+    // Every chunk is in, but the meeting isn't stopped yet: the follower waits for the recorder
+    // and that wait mustn't release the gate, also when a slow machine makes it longer than the
+    // stall.
+    let until = Instant::now() + stall + Duration::from_millis(500);
+    while Instant::now() < until {
         std::thread::sleep(Duration::from_millis(5));
         past_settled(&log, &rec.id(), &handle, &mut seen);
     }

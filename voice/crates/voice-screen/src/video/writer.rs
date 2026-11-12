@@ -46,46 +46,8 @@ use super::fault;
 use super::mf::Mf;
 use super::FPS;
 use crate::capture::d3d::{is_device_lost, D3D};
-
-/// What ended a video file early.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VideoError {
-    /// The disk is full (`0x80070070`, `STG_E_MEDIUMFULL`).
-    Disk(String),
-    /// The encoder failed to start or to encode.
-    Encoder(String),
-    /// Only a software encoder would run, and the test switch doesn't allow one.
-    Software,
-    /// The graphics device was removed or reset.
-    DeviceLost,
-}
-
-impl std::fmt::Display for VideoError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VideoError::Disk(e) => write!(f, "the disk is full ({e})"),
-            VideoError::Encoder(e) => write!(f, "the encoder failed ({e})"),
-            VideoError::Software => f.write_str("no hardware H.264 encoder runs on this computer"),
-            VideoError::DeviceLost => f.write_str("the graphics device was lost"),
-        }
-    }
-}
-
-/// How a file is made, including the test faults.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WriterOptions {
-    /// The `software-encoder` test switch: the system-memory path into the software encoder.
-    pub allow_software: bool,
-    /// The `no-hardware` test switch: as if no hardware encoder were installed.
-    pub no_hardware: bool,
-    /// Meeting time of media time 0, from the file's `video` line.
-    pub start_t: u64,
-    /// `encoder-fail-at`: from this meeting time every write fails as an encoder error.
-    pub encoder_fail_at: Option<u64>,
-    /// `write-fail=video@`: from this meeting time the MP4 byte stream's writes fail as on a
-    /// full disk (`video::fault`).
-    pub disk_fail_at: Option<u64>,
-}
+use crate::platform::VideoWriter as PlatformWriter;
+use crate::platform::{VideoError, VideoMaker, WriterOptions};
 
 /// One second in 100 ns units.
 const SECOND: i64 = 10_000_000;
@@ -642,6 +604,74 @@ impl VideoWriter {
         self.writer = None;
         self.codec = None;
         std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0)
+    }
+}
+
+/// The Windows sink writer behind the platform's writer trait. The methods are the writer's own;
+/// this only names the frame type the orchestration hands over.
+impl PlatformWriter for VideoWriter {
+    type Picture = crate::capture::Texture;
+
+    fn write(&mut self, picture: &crate::capture::Texture, boot: u64) -> Result<(), VideoError> {
+        VideoWriter::write(self, &picture.0, boot)
+    }
+
+    fn hold(&mut self, picture: &crate::capture::Texture, boot: u64) {
+        VideoWriter::hold(self, &picture.0, boot);
+    }
+
+    fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {
+        VideoWriter::tick(self, boot_now)
+    }
+
+    fn flush(&mut self) -> Result<(), VideoError> {
+        VideoWriter::flush(self)
+    }
+
+    fn finish(self) -> Result<u64, VideoError> {
+        VideoWriter::finish(self)
+    }
+
+    fn abandon(&mut self) -> u64 {
+        VideoWriter::abandon(self)
+    }
+
+    fn encoder(&self) -> (&str, bool) {
+        VideoWriter::encoder(self)
+    }
+
+    fn video_size(&self) -> (u32, u32) {
+        VideoWriter::video_size(self)
+    }
+
+    fn end_t(&self) -> u64 {
+        VideoWriter::end_t(self)
+    }
+}
+
+/// Makes video files with Media Foundation's sink writer, on the graphics device the capture uses.
+pub struct WinVideoMaker {
+    mf: &'static Mf,
+    d3d: D3D,
+}
+
+impl WinVideoMaker {
+    pub fn new(mf: &'static Mf, d3d: D3D) -> WinVideoMaker {
+        WinVideoMaker { mf, d3d }
+    }
+}
+
+impl VideoMaker for WinVideoMaker {
+    type File = VideoWriter;
+
+    fn create(
+        &mut self,
+        path: &Path,
+        width: u32,
+        height: u32,
+        options: WriterOptions,
+    ) -> Result<VideoWriter, VideoError> {
+        VideoWriter::create(self.mf, &self.d3d, path, width, height, options)
     }
 }
 

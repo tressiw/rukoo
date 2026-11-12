@@ -448,19 +448,27 @@ fn nemotron_downloads_file_by_file() {
 
 #[test]
 fn the_asset_script_pins_the_same_nemotron() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/speaker-assets.ps1");
-    // A renamed or deleted script fails here rather than passing without a comparison.
-    let text =
-        fs::read_to_string(&script).unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
     let gguf = &ModelSpec::nemotron().files[0];
-    assert!(
-        text.contains(gguf.url.as_deref().unwrap()),
-        "speaker-assets.ps1 downloads another Nemotron URL"
-    );
-    assert!(
-        text.to_lowercase().contains(&gguf.sha256),
-        "speaker-assets.ps1 checks another Nemotron SHA-256"
-    );
+    // A renamed or deleted script fails here rather than passing without a comparison.
+    for name in ["speaker-assets.ps1", "speaker-assets.mjs"] {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts")
+            .join(name);
+        let text = fs::read_to_string(&script)
+            .unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
+        assert!(
+            text.contains(gguf.url.as_deref().unwrap()),
+            "{name} downloads another Nemotron URL"
+        );
+        assert!(
+            text.to_lowercase().contains(&gguf.sha256),
+            "{name} checks another Nemotron SHA-256"
+        );
+        assert!(
+            text.contains(&gguf.size.to_string()),
+            "{name} expects another Nemotron size"
+        );
+    }
 }
 
 #[test]
