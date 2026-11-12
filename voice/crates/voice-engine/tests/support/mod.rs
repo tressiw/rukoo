@@ -22,8 +22,8 @@ use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::permissions::{Permission, PermissionState, Permissions};
 use voice_engine::services::{
-    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicStream, Microphone, Services,
-    Speech, System, TextInput, Updates,
+    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicLost, MicStream, Microphone,
+    Services, Speech, System, TextInput, Updates,
 };
 use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
@@ -405,6 +405,8 @@ impl TextInput for FakeInput {
 pub enum MicPlan {
     /// Delivers these blocks 2 ms apart, then nothing.
     Blocks(Vec<Vec<i16>>),
+    /// Delivers these blocks, then the device goes away: the stream says it is lost.
+    Lost(Vec<Vec<i16>>),
     Fail(String),
 }
 
@@ -454,7 +456,15 @@ impl Drop for FakeStream {
 }
 
 impl Microphone for FakeMic {
-    fn open(&self, mut on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
+    fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
+        self.open_watched(on_audio, Box::new(|| {}))
+    }
+
+    fn open_watched(
+        &self,
+        mut on_audio: AudioSink,
+        on_lost: MicLost,
+    ) -> Result<Box<dyn MicStream>, String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         let delay = *lock(&self.open_delay);
         thread::sleep(delay);
@@ -462,9 +472,10 @@ impl Microphone for FakeMic {
         let plan = lock(&self.plans)
             .pop_front()
             .unwrap_or_else(|| tone(40, 8000.0));
-        let blocks = match plan {
+        let (blocks, lost) = match plan {
             MicPlan::Fail(message) => return Err(message),
-            MicPlan::Blocks(blocks) => blocks,
+            MicPlan::Blocks(blocks) => (blocks, None),
+            MicPlan::Lost(blocks) => (blocks, Some(on_lost)),
         };
         let closed = Arc::new(AtomicBool::new(false));
         let delivered = Arc::clone(&self.delivered);
@@ -478,6 +489,10 @@ impl Microphone for FakeMic {
                     on_audio(&block);
                     delivered.fetch_add(block.len(), Ordering::SeqCst);
                     thread::sleep(Duration::from_millis(2));
+                }
+                // As cpal does: the loss is reported on a thread that doesn't hold the stream.
+                if let Some(on_lost) = lost {
+                    thread::spawn(on_lost);
                 }
             }
         });

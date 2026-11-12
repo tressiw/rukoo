@@ -76,10 +76,23 @@ pub type AudioSink = Box<dyn FnMut(&[i16]) + Send>;
 /// An open microphone. Dropping it stops the capture.
 pub trait MicStream: Send {}
 
+/// Runs once, on a thread of its own, when an open microphone stops for good.
+pub type MicLost = Box<dyn FnOnce() + Send>;
+
 pub trait Microphone: Send + Sync {
     /// Opens the default microphone; blocks until it is open or failed. The error is an English
     /// sentence for the notification.
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String>;
+    /// [`Microphone::open`], calling `on_lost` when the device goes away or changes under the
+    /// stream, which then delivers nothing more. The default never calls it.
+    fn open_watched(
+        &self,
+        on_audio: AudioSink,
+        on_lost: MicLost,
+    ) -> Result<Box<dyn MicStream>, String> {
+        drop(on_lost);
+        self.open(on_audio)
+    }
 }
 
 /// Speech and rewrite providers, and the local model.

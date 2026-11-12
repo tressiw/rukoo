@@ -30,7 +30,7 @@ use crate::api::{Activity, PillPhase};
 use crate::engine::Core;
 use crate::meetings::tap::{self, TapEnd};
 use crate::pill::{self, notices};
-use crate::services::{AudioSink, MicStream};
+use crate::services::{AudioSink, MicLost, MicStream};
 
 /// Ownkey's micro-tap gates (`ownkey.py:3189-3196`): under 800 WAV bytes (378 samples after the
 /// 44-byte header), or under 0.10 s without anything heard, nothing is sent anywhere.
@@ -91,6 +91,8 @@ struct Captured {
     meter: LevelMeter,
     last_push: Option<Instant>,
     closed: bool,
+    /// How often Voice's own microphone was opened again after it stopped mid-dictation.
+    reopens: u32,
 }
 
 struct Job {
@@ -350,13 +352,17 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         meter: lock(&this.meter).restart(),
         last_push: None,
         closed: false,
+        reopens: 0,
     }));
     let make_sink = || audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
     let on_end = tap_ended(core, id, Arc::clone(&captured));
     let opened = match core.meetings.open_tap(make_sink(), on_end) {
         Some(Ok(stream)) => Ok(stream),
         // The recorder's tap failed: dictation still works on its own capture.
-        Some(Err(_)) | None => core.svc.microphone.open(make_sink()),
+        Some(Err(_)) | None => core
+            .svc
+            .microphone
+            .open_watched(make_sink(), mic_lost(core, id, Arc::clone(&captured))),
     };
     match opened {
         Ok(stream) => {
@@ -498,16 +504,9 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
             Some(r) => r.marked = None,
             None => return,
         }
-        let sink = audio_sink(Arc::downgrade(&core), id, captured);
-        match core.svc.microphone.open(sink) {
-            Ok(stream) => {
-                let old = match lock(&this.recording).as_mut().filter(|r| r.id == id) {
-                    Some(r) => r.stream.replace(stream),
-                    // Let go meanwhile: the new capture closes again.
-                    None => Some(stream),
-                };
-                // The tap, closed from its own reader thread.
-                drop(old);
+        // The tap is closed from its own reader thread.
+        match reopen(&core, id, captured) {
+            Ok(()) => {
                 // A recorder that lost its device but lives on is told at once.
                 try_mark(&core, id);
             }
@@ -521,6 +520,64 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
                     ),
                 );
             }
+        }
+    })
+}
+
+/// Opens Voice's own microphone into recording `id`'s buffer and puts it in place of the stream
+/// that ended, which is dropped here.
+fn reopen(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Result<(), String> {
+    let sink = audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
+    let stream = core
+        .svc
+        .microphone
+        .open_watched(sink, mic_lost(core, id, captured))?;
+    let old = match lock(&core.dictation.recording)
+        .as_mut()
+        .filter(|r| r.id == id)
+    {
+        Some(r) => r.stream.replace(stream),
+        // Let go meanwhile: the new capture closes again.
+        None => Some(stream),
+    };
+    drop(old);
+    Ok(())
+}
+
+/// How often one dictation opens Voice's own microphone again before it gives up.
+const MIC_REOPENS: u32 = 3;
+
+/// Runs when Voice's own microphone stops while the key may still be held: the device went away,
+/// or changed its format, as a Bluetooth headset or a new default microphone does. The rest of
+/// the dictation comes from the default microphone, opened again into the same buffer, as
+/// [`tap_ended`] does for the meeting's. When that fails, the pill says no audio is coming in.
+fn mic_lost(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> MicLost {
+    let weak = Arc::downgrade(core);
+    Box::new(move || {
+        let Some(core) = weak.upgrade() else {
+            return;
+        };
+        if core.shutting_down() || !holds(&core, id) {
+            return;
+        }
+        let attempt = {
+            let mut c = lock(&captured);
+            c.reopens += 1;
+            c.reopens
+        };
+        let result = if attempt > MIC_REOPENS {
+            Err("it stopped again".to_string())
+        } else {
+            reopen(&core, id, captured)
+        };
+        if let Err(message) = result {
+            core.pill.update(|p, _| p.no_audio(id, true));
+            core.notify(
+                errors::TITLE_DICTATION,
+                format!(
+                    "The microphone stopped during the dictation and didn't open again: {message}"
+                ),
+            );
         }
     })
 }

@@ -659,6 +659,71 @@ fn a_key_typed_during_the_hold_drops_the_recording() {
     engine.shutdown();
 }
 
+/// The microphone goes away halfway through a dictation, or changes its format. Voice opens the
+/// default one again into the same recording, so what was said after it is transcribed too.
+#[test]
+fn a_microphone_that_stops_mid_dictation_is_opened_again() {
+    let h = Harness::new("mic-lost");
+    h.config(json!({}));
+    {
+        let mut plans = lock(&h.mic.plans);
+        let MicPlan::Blocks(first) = tone(20, 8000.0) else {
+            unreachable!()
+        };
+        plans.push_back(MicPlan::Lost(first));
+        plans.push_back(tone(40, 8000.0));
+    }
+    let engine = h.start();
+    h.speech.say("both halves");
+    h.keys.down(Key::F13);
+    wait_for("the second microphone", || {
+        h.mic.opened.load(Ordering::SeqCst) == 2
+    });
+    wait_for("its audio", || {
+        h.mic.delivered.load(Ordering::SeqCst) >= 60 * 160
+    });
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["both halves"]);
+    assert!(
+        h.speech.heard()[0] >= 60 * 160,
+        "both microphones fed one recording: {:?}",
+        h.speech.heard()
+    );
+    assert_eq!(h.mic.streams.load(Ordering::SeqCst), 0);
+    engine.shutdown();
+}
+
+/// When the microphone that stopped can't be opened again, the pill says no audio comes in and a
+/// notification says why. The release still ends the recording.
+#[test]
+fn a_microphone_that_stops_and_wont_reopen_says_so() {
+    let h = Harness::new("mic-lost-for-good");
+    h.config(json!({}));
+    {
+        let mut plans = lock(&h.mic.plans);
+        let MicPlan::Blocks(first) = tone(20, 8000.0) else {
+            unreachable!()
+        };
+        plans.push_back(MicPlan::Lost(first));
+        plans.push_back(MicPlan::Fail("No microphone is available.".into()));
+    }
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    let note = h.sink.wait_note("app.notify.dictationFailed");
+    assert!(note.body.contains("didn't open again"), "{}", note.body);
+    h.sink.wait_phase(PillPhase::Listening);
+    wait_for("the no-audio notice", || {
+        lock(&h.sink.pills)
+            .iter()
+            .any(|p| p.notice.as_ref().is_some_and(|n| n.key == "pill.noAudio"))
+    });
+    h.keys.up(Key::F13);
+    wait_for("the recording to end", || {
+        h.mic.streams.load(Ordering::SeqCst) == 0 && h.speech.heard().len() == 1
+    });
+    engine.shutdown();
+}
+
 #[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");
