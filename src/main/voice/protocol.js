@@ -114,6 +114,8 @@ function hello(m) {
   pattern(m, 'instance', INSTANCE, { nullable: true });
   int(m, 'after', 0);
   if (given(m, 'clientVersion')) str(m, 'clientVersion');
+  // Rukoo's process id, so Voice can leave its windows out of a screen recording.
+  if (given(m, 'pid')) int(m, 'pid', 1);
 }
 
 const COMMAND_ARGS = {

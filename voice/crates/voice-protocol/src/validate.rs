@@ -121,6 +121,10 @@ fn hello(f: &Fields) -> Checked<Hello> {
     let token = f.token("token")?;
     let client = f.short_text("client")?;
     let client_version = f.optional_string("clientVersion")?;
+    let pid = match f.optional_uint("pid")? {
+        Some(0) => return invalid("pid"),
+        pid => pid,
+    };
     let instance = match f.nullable_string("instance")? {
         Some(instance) if !is_instance(instance) => return invalid("instance"),
         instance => instance.map(str::to_owned),
@@ -131,6 +135,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
         token,
         client,
         client_version,
+        pid,
         instance,
         after,
     })
@@ -712,6 +717,36 @@ mod tests {
         assert_eq!(reason(Side::Rukoo, hello), "instance");
         let long_client = json!({ "type": "hello", "protocol": 1, "token": TOKEN, "client": "r".repeat(65), "instance": null, "after": 0 });
         assert_eq!(reason(Side::Rukoo, long_client), "client");
+    }
+
+    #[test]
+    fn hello_takes_an_optional_pid_of_one_or_more() {
+        let hello = |pid: Value| json!({ "type": "hello", "protocol": 1, "token": TOKEN, "client": "rukoo", "pid": pid, "instance": null, "after": 0 });
+        assert_eq!(reason(Side::Rukoo, hello(json!(0))), "pid");
+        assert_eq!(reason(Side::Rukoo, hello(json!(1.5))), "pid");
+        assert_eq!(reason(Side::Rukoo, hello(json!(-3))), "pid");
+        assert_eq!(reason(Side::Rukoo, hello(json!("4821"))), "pid");
+        let parsed = validate_incoming(Side::Rukoo, &hello(json!(4821))).unwrap();
+        assert_eq!(
+            parsed,
+            Message::Hello(Hello {
+                protocol: 1,
+                token: TOKEN.into(),
+                client: "rukoo".into(),
+                client_version: None,
+                pid: Some(4821),
+                instance: None,
+                after: 0,
+            })
+        );
+        // An older Rukoo leaves the pid out, and null counts as left out.
+        let no_pid = json!({ "type": "hello", "protocol": 1, "token": TOKEN, "client": "rukoo", "instance": null, "after": 0 });
+        for value in [no_pid, hello(Value::Null)] {
+            let Message::Hello(hello) = validate_incoming(Side::Rukoo, &value).unwrap() else {
+                panic!("not a hello")
+            };
+            assert_eq!(hello.pid, None);
+        }
     }
 
     #[test]
