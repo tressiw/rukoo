@@ -28,9 +28,9 @@ pub struct Shared {
     pub sink: Arc<AppSink>,
     pub shell: Arc<dyn Shell>,
     pub catalog: Arc<Catalog>,
-    /// The WebView2 profile, inside Voice's data folder, so a development copy never shares the
-    /// installed one's.
-    pub webview_dir: PathBuf,
+    /// The webview's profile in the data folder, so a development copy never shares the installed
+    /// one's. `None` where the webview keeps its own store (macOS).
+    pub webview_dir: Option<PathBuf>,
     /// How often the Settings page asked for its state: it loaded and its IPC works.
     pub settings_loads: AtomicU64,
     pub shut_down: AtomicBool,

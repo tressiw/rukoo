@@ -5,6 +5,7 @@
 // A release build has no console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appearance;
 mod args;
 #[cfg(windows)]
 mod capture;
@@ -14,6 +15,8 @@ mod devhook;
 mod engine;
 mod fake;
 mod logging;
+#[cfg(target_os = "macos")]
+mod notify_mac;
 mod pill;
 mod selftest;
 mod settings_window;
@@ -27,6 +30,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use voice_engine::{ApiError, Edge, Notification, Theme, UiOptions};
@@ -131,6 +135,15 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             return 1;
         }
     };
+    // A menu bar app: no Dock icon and no entry in Cmd+Tab, only the tray. Tauri starts as a regular app, and
+    // an installed build's `LSUIElement` doesn't reach a binary that runs outside a bundle. Set before the
+    // event loop runs, so no window can show as a regular app first.
+    #[cfg(target_os = "macos")]
+    let app = {
+        let mut app = app;
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        app
+    };
     let code = app.run_return(|app, event| match event {
         // A tray app outlives its windows; only Quit (an exit with a code) ends it.
         RunEvent::ExitRequested {
@@ -140,16 +153,50 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             event: WindowEvent::ThemeChanged(_),
             ..
         } => {
-            if let Some(shared) = app.try_state::<Shared>() {
-                shared.sink.refresh_ui();
-            }
+            system_appearance_changed(app);
         }
+        // Finder, Launchpad and Spotlight don't start a second copy of a running app; they send it this.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => reopen(app),
         RunEvent::Exit => shut_down(app),
         _ => {}
     });
     match exit_code.load(Ordering::Relaxed) {
         0 => code,
         failed => failed,
+    }
+}
+
+/// The system's theme changed: the engine learns the new look for the Settings that follow the
+/// system, and the windows take what it says. macOS says so through
+/// [`appearance::watch_system`], Windows through tao's `ThemeChanged`. It runs on a thread of its
+/// own because the engine and the windows both take their own locks.
+///
+/// macOS posts its notification before the user defaults the engine reads always show the new
+/// style, so a second look follows a moment later. It finds nothing to do when the first one
+/// already saw the change.
+fn system_appearance_changed(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        for pause in [Duration::ZERO, Duration::from_millis(500)] {
+            thread::sleep(pause);
+            let Some(shared) = app.try_state::<Shared>() else {
+                return;
+            };
+            shared.engine.system_looks_changed();
+            shared.sink.refresh_ui();
+        }
+    });
+}
+
+/// The webview's profile in the data folder, so a development copy never shares the installed
+/// one's. WKWebView keeps its own store and ignores this, so macOS passes none and a fresh data
+/// folder there has no empty `WebView2/` folder.
+fn webview_profile(data_dir: &std::path::Path) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(data_dir.join("WebView2"))
     }
 }
 
@@ -162,15 +209,16 @@ fn setup(
     exit_code: &AtomicI32,
 ) {
     let catalog = Arc::new(Catalog::embedded());
-    let webview_dir = data_dir.join("WebView2");
+    let webview_dir = webview_profile(&data_dir);
     let slot = EngineSlot::default();
-    // Until the engine answers: Windows' theme and language.
+    // Until the engine answers: the system's theme and language.
     let ui = UiOptions {
         theme: if system::prefers_light_theme() {
             Theme::Light
         } else {
             Theme::Dark
         },
+        theme_follows_system: true,
         locale: system::locale(),
         pill_edge: Edge::Bottom,
         hide_pill_from_capture: true,
@@ -239,6 +287,8 @@ fn setup(
     });
 
     sink.refresh_ui();
+    let handle = app.clone();
+    appearance::watch_system(move || system_appearance_changed(&handle));
     tray.update(engine.tray_state());
     let handle = app.clone();
     if let Err(error) = tray.install(move |action| tray_action(&handle, action)) {
@@ -282,6 +332,16 @@ fn open_settings(app: &AppHandle, focus: bool, page: Option<String>) {
     if let Err(error) = result {
         log::error!("settings: could not open: {error}");
     }
+}
+
+/// The user opened the running app again (Finder, Launchpad, Spotlight). Does what a second launch does:
+/// Settings comes forward, whether or not the pill or another window is visible. This runs on the event
+/// loop, and `open_settings` must not, so it gets its own thread.
+#[cfg(target_os = "macos")]
+fn reopen(app: &AppHandle) {
+    log::info!("Voice was opened again; opening Settings");
+    let app = app.clone();
+    thread::spawn(move || open_settings(&app, true, None));
 }
 
 /// Tray clicks arrive on the event loop; everything they start runs on its own thread.
@@ -364,5 +424,18 @@ mod tests {
         };
         assert!(check_dev_flags(&hooks, false).is_err());
         assert!(check_dev_flags(&hooks, true).is_ok());
+    }
+
+    #[test]
+    fn macos_keeps_no_webview2_folder_in_the_data_folder() {
+        let data = std::path::Path::new("/tmp/voice-data");
+        let profile = webview_profile(data);
+        if cfg!(target_os = "macos") {
+            // WKWebView ignores a profile folder, so asking for one under the data folder only left
+            // an empty `WebView2/` there.
+            assert_eq!(profile, None);
+        } else {
+            assert_eq!(profile, Some(data.join("WebView2")));
+        }
     }
 }

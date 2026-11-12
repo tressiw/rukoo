@@ -9,7 +9,7 @@
 //! Requests arrive on stdin, one JSON object per line. A request that names `bytes` is followed by
 //! exactly that many raw bytes. Every request gets one JSON line on stdout, in order; `quit` gets
 //! none. Logs and sherpa-onnx's own output go to stderr. The worker exits 0 on `quit` and when
-//! stdin closes.
+//! stdin closes, and 70 on Unix when the app that started it is gone.
 //!
 //! | Request | Response |
 //! |---|---|
@@ -38,6 +38,11 @@
 mod engine;
 mod long_audio;
 mod onnx;
+// The watch Voice uses to end this worker with itself lives in voice-core, next to the client that
+// spawns it. Included by path rather than as a dependency: a worker that a model takes down
+// shouldn't link the app's network and archive stacks for a `kqueue` and `pidfd` watch.
+#[path = "../../voice-core/src/local/parent.rs"]
+mod parent;
 mod protocol;
 mod stdio;
 mod worker;
@@ -46,6 +51,9 @@ use std::io;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Before anything else: when the app that started this worker is gone, so is the worker. A
+    // worker started by hand has no parent to watch and stops when its stdin closes.
+    parent::watch(engine::log);
     // Before anything native runs: sherpa-onnx and onnxruntime must never write into the protocol.
     let mut output = match stdio::claim_stdout() {
         Ok(output) => output,

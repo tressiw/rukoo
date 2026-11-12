@@ -121,7 +121,7 @@ pub trait Speech: Send + Sync {
 }
 
 pub trait Chime: Send + Sync {
-    /// The ready chime: Windows' "Asterisk" sound, asynchronous.
+    /// The ready chime: Windows' "Asterisk" sound, or macOS' alert sound, asynchronous.
     fn play(&self);
 }
 

@@ -486,6 +486,7 @@ impl State {
         let ui = &self.settings["config"]["ui"];
         UiOptions {
             theme: resolve_theme(ui["theme"].as_str().unwrap_or("system")),
+            theme_follows_system: ui["theme"].as_str().unwrap_or("system") == "system",
             locale: resolve_locale(ui["language"].as_str().unwrap_or("system")),
             pill_edge: if ui["pillEdge"] == "top" {
                 Edge::Top
@@ -1513,6 +1514,13 @@ impl EngineApi for FakeEngine {
 
     fn ui(&self) -> UiOptions {
         self.lock().ui()
+    }
+
+    fn system_looks_changed(&self) {
+        self.apply(|st, out| {
+            st.restyle(out);
+            st.settings_changed(out);
+        });
     }
 
     fn tray_state(&self) -> TrayState {
