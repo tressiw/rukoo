@@ -4,7 +4,9 @@
 //! changes: a short burst at each new slide, one frame per keystroke with `type-every`, and
 //! nothing in between, unless `idle-every` sends the unchanged picture again as a real screen
 //! can on a still screen. With `dirty` each frame says what share of the screen changed since
-//! the frame before, as the real capture's dirty regions do.
+//! the frame before, as the real capture's dirty regions do. With `format=420f` its frames are
+//! bi-planar full-range YCbCr, as the real capture's are, so the thumbnail, JPEG, OCR and encoder
+//! run the path a real frame takes.
 //!
 //! The monitor ids are the Windows synthetic screen's (`\\.\SYNTHETIC1` …), so the crash tests
 //! pin and switch monitors with one spec on both platforms. They never name a real display.
@@ -167,7 +169,11 @@ fn run(
         if burst > 0 {
             burst -= 1;
             last_sent = Some(now);
-            let picture = PixelBuffer::from_pixels(&canvas.pixels());
+            // `format=420f`: the picture as ScreenCaptureKit sends it.
+            let picture = match spec.biplanar {
+                true => PixelBuffer::from_pixels_420f(&canvas.pixels()),
+                false => PixelBuffer::from_pixels(&canvas.pixels()),
+            };
             let Some(picture) = picture else {
                 // The buffer couldn't be allocated: the graphics device is the closest thing to it.
                 let _ = to_main.try_send(Ev::DeviceLost(generation));

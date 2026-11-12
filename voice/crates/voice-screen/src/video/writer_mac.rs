@@ -382,6 +382,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `420f` frames, as the real capture sends them, at the video's size: every frame becomes a
+    /// sample, and the file reads.
+    #[test]
+    fn a_file_from_420f_frames() {
+        let dir = temp_dir("biplanar");
+        let path = dir.join("000001.mp4");
+        let (width, height) = (320u32, 180u32);
+        let mut writer = MacVideoWriter::create(&path, width, height, software()).unwrap();
+        let slides: Vec<PixelBuffer> = (1..=3)
+            .map(|n| {
+                let slide =
+                    crate::capture::synthetic_mac::slide(&format!("Slide {n}"), n, width, height)
+                        .unwrap();
+                PixelBuffer::from_pixels_420f(&slide).unwrap()
+            })
+            .collect();
+        let mut boot = 9_000_000_000u64;
+        for n in 0..30 {
+            writer.write(&slides[n % 3], boot).unwrap();
+            boot += 666_667;
+        }
+        writer.finish().unwrap();
+        let index = mp4::index_path(&path).unwrap();
+        assert_eq!(index.complete_len, index.file_len);
+        let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+        assert_eq!(samples, 30);
+        assert!(index.fragments.len() >= 2, "{:?}", index.fragments.len());
+        assert!(index.fragments.iter().all(|f| f.first_sync));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A frame bigger than the video is scaled to `caps::video_size`; a frame at its size is
     /// taken as it is.
     #[test]

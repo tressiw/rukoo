@@ -363,6 +363,7 @@ On macOS the output also has `"screenRecording": true` or `false`: whether this 
 | `no-video-device=<n>` | With `device-lost-at`, the next `n` new devices after the loss have no video support |
 | `monitor-gone-at=<ms>` | The first monitor leaves the monitor list then, without the capture's `Closed` notice, as when that notice is lost |
 | `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
+| `format=420f` | On macOS the frames are bi-planar full-range YCbCr, as ScreenCaptureKit sends them, instead of BGRA. Windows ignores it |
 
 ### The screen control port
 

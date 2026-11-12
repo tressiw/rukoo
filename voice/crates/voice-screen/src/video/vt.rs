@@ -772,6 +772,21 @@ mod tests {
         assert!(units >= 1);
     }
 
+    /// A `420f` frame, as ScreenCaptureKit sends it, goes to the encoder as it is.
+    #[test]
+    fn the_software_encoder_takes_a_420f_frame() {
+        let (width, height) = (320u32, 180u32);
+        let mut encoder = Encoder::create(width, height, Kind::Software).unwrap();
+        let slide = crate::capture::synthetic_mac::slide("Slide 1", 1, width, height).unwrap();
+        let picture = PixelBuffer::from_pixels_420f(&slide).unwrap();
+        let first = encoder.encode(&picture, 0, true).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].sync);
+        assert!(encoder.parameter_sets().is_some());
+        let second = encoder.encode(&picture, 66, false).unwrap();
+        assert_eq!(second.len(), 1);
+    }
+
     /// The hardware encoder on this Mac, when it has one: a 1080p session that reports itself as
     /// hardware. Machines without one skip it.
     #[test]

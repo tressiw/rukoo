@@ -186,6 +186,12 @@ mod tests {
         let lines = reader.read_pixels(&slide).unwrap();
         let text = lines.join("\n");
         assert!(text.contains("Slide 3"), "read {text:?}");
+        // The same slide as ScreenCaptureKit sends it, `420f`, converted back for the reader.
+        let biplanar = crate::capture::mac::PixelBuffer::from_pixels_420f(&slide)
+            .and_then(|picture| picture.pixels())
+            .unwrap();
+        let text = reader.read_pixels(&biplanar).unwrap().join("\n");
+        assert!(text.contains("Slide 3"), "read {text:?} from a 420f frame");
     }
 
     /// The user's language wins when Vision reads it: a Dutch Mac reads Dutch first.
