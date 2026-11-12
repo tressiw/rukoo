@@ -90,9 +90,13 @@ fn defaults_follow_the_platform_and_a_development_copy() {
         default_hotkeys_on(false, true),
         ("right alt", "right command")
     );
-    // Development copies use F13 and F14 on either platform.
+    // A development copy on Windows or Linux uses F13 and F14, so it never answers Ownkey. On a
+    // Mac there is no Ownkey and most keyboards have no F13, so it uses the installed keys.
     assert_eq!(default_hotkeys_on(true, false), ("f13", "f14"));
-    assert_eq!(default_hotkeys_on(true, true), ("f13", "f14"));
+    assert_eq!(
+        default_hotkeys_on(true, true),
+        default_hotkeys_on(false, true)
+    );
     // Right Command is the one key a Mac adds; the rest stay Ownkey's names.
     assert!(voice_core::config::HOTKEYS.contains(&"right command"));
     assert!(voice_core::config::MACOS_HOTKEYS.contains(&"right command"));
