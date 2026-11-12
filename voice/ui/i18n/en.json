@@ -55,6 +55,10 @@
     "message": "Error details",
     "description": "Settings: link button after a failure, and the title of the dialog that shows the full error text from the app, which stays in English. voice/ui/settings.js (errorDetails)."
   },
+  "common.tryAgain": {
+    "message": "Try again",
+    "description": "Settings: button that has Voice try again after a failure, such as macOS refusing the keychain. voice/ui/settings.js (syncStatus)."
+  },
   "pill.arming": {
     "message": "Starting",
     "description": "Pill: dictation key pressed, the microphone is opening. Short; the pill holds about 220px of text. voice/ui/pill.js (viewOf)."
@@ -1283,6 +1287,10 @@
     "message": "Save the secret access key first.",
     "description": "Settings > Storage: Test connection failed: no secret access key is saved. voice/ui/settings.js (syncSection)."
   },
+  "settings.sync.error.keyDenied": {
+    "message": "macOS didn't let Voice open the saved secret. Test again and choose Always Allow when macOS asks.",
+    "description": "Settings > Storage: Test connection, or uploads, stopped because the user chose Deny in macOS's keychain dialog for the bucket secret. 'Always Allow' is the button in macOS's dialog; use the name macOS shows in this language. voice/ui/settings.js (SYNC_ERRORS)."
+  },
   "settings.sync.error.failed": {
     "message": "The test failed.",
     "description": "Settings > Storage: Test connection failed for another reason; Error details shows the app's English message. voice/ui/settings.js (syncSection)."
@@ -1337,6 +1345,14 @@
   "settings.sync.keyUnreadable": {
     "message": "Voice can't open its encryption key on this computer. Use your saved key.",
     "description": "Settings > Storage: status under the sync switch when the key file cannot be decrypted, with a button to enter the saved key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyDenied": {
+    "message": "macOS didn't let Voice open its encryption key in the keychain. Choose Try again, then Always Allow when macOS asks.",
+    "description": "Settings > Storage: status under the sync switch after the user chose Deny in macOS's keychain dialog, with a Try again button (common.tryAgain). 'Always Allow' is the button in macOS's dialog; use the name macOS shows in this language. voice/ui/settings.js (syncStatus)."
+  },
+  "settings.sync.unlocking": {
+    "message": "Waiting for the keychain. If macOS asks whether Voice may use it, choose Always Allow.",
+    "description": "Settings > Storage: status under the sync switch while Voice waits for macOS to open its encryption key, usually for the answer to the keychain dialog. 'Always Allow' is the button in macOS's dialog. voice/ui/settings.js (syncStatus)."
   },
   "settings.sync.keyNotSaved": {
     "message": "You haven't saved it yet.",

@@ -12,6 +12,7 @@
 //   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
 //   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
 //   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
+//   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the keychain dialog),
 //   restore (two meetings to restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
 //   "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
@@ -286,6 +287,25 @@ const SYNC_SCENARIOS = {
   key: (s) => {
     SYNC_SCENARIOS.on(s);
     Object.assign(s.sync, { state: 'key', key: { exists: true, id: '0f1e2d3c', exported: false } });
+    return false;
+  },
+  'key-denied': (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, {
+      state: 'key',
+      waiting: 3,
+      lastError: {
+        at: NOW - MIN,
+        code: 'key_denied',
+        message: "macOS didn't allow Voice to read its encryption key in the login keychain (error -128). Choose Try again in Settings > Storage, then Always Allow when macOS asks."
+      },
+      key: { exists: false, id: '0f1e2d3c', exported: true }
+    });
+    return false;
+  },
+  unlocking: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, { state: 'unlocking', lastError: null });
     return false;
   },
   restore: (s) => {
@@ -708,6 +728,18 @@ export function createMock(params) {
         if (state.sync.state === 'key') state.sync.state = 'idle';
         emit();
         return { id: state.sync.key.id };
+      }
+      if (action === 'retry') {
+        // As if the user chose Always Allow at once: unlocking, then up to date.
+        if (state.sync.state === 'key' && state.sync.lastError?.code === 'key_denied') {
+          Object.assign(state.sync, { state: 'unlocking', lastError: null });
+          emit();
+          setTimeout(() => {
+            Object.assign(state.sync, { state: 'idle', waiting: 0, key: { ...state.sync.key, exists: true } });
+            emit();
+          }, 300);
+        }
+        return null;
       }
       return fail('invalid_value', `Unknown action ${action}.`);
     },
