@@ -528,6 +528,64 @@ fn a_release_while_the_microphone_opens_stops_the_recording() {
     engine.shutdown();
 }
 
+/// The key-up never reaches the poller, so no release stops the recording. The watchdog reads the
+/// key up twice in a row and stops it as a release would, once.
+#[test]
+fn the_watchdog_stops_a_recording_whose_release_was_lost() {
+    let mut h = Harness::new("watchdog");
+    h.dictation_timing.watchdog = Duration::from_millis(50);
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("kept");
+    h.keys.down(Key::F13);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    h.keys.lose_release(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["kept"]);
+    assert_eq!(
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
+    );
+    // The poller sees the key-up after all: it stops nothing a second time, and the next hold
+    // dictates.
+    h.keys.find_release(Key::F13);
+    h.speech.say("next");
+    h.hold(Key::F13);
+    wait_for("the next insertion", || h.input.texts() == ["kept", "next"]);
+    assert_eq!(h.speech.heard().len(), 2);
+    engine.shutdown();
+}
+
+/// A key that reads down for the longest a recording may take, such as a key-down another app
+/// posted without its key-up, stops at that length with a notification. The key-up that comes
+/// later stops nothing.
+#[test]
+fn a_recording_stops_at_its_longest() {
+    let mut h = Harness::new("longest");
+    h.dictation_timing.watchdog = Duration::from_millis(20);
+    h.dictation_timing.longest = Duration::from_millis(300);
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("long");
+    h.keys.down(Key::F13);
+    wait_for("the transcription", || h.speech.heard().len() == 1);
+    assert!(h.keys.is_down(Key::F13), "stopped while the key reads down");
+    assert_eq!(
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
+    );
+    let note = h.sink.wait_note("app.notify.dictationFailed");
+    assert!(note.body.contains("longest"), "{}", note.body);
+    // The insertion waits for the key, as every insertion does.
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["long"]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(h.speech.heard().len(), 1);
+    engine.shutdown();
+}
+
 #[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");

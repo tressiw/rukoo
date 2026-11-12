@@ -22,8 +22,8 @@ use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::permissions::{Permission, PermissionState, Permissions};
 use voice_engine::services::{
-    AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
-    TextInput, Updates,
+    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicStream, Microphone, Services,
+    Speech, System, TextInput, Updates,
 };
 use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
@@ -234,9 +234,22 @@ impl FakeSink {
 // Keys ---------------------------------------------------------------------------------------
 
 #[derive(Clone, Default)]
-pub struct Keys(Arc<Mutex<HashSet<Key>>>);
+pub struct Keys(Arc<Mutex<HashSet<Key>>>, Arc<Mutex<HashSet<Key>>>);
 
 impl Keys {
+    /// Lets go of `key` without the hotkey poller noticing: its thread keeps reading the key as
+    /// down, as when a key-up never reaches the poll, while every other reader sees it up.
+    pub fn lose_release(&self, key: Key) {
+        lock(&self.1).insert(key);
+        lock(&self.0).remove(&key);
+    }
+
+    /// The poller reads the real state of `key` again.
+    pub fn find_release(&self, key: Key) {
+        lock(&self.1).remove(&key);
+        thread::sleep(Duration::from_millis(40));
+    }
+
     pub fn down(&self, key: Key) {
         lock(&self.0).insert(key);
     }
@@ -254,7 +267,10 @@ impl Keys {
 
     pub fn state(&self) -> KeyState {
         let keys = self.clone();
-        Arc::new(move |key| keys.is_down(key))
+        Arc::new(move |key| {
+            let poller = thread::current().name() == Some("hotkeys");
+            keys.is_down(key) || (poller && lock(&keys.1).contains(&key))
+        })
     }
 }
 
@@ -767,6 +783,8 @@ pub struct Harness {
     pub screen_exe: PathBuf,
     pub screen_timing: ScreenTiming,
     pub dev_mode: bool,
+    /// The production watchdog and limit unless a test shortens them.
+    pub dictation_timing: DictationTiming,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
     /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
@@ -817,6 +835,7 @@ impl Harness {
             ownkey_models: None,
             timing: ControllerTiming::default(),
             dev_mode: true,
+            dictation_timing: DictationTiming::default(),
             import_from: None,
             test_sources: None,
             test_screen: None,
@@ -853,6 +872,7 @@ impl Harness {
         Services {
             key_state: Some(self.keys.state()),
             hotkey_interval: Duration::from_millis(5),
+            dictation_timing: self.dictation_timing,
             input: self.input.clone(),
             microphone: self.mic.clone(),
             speech: Arc::new(SpeechHandle(Arc::clone(&self.speech))),

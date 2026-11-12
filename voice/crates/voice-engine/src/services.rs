@@ -145,11 +145,32 @@ pub trait System: Send + Sync {
     fn free_bytes(&self, path: &Path) -> Option<u64>;
 }
 
+/// The safety limits on a held dictation.
+#[derive(Clone, Copy, Debug)]
+pub struct DictationTiming {
+    /// How often the watchdog reads a recording's key. Two reads in a row that find it up stop
+    /// the recording, whatever happened to the key-up.
+    pub watchdog: Duration,
+    /// The longest a recording runs before it stops as if the key came up.
+    pub longest: Duration,
+}
+
+impl Default for DictationTiming {
+    fn default() -> DictationTiming {
+        DictationTiming {
+            watchdog: Duration::from_secs(1),
+            // 19 MB of 16 kHz WAV, under the 25 MB a cloud provider such as OpenAI takes.
+            longest: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
 /// Everything [`crate::start_with`] runs on.
 pub struct Services {
     /// `None` reads the real keyboard through voice-input's poller; tests inject the key state.
     pub key_state: Option<KeyState>,
     pub hotkey_interval: Duration,
+    pub dictation_timing: DictationTiming,
     pub input: Arc<dyn TextInput>,
     pub microphone: Arc<dyn Microphone>,
     pub speech: Arc<dyn Speech>,
@@ -200,6 +221,7 @@ impl Services {
         Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
+            dictation_timing: DictationTiming::default(),
             input: Arc::new(SystemInput),
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {

@@ -352,6 +352,7 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 marked: None,
             });
             mark(core, id);
+            watch(core, id, key);
             if recovered {
                 // Settings shows "no microphone" until it hears otherwise.
                 core.settings_changed();
@@ -552,11 +553,103 @@ fn audio_sink(core: Weak<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Audi
     })
 }
 
-fn stop_recording(core: &Arc<Core>) {
+/// Why the watchdog stopped a recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overrun {
+    /// The key read up twice in a row, a watchdog interval apart, and no release stopped it.
+    KeyUp,
+    /// It ran for [`crate::services::DictationTiming::longest`].
+    TooLong,
+}
+
+/// The last line of defense for "a missed key-up must never leave recording on" (Ownkey #11).
+/// While the recording exists, a thread reads its key every watchdog interval and stops the
+/// recording when the key reads up twice in a row, or when it has run for the longest time a
+/// recording may take. A release seen by the poller stops it within one poll, so the watchdog
+/// acts only when that release was lost or its handler is stuck, or when a key reads down for
+/// ten minutes, such as a key-down another app posted without its key-up.
+fn watch(core: &Arc<Core>, id: u64, key: Key) {
+    let weak = Arc::downgrade(core);
+    let timing = core.svc.dictation_timing;
+    let started = Instant::now();
+    let _ = thread::Builder::new()
+        .name("dictation-watchdog".into())
+        .spawn(move || {
+            let mut up = 0;
+            loop {
+                thread::sleep(timing.watchdog);
+                let Some(core) = weak.upgrade() else {
+                    return;
+                };
+                if core.shutting_down() || !holds(&core, id) {
+                    return;
+                }
+                up = if core.key_down(key) { 0 } else { up + 1 };
+                let overrun = if up >= 2 {
+                    Some(Overrun::KeyUp)
+                } else if started.elapsed() >= timing.longest {
+                    Some(Overrun::TooLong)
+                } else {
+                    None
+                };
+                if let Some(overrun) = overrun {
+                    stop_overrun(&core, id, overrun);
+                    return;
+                }
+            }
+        });
+}
+
+/// Whether recording `id` is still the one running.
+fn holds(core: &Core, id: u64) -> bool {
+    lock(&core.dictation.recording)
+        .as_ref()
+        .is_some_and(|r| r.id == id)
+}
+
+/// Stops recording `id` from the watchdog, as a release would. Push-to-talk lets go of its key
+/// under the recording's lock, so a release the handler thread works on at the same time finds
+/// nothing more to stop, and a newer recording is never stopped instead.
+fn stop_overrun(core: &Arc<Core>, id: u64, overrun: Overrun) {
     let this = &core.dictation;
-    let Some(mut recording) = lock(&this.recording).take() else {
+    let recording = {
+        let mut slot = lock(&this.recording);
+        if slot.as_ref().map(|r| r.id) != Some(id) {
+            return;
+        }
+        // Lock order: `recording`, then `ptt`; nothing takes them the other way round.
+        lock(&this.ptt).release_all();
+        slot.take()
+    };
+    let Some(recording) = recording else {
         return;
     };
+    match overrun {
+        Overrun::KeyUp => log::warn!("dictation: the key read up but no release came; stopped"),
+        Overrun::TooLong => {
+            log::warn!("dictation: stopped at the longest recording");
+            core.notify(
+                errors::TITLE_DICTATION,
+                format!(
+                    "Dictation stopped after {} minutes, the longest one recording can be.",
+                    core.svc.dictation_timing.longest.as_secs().div_ceil(60)
+                ),
+            );
+        }
+    }
+    end_recording(core, recording);
+}
+
+fn stop_recording(core: &Arc<Core>) {
+    let Some(recording) = lock(&core.dictation.recording).take() else {
+        return;
+    };
+    end_recording(core, recording);
+}
+
+/// Closes a recording taken out of its slot and queues it for the worker.
+fn end_recording(core: &Arc<Core>, mut recording: Recording) {
+    let this = &core.dictation;
     // Closing the stream first, so no audio arrives after the release is handled.
     drop(recording.stream.take());
     if let Some(file) = recording.marked.take() {
