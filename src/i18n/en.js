@@ -9315,6 +9315,10 @@
     "message": "Screen recording moved to {name}",
     "description": "Meeting view transcript: the user moved the screen recording to another monitor; name is the monitor's name from Windows. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.silent": {
+    "message": "{track}: only silence from here while another app played sound. If the call had sound, macOS may not let Rukoo Voice record it: in System Settings › Privacy & Security › Screen & System Audio Recording, under System Audio Recording Only, remove Rukoo Voice with the minus button and add it again.",
+    "description": "Meeting view transcript: Rukoo Voice recorded only exact silence on the call while another app played sound, which is what a Mac gives when System Audio Recording is off for Voice or its permission went stale after an update; track is Call audio. Name the System Settings panes as macOS does in this language. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.monitorLost": {
     "message": "The recorded monitor went away; screen recording moved to {name}",
     "description": "Meeting view transcript: the monitor Rukoo Voice recorded was unplugged or turned off, so it records another; name is that monitor's name. src/renderer/meeting.js (markText)"

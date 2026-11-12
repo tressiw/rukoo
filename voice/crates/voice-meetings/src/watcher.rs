@@ -6,7 +6,7 @@
 //! ones it hadn't sent yet.
 //!
 //! Mark ids: user marks keep the recorder's `k-<n>`. Derived marks use `gap-<track>-<at>`,
-//! `dev-<track>-<at>` and `dict-<at>`, and `gap-all-<at>` for a gap in every track (a crash, a
+//! `dev-<track>-<at>`, `silent-<track>-<at>` and `dict-<at>`, and `gap-all-<at>` for a gap in every track (a crash, a
 //! suspend), so they never collide with user marks and stay the same across restarts.
 
 use std::collections::{BTreeMap, HashSet};
@@ -216,7 +216,23 @@ impl Mapper {
                     reason,
                 });
             }
-            Line::Heartbeat { .. } | Line::Silent { .. } | Line::Sound { .. } | Line::Unknown => {}
+            // The call track records only exact zeros while another app plays sound: macOS may
+            // not let Voice record system audio. Rukoo hears of it at once, not at the end.
+            Line::Silent { track, since, .. } => {
+                self.mark(
+                    &mut out,
+                    Mark {
+                        id: format!("silent-{track}-{since}"),
+                        kind: MarkKind::Other("silent".into()),
+                        at: *since,
+                        until: None,
+                        track: track_of(track),
+                        detail: None,
+                        label: None,
+                    },
+                );
+            }
+            Line::Heartbeat { .. } | Line::Sound { .. } | Line::Unknown => {}
         }
         out
     }
@@ -484,6 +500,30 @@ mod tests {
         assert_eq!(m[3].id, "dev-call-6000");
         assert_eq!(m[3].label.as_deref(), Some("Speakers"));
         assert_eq!(states(&events), vec![(MeetingState::Recording, 0)]);
+    }
+
+    #[test]
+    fn a_silent_call_gives_a_mark_at_once_and_its_sound_none() {
+        let (_, events) = derive(&lines(&[
+            session(0, 1),
+            json!({"kind":"track","t":20,"track":"call","source":"default-output","device":"Mac mini Speakers","deviceId":"coreaudio:BuiltInSpeakerDevice","nativeRate":48000,"nativeChannels":2}),
+            json!({"kind":"segment","t":30,"track":"call","seq":1,"file":"audio/call/000001.wav"}),
+            json!({"kind":"silent","t":30_040,"track":"call","since":30}),
+            json!({"kind":"sound","t":41_000,"track":"call"}),
+        ]));
+        let m = marks(&events);
+        assert_eq!(
+            m,
+            vec![&Mark {
+                id: "silent-call-30".into(),
+                kind: MarkKind::Other("silent".into()),
+                at: 30,
+                until: None,
+                track: Some(MarkTrack::Call),
+                detail: None,
+                label: None,
+            }]
+        );
     }
 
     #[test]

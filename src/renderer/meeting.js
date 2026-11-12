@@ -940,6 +940,9 @@ function markText(k) {
       const name = k.label || t('meeting.mark.unnamedDevice');
       return k.detail === 'lost' ? t('meeting.mark.monitorLost', { name }) : t('meeting.mark.monitor', { name });
     }
+    // Voice heard only exact silence on the call while another app played sound: on a Mac, System Audio Recording may be off.
+    case 'silent':
+      return t('meeting.mark.silent', { track });
     // A stretch without frames; a gap stays about missing audio.
     case 'screen_gap': {
       const key = { locked: 'meeting.mark.gapScreenLocked', crash: 'meeting.mark.gapScreenCrash', device: 'meeting.mark.gapScreenDevice', monitor: 'meeting.mark.gapScreenMonitor' }[k.detail] || 'meeting.mark.gapScreen';
@@ -949,7 +952,7 @@ function markText(k) {
       return k.label ? t('meeting.mark.userLabel', { label: k.label }) : t('meeting.mark.user');
   }
 }
-const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning', video_dropped: 'warning', screen_gap: 'warning', screen_mode: 'monitor', monitor: 'monitor' };
+const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning', video_dropped: 'warning', screen_gap: 'warning', screen_mode: 'monitor', monitor: 'monitor', silent: 'warning' };
 
 function markHtml(k) {
   const kind = Object.hasOwn(MARK_ICONS, k.kind) ? k.kind : 'user';

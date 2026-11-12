@@ -1527,6 +1527,22 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   await shot('screen-marks-dark-nl');
 });
 
+test('a silent call mark says where to switch System Audio Recording back on', async () => {
+  const id = voiceStarts({ title: 'Silent call' });
+  say(id, 'mic', 500, 'Can you hear me?');
+  voice.append('mark', id, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null });
+  await openMeetings();
+  await expect(view().locator('.mt-mark.is-silent .mt-line')).toHaveText(
+    'Call audio: only silence from here while another app played sound. If the call had sound, macOS may not let Rukoo Voice record it: in System Settings › Privacy & Security › Screen & System Audio Recording, under System Audio Recording Only, remove Rukoo Voice with the minus button and add it again.'
+  );
+  await expect(view().locator('.mt-mark.is-silent svg')).toHaveCount(1);
+  await shot('silent-call-light-en');
+  await setLanguage('nl');
+  await setTheme('dark');
+  await expect(view().locator('.mt-mark.is-silent .mt-line')).toHaveText(/^Gespreksaudio: vanaf hier alleen stilte/);
+  await shot('silent-call-dark-nl');
+});
+
 test('frames and speaker labels in one meeting: each frame sits at its moment, and each voice keeps its row and its lines', async () => {
   // With speaker labels Voice sends a call voice right before its first passage; frames come between the passages.
   const id = voiceStarts({ title: 'Design review', screen: 'frames', speakers: [MIC] });
