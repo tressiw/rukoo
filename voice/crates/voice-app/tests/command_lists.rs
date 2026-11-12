@@ -62,6 +62,11 @@ fn capability_commands(file: &str) -> BTreeSet<String> {
 /// Every `invoke('command')` in a page.
 fn page_commands(file: &str) -> BTreeSet<String> {
     let source = std::fs::read_to_string(Path::new(MANIFEST).join("../..").join(file)).unwrap();
+    assert_eq!(
+        source.matches("invoke(").count(),
+        source.matches("invoke('").count(),
+        "{file}: every invoke must name its command as a literal for this test to see it"
+    );
     let mut found = BTreeSet::new();
     let mut rest = source.as_str();
     while let Some(at) = rest.find("invoke('") {
