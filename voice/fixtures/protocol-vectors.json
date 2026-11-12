@@ -43,6 +43,11 @@
       "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "clientVersion": "2.2.0", "instance": null, "after": 0 }
     },
     {
+      "name": "hello with Rukoo's process id",
+      "from": "rukoo",
+      "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "instance": null, "after": 0 }
+    },
+    {
       "name": "hello with a cursor and an unknown field",
       "from": "rukoo",
       "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041, "future": true }
@@ -437,6 +442,7 @@
     { "name": "hello without after", "from": "rukoo", "reason": "after", "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": null } },
     { "name": "hello with a fractional protocol", "from": "rukoo", "reason": "protocol", "message": { "type": "hello", "protocol": 1.5, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": null, "after": 0 } },
     { "name": "hello with an empty client", "from": "rukoo", "reason": "client", "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "", "instance": null, "after": 0 } },
+    { "name": "hello with a pid of 0", "from": "rukoo", "reason": "pid", "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "pid": 0, "instance": null, "after": 0 } },
     { "name": "event with seq 0", "from": "voice", "reason": "seq", "message": { "type": "event", "seq": 0, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false } } },
     { "name": "event with a negative seq", "from": "voice", "reason": "seq", "message": { "type": "event", "seq": -4, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false } } },
     { "name": "event without data", "from": "voice", "reason": "data", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000 } },

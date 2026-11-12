@@ -10,6 +10,7 @@
 //! never stops a screen process because the app is quitting, and it never touches the recorder.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -98,6 +99,8 @@ pub type FreeBytes = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// app run.
 pub type RukooClients = Box<dyn Fn() -> (usize, bool) + Send + Sync>;
 pub type ProtectionClients = Box<dyn Fn() -> Vec<u64> + Send + Sync>;
+/// The pids whose windows the screen process leaves out, as `--exclude-pid`.
+pub type ExcludePids = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
 
 pub struct ScreenOptions {
     pub data_dir: PathBuf,
@@ -323,6 +326,7 @@ pub struct ScreenSupervisor {
     acked: Condvar,
     clients: Mutex<Option<RukooClients>>,
     protection_clients: Mutex<Option<ProtectionClients>>,
+    exclude_pids: Mutex<Option<ExcludePids>>,
     mode_change: Mutex<()>,
     mode_acks: Mutex<Option<ModeProtection>>,
     mode_acked: Condvar,
@@ -361,6 +365,7 @@ impl ScreenSupervisor {
             acked: Condvar::new(),
             clients: Mutex::new(None),
             protection_clients: Mutex::new(None),
+            exclude_pids: Mutex::new(None),
             mode_change: Mutex::new(()),
             mode_acks: Mutex::new(None),
             mode_acked: Condvar::new(),
@@ -387,10 +392,23 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
+    /// The pids the screen process leaves out of its capture. A launch reads them; a screen
+    /// process that already records learns nothing new (a Rukoo that reconnects mid-meeting with
+    /// another pid isn't followed yet).
+    pub fn set_exclude_pids(&self, pids: ExcludePids) {
+        *lock(&self.exclude_pids) = Some(pids);
+    }
+
     fn protection_clients(&self) -> HashSet<u64> {
         lock(&self.protection_clients)
             .as_ref()
             .map_or_else(HashSet::new, |clients| clients().into_iter().collect())
+    }
+
+    fn exclude_pids(&self) -> Vec<u32> {
+        lock(&self.exclude_pids)
+            .as_ref()
+            .map_or_else(Vec::new, |pids| pids())
     }
 
     pub fn ack_mode(&self, id: &str, request: &str, connection: u64) {
@@ -1356,21 +1374,14 @@ impl ScreenSupervisor {
         resume: bool,
     ) -> Result<(Child, ScreenFile), LaunchError> {
         let mut command = Command::new(&self.exe);
-        command
-            .arg("record")
-            .arg("--meeting")
-            .arg(dir)
-            .arg("--mode")
-            .arg(mode.as_str());
-        if resume {
-            command.arg("--resume");
-        }
-        if let Some(monitor) = &self.test_monitor {
-            command.arg("--monitor").arg(monitor);
-        }
-        if let Some(test) = &self.test {
-            command.arg("--test").arg(test);
-        }
+        command.args(record_args(
+            dir,
+            mode,
+            resume,
+            self.test_monitor.as_deref(),
+            self.test.as_deref(),
+            &self.exclude_pids(),
+        ));
         let log_name = format!("screen-{id}.log");
         command
             .stdin(Stdio::null())
@@ -1597,6 +1608,41 @@ impl ScreenSupervisor {
     }
 }
 
+/// The arguments of `rukoo-voice-screen record`, without the program name.
+fn record_args(
+    dir: &Path,
+    mode: ScreenMode,
+    resume: bool,
+    test_monitor: Option<&str>,
+    test: Option<&str>,
+    exclude_pids: &[u32],
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "record".into(),
+        "--meeting".into(),
+        dir.as_os_str().to_owned(),
+        "--mode".into(),
+        mode.as_str().into(),
+    ];
+    if resume {
+        args.push("--resume".into());
+    }
+    if let Some(monitor) = test_monitor {
+        args.push("--monitor".into());
+        args.push(monitor.into());
+    }
+    if let Some(test) = test {
+        args.push("--test".into());
+        args.push(test.into());
+    }
+    // Every connected Rukoo's pid, so its windows stay out of the recording.
+    for pid in exclude_pids {
+        args.push("--exclude-pid".into());
+        args.push(pid.to_string().into());
+    }
+    args
+}
+
 fn watch(supervisor: Weak<ScreenSupervisor>) {
     loop {
         let Some(this) = supervisor.upgrade() else {
@@ -1688,6 +1734,58 @@ mod tests {
         assert_eq!(timing.handshake, Duration::from_millis(500));
         assert_eq!(timing.reconnect, Duration::from_secs(5));
         assert_eq!(timing.end_wait, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_screen_process_learns_the_pids_to_leave_out() {
+        let args = record_args(
+            Path::new("/m"),
+            ScreenMode::Frames,
+            false,
+            None,
+            None,
+            &[4821, 77],
+        );
+        assert_eq!(
+            args,
+            [
+                "record",
+                "--meeting",
+                "/m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "4821",
+                "--exclude-pid",
+                "77",
+            ]
+            .map(OsString::from)
+        );
+        // Without Rukoo's pid the command line is what it was before the field existed.
+        let none = record_args(
+            Path::new("/m"),
+            ScreenMode::Video,
+            true,
+            Some("display-2"),
+            Some("synthetic:640x480"),
+            &[],
+        );
+        assert_eq!(
+            none,
+            [
+                "record",
+                "--meeting",
+                "/m",
+                "--mode",
+                "video",
+                "--resume",
+                "--monitor",
+                "display-2",
+                "--test",
+                "synthetic:640x480",
+            ]
+            .map(OsString::from)
+        );
     }
 
     fn live(mode: ScreenMode) -> ScreenLive {

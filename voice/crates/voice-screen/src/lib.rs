@@ -105,7 +105,7 @@ pub fn dev_mode() -> bool {
 /// Runs one command line (without the program name):
 ///
 /// ```text
-/// rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--test <spec>]
+/// rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
 /// rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 /// rukoo-voice-screen probe
 /// rukoo-voice-screen inspect <file.mp4>

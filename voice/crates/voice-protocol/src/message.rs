@@ -365,6 +365,10 @@ pub struct Hello {
     pub client: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
+    /// Rukoo's process id, when it sent one: the process that owns its windows. Voice uses it
+    /// to leave Rukoo out of its own screen recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u64>,
     /// The instance Rukoo last saw, or `None` on its first connection.
     pub instance: Option<String>,
     /// The last sequence number Rukoo saw, or 0.
@@ -379,6 +383,7 @@ impl fmt::Debug for Hello {
             .field("token", &"<redacted>")
             .field("client", &self.client)
             .field("client_version", &self.client_version)
+            .field("pid", &self.pid)
             .field("instance", &self.instance)
             .field("after", &self.after)
             .finish()
@@ -1019,6 +1024,7 @@ mod tests {
             token: token.into(),
             client: "rukoo".into(),
             client_version: None,
+            pid: Some(4821),
             instance: None,
             after: 0,
         };

@@ -225,7 +225,7 @@ class VoiceBridge extends EventEmitter {
     ws.addEventListener('open', () => {
       if (!mine()) return;
       const { instance, after } = this.cursor();
-      this.sendRaw({ type: 'hello', protocol: d.protocol, token: d.discovery.token, client: 'rukoo', clientVersion: this.clientVersion, instance: instance || null, after: Number.isInteger(after) && after >= 0 ? after : 0 });
+      this.sendRaw({ type: 'hello', protocol: d.protocol, token: d.discovery.token, client: 'rukoo', clientVersion: this.clientVersion, pid: process.pid, instance: instance || null, after: Number.isInteger(after) && after >= 0 ? after : 0 });
       this.welcomeTimer = setTimeout(() => {
         if (!mine() || this.welcomed) return;
         this.log('bridge', 'no welcome from Voice');
