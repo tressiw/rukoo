@@ -558,6 +558,8 @@ fn permission_lost(code: isize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use objc2_core_foundation::CFRetained;
+
     use super::*;
 
     /// The stream takes a display's native pixels, within what the encoder takes, so the video
@@ -614,6 +616,305 @@ mod tests {
         // A process without a bundle id, as some helpers have, is still excluded by pid.
         assert!(excludes(16, "", &[16]));
         assert!(!excludes(0, "nl.bvdm.rukoo-mail", &[]));
+    }
+
+    /// A screen sample as ScreenCaptureKit hands one over: `picture` with a presentation time on
+    /// the host clock and the frame info in its attachments.
+    fn sample(
+        picture: &PixelBuffer,
+        pts: CMTime,
+        info: &[(&CFString, &CFType)],
+    ) -> CFRetained<CMSampleBuffer> {
+        use objc2_core_foundation::CFMutableDictionary;
+        use objc2_core_media::{
+            CMSampleTimingInfo, CMVideoFormatDescription,
+            CMVideoFormatDescriptionCreateForImageBuffer,
+        };
+        let image: &objc2_core_video::CVImageBuffer = picture.buffer();
+        let mut format: *const CMVideoFormatDescription = std::ptr::null();
+        // SAFETY: the out pointer is valid, and the call returns a retained description.
+        let status = unsafe {
+            CMVideoFormatDescriptionCreateForImageBuffer(None, image, NonNull::from(&mut format))
+        };
+        assert_eq!(status, 0);
+        let format = unsafe { CFRetained::from_raw(NonNull::new(format.cast_mut()).unwrap()) };
+        let mut timing = CMSampleTimingInfo {
+            duration: unsafe { CMTime::new(1, FPS as i32) },
+            presentationTimeStamp: pts,
+            decodeTimeStamp: unsafe { objc2_core_media::kCMTimeInvalid },
+        };
+        let mut out: *mut CMSampleBuffer = std::ptr::null_mut();
+        // SAFETY: every pointer is valid for the call, which returns a retained sample.
+        let status = unsafe {
+            CMSampleBuffer::create_ready_with_image_buffer(
+                None,
+                image,
+                &format,
+                NonNull::from(&mut timing),
+                NonNull::from(&mut out),
+            )
+        };
+        assert_eq!(status, 0);
+        let sample = unsafe { CFRetained::from_raw(NonNull::new(out).unwrap()) };
+        if !info.is_empty() {
+            let list = unsafe { sample.sample_attachments_array(true) }.unwrap();
+            // SAFETY: a sample's attachments are one mutable dictionary per sample.
+            let dict = unsafe { CFArray::value_at_index(&list, 0) } as *const CFMutableDictionary;
+            for (key, value) in info {
+                unsafe {
+                    CFMutableDictionary::set_value(
+                        dict.as_ref(),
+                        (*key as *const CFString).cast(),
+                        (*value as *const CFType).cast(),
+                    )
+                };
+            }
+        }
+        sample
+    }
+
+    /// A presentation time on the host clock, `ms` ago.
+    fn host_time(ms_ago: u64) -> CMTime {
+        let now = clock_mac::awake_100ns().saturating_sub(ms_ago * 10_000);
+        unsafe { CMTime::new(now as i64, 10_000_000) }
+    }
+
+    fn status(status: SCFrameStatus) -> CFRetained<CFNumber> {
+        CFNumber::new_isize(status.0)
+    }
+
+    fn picture() -> PixelBuffer {
+        let slide = super::super::synthetic_mac::slide("Slide 1", 1, 64, 48).unwrap();
+        PixelBuffer::from_pixels_420f(&slide).unwrap()
+    }
+
+    /// An `NSValue` holding a rectangle, as ScreenCaptureKit documents the dirty rectangles.
+    fn ns_rect(x: f64, y: f64, w: f64, h: f64) -> Retained<NSValue> {
+        NSValue::new(CGRect::new(
+            objc2_core_foundation::CGPoint::new(x, y),
+            objc2_core_foundation::CGSize::new(w, h),
+        ))
+    }
+
+    /// Core Graphics' dictionary form of a rectangle.
+    fn dict_rect(x: f64, y: f64, w: f64, h: f64) -> CFRetained<CFDictionary<CFString, CFNumber>> {
+        let key = CFString::from_static_str;
+        CFDictionary::from_slices(
+            &[&*key("X"), &*key("Y"), &*key("Width"), &*key("Height")],
+            &[
+                &*CFNumber::new_f64(x),
+                &*CFNumber::new_f64(y),
+                &*CFNumber::new_f64(w),
+                &*CFNumber::new_f64(h),
+            ],
+        )
+    }
+
+    fn as_cf(value: &NSObject) -> &CFType {
+        // SAFETY: Foundation objects are Core Foundation objects (toll-free bridged).
+        unsafe { &*(value as *const NSObject as *const CFType) }
+    }
+
+    /// The frame info: its status, and the share of the picture its dirty rectangles cover, in
+    /// either form, overlaps capped at the whole picture.
+    #[test]
+    fn the_frame_info_reads_status_and_dirty_rectangles() {
+        let picture = picture();
+        let complete = status(SCFrameStatus::Complete);
+        let key_status = cf(unsafe { SCStreamFrameInfoStatus });
+        let key_dirty = cf(unsafe { SCStreamFrameInfoDirtyRects });
+
+        // A quarter of 64 x 48 as NSValues, and as a dictionary plus an NSValue.
+        let rects = NSArray::from_retained_slice(&[ns_rect(0.0, 0.0, 32.0, 24.0)]);
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, as_cf(&rects))],
+        );
+        let read = info(&s, 64, 48).unwrap();
+        assert_eq!(read.status, SCFrameStatus::Complete.0);
+        assert!((read.dirty.unwrap() - 0.25).abs() < 1e-6, "{read:?}");
+
+        let both = CFArray::<CFType>::from_objects(&[
+            &*dict_rect(0.0, 0.0, 64.0, 12.0),
+            as_cf(&ns_rect(0.0, 12.0, 64.0, 12.0)),
+        ]);
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, &both)],
+        );
+        assert!((info(&s, 64, 48).unwrap().dirty.unwrap() - 0.5).abs() < 1e-6);
+
+        // Overlapping rectangles cover the picture at most once.
+        let over = NSArray::from_retained_slice(&[
+            ns_rect(0.0, 0.0, 64.0, 48.0),
+            ns_rect(0.0, 0.0, 64.0, 48.0),
+        ]);
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, as_cf(&over))],
+        );
+        assert_eq!(info(&s, 64, 48).unwrap().dirty, Some(1.0));
+
+        // No rectangles is no change; a value that isn't an array of rectangles is unknown.
+        let none = NSArray::<NSValue>::from_slice(&[]);
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, as_cf(&none))],
+        );
+        assert_eq!(info(&s, 64, 48).unwrap().dirty, Some(0.0));
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, &complete)],
+        );
+        assert_eq!(info(&s, 64, 48).unwrap().dirty, None);
+        let odd = CFArray::<CFType>::from_objects(&[&*complete]);
+        let s = sample(
+            &picture,
+            host_time(5),
+            &[(key_status, &complete), (key_dirty, &odd)],
+        );
+        assert_eq!(info(&s, 64, 48).unwrap().dirty, None);
+        // A rectangle of a picture without size reads as unknown, not as a division by zero.
+        assert_eq!(dirty_fraction(as_cf(&rects), 0, 0), None);
+
+        // No status, or no attachments at all: nothing is known.
+        let s = sample(&picture, host_time(5), &[(key_dirty, as_cf(&rects))]);
+        assert_eq!(info(&s, 64, 48), None);
+        let s = sample(&picture, host_time(5), &[]);
+        assert_eq!(info(&s, 64, 48), None);
+    }
+
+    /// A sample's age crosses to the boot clock; a time without the valid flag, or before the
+    /// clock began, has none.
+    #[test]
+    fn a_samples_time_crosses_to_the_boot_clock() {
+        let boot = host_time(40).boot_time().unwrap();
+        let age = clock_mac::boot_100ns().saturating_sub(boot);
+        assert!((350_000..=1_500_000).contains(&age), "{age}");
+        assert_eq!(
+            unsafe { objc2_core_media::kCMTimeInvalid }.boot_time(),
+            None
+        );
+        assert_eq!(unsafe { CMTime::new(-5, 1) }.boot_time(), None);
+        // A time in the future counts as now.
+        let ahead =
+            unsafe { CMTime::new(clock_mac::awake_100ns() as i64 + 50_000_000, 10_000_000) };
+        assert!(ahead.boot_time().unwrap() <= clock_mac::boot_100ns());
+    }
+
+    /// The codes that end the screen part, and two that don't by themselves.
+    #[test]
+    fn the_permission_codes() {
+        assert!(permission_lost(SCStreamErrorCode::UserDeclined.0));
+        assert!(permission_lost(SCStreamErrorCode::UserStopped.0));
+        assert!(permission_lost(SCStreamErrorCode::MissingEntitlements.0));
+        assert!(!permission_lost(
+            SCStreamErrorCode::FailedApplicationConnectionInterrupted.0
+        ));
+        assert!(!permission_lost(SCStreamErrorCode::SystemStoppedStream.0));
+        assert!(!permission_lost(0));
+    }
+
+    /// The output class registers, which in a debug build checks its methods against the
+    /// `SCStreamOutput` and `SCStreamDelegate` protocols, and hands a sample to the main thread
+    /// the way a stream's queue calls it: idle samples aren't frames, the first frame is all
+    /// changed, and a frame the full queue refused carries its change to the next one.
+    #[test]
+    fn the_output_registers_and_passes_frames_on() {
+        use objc2::{sel, ProtocolType};
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let output = Output::new(sender, 7, 64, 48);
+        // A Rust process has no `SCStreamOutput` or `SCStreamDelegate` in its runtime: the
+        // protocols' metadata lives in the binaries that adopt them, and ScreenCaptureKit doesn't
+        // register them itself. So the class can't declare them and objc2's debug check of the
+        // method signatures against them doesn't run; ScreenCaptureKit calls the methods by
+        // selector, which the real capture at the Mac showed. Should a system register them, the
+        // class must conform.
+        for protocol in [
+            <dyn SCStreamOutput>::protocol(),
+            <dyn SCStreamDelegate>::protocol(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(
+                output.conformsToProtocol(protocol),
+                "{}",
+                protocol.name().to_string_lossy()
+            );
+        }
+        for selector in [
+            sel!(stream:didOutputSampleBuffer:ofType:),
+            sel!(stream:didStopWithError:),
+        ] {
+            assert!(output.respondsToSelector(selector), "{selector:?}");
+        }
+        let picture = picture();
+        let key_status = cf(unsafe { SCStreamFrameInfoStatus });
+        let key_dirty = cf(unsafe { SCStreamFrameInfoDirtyRects });
+        let frame = |status_: SCFrameStatus, rects: &[Retained<NSValue>], ms_ago: u64| {
+            let rects = NSArray::from_retained_slice(rects);
+            let status_ = status(status_);
+            sample(
+                &picture,
+                host_time(ms_ago),
+                &[(key_status, &status_), (key_dirty, as_cf(&rects))],
+            )
+        };
+        let take = || match receiver.try_recv() {
+            Ok(Ev::Frame(frame)) => Some(frame),
+            Ok(_) => panic!("not a frame"),
+            Err(_) => None,
+        };
+
+        output.on_sample(&frame(SCFrameStatus::Started, &[], 10));
+        let first = take().expect("the first frame");
+        assert_eq!((first.generation, first.width, first.height), (7, 64, 48));
+        assert_eq!(first.dirty, Some(1.0));
+        assert!(first.picture.is_biplanar());
+
+        for idle in [
+            SCFrameStatus::Idle,
+            SCFrameStatus::Blank,
+            SCFrameStatus::Suspended,
+        ] {
+            output.on_sample(&frame(idle, &[], 5));
+            assert!(take().is_none(), "{idle:?} is a frame");
+        }
+
+        // One frame fills the queue of one; the next is refused and its change carried.
+        output.on_sample(&frame(
+            SCFrameStatus::Complete,
+            &[ns_rect(0.0, 0.0, 64.0, 12.0)],
+            5,
+        ));
+        output.on_sample(&frame(
+            SCFrameStatus::Complete,
+            &[ns_rect(0.0, 12.0, 64.0, 12.0)],
+            4,
+        ));
+        assert!((take().unwrap().dirty.unwrap() - 0.25).abs() < 1e-6);
+        output.on_sample(&frame(
+            SCFrameStatus::Complete,
+            &[ns_rect(0.0, 24.0, 64.0, 12.0)],
+            3,
+        ));
+        let carried = take().unwrap();
+        assert!(
+            (carried.dirty.unwrap() - 0.5).abs() < 1e-6,
+            "{:?}",
+            carried.dirty
+        );
+
+        // A sample without a valid time isn't a frame.
+        let untimed = sample(&picture, unsafe { objc2_core_media::kCMTimeInvalid }, &[]);
+        output.on_sample(&untimed);
+        assert!(take().is_none());
     }
 
     /// The real screen: it needs the Screen Recording grant, so it is ignored and never runs in
