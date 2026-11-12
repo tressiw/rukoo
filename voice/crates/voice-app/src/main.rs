@@ -20,6 +20,8 @@ mod logging;
 mod notify_mac;
 mod pill;
 mod selftest;
+#[cfg(target_os = "macos")]
+mod session_mac;
 mod settings_window;
 mod shell;
 mod single_instance;
