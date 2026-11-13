@@ -927,7 +927,9 @@ impl Recorder {
         for i in 0..self.tracks.len() {
             let track = &self.tracks[i];
             let watched = matches!(&track.state, State::Open(live) if live.silent_when_denied);
-            if watched && !track.silence.heard() {
+            // Once it heard sound or said the call is silent, the check needs no more answers:
+            // only a first sound can change it then.
+            if watched && !track.silence.heard() && !track.silence.silent() {
                 self.tracks[i].playing = crate::source::others_playing(&self.tracks[i].spec);
             }
         }
