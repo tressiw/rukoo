@@ -7,21 +7,60 @@ mod common;
 use common::*;
 use serde_json::json;
 
+/// How late a sleeping thread may wake on the slowest host these tests must pass on. Hosted macOS
+/// runners measured up to 76 ms (the CI host probe); the bounds below are derived for 100 ms at
+/// every wake-up on a path, so a late wake-up of the source thread, one of the recorder's
+/// loop and the next tick can all stack.
+const HOST_LATE_MS: u64 = 100;
+/// The recorder's loop wakes every 100 ms (`TICK` in record.rs), and a synthetic source polls every
+/// 5 ms and delivers 10 ms blocks (`BLOCK` in source.rs).
+const TICK_MS: u64 = 100;
+const SOURCE_POLL_MS: u64 = 5;
+const BLOCK_MS: u64 = 10;
+/// How far the audio on disk lags the clock: a block is delivered at most a poll plus a late
+/// wake-up after it was due, and the resampler holds back about a millisecond. A heartbeat and a
+/// stop are stamped on the clock, so the audio before them can end this far short of their time.
+const AUDIO_LAG_MS: u64 = BLOCK_MS + SOURCE_POLL_MS + HOST_LATE_MS + 1;
 /// The first segment of a session may start this late: the device opens, then its first
 /// 10 ms block arrives. GitHub's Windows runners open the second track's source and create its
 /// first file late now and then (two cores and a virus scan of every new file), so the margin is
-/// generous. What these tests guard is that nothing recorded is lost after a kill or a lost device;
-/// the tolerances below for that stay tight.
+/// generous: wake-ups account for at most `AUDIO_LAG_MS` of it. What these tests guard is that
+/// nothing recorded is lost after a kill or a lost device; the tolerances below for that stay tight.
 const START_TOLERANCE_MS: u64 = 1_000;
-/// Neighbouring segments of one stream may sit this far apart. Synthetic sources run on the
-/// same clock as the recorder, so in practice they are exactly contiguous.
+/// Neighbouring segments of one stream may sit this far apart. A segment starts where the one
+/// before ended, counted in samples, so no wake-up lateness enters: in practice they are exactly
+/// contiguous, and a gap here is audio the recorder lost.
 const JOIN_TOLERANCE_MS: u64 = 30;
-/// A hard kill may lose the last append (100 to 200 ms) and audio not yet appended.
+/// A hard kill may lose the last append (100 to 200 ms) and audio not yet appended; the audio that
+/// reached the recorder is flushed on every tick, before a heartbeat is written. Add the lag of
+/// the audio itself.
 const KILL_LOSS_MS: u64 = 300;
-/// A failure is detected within a few blocks; CI may add scheduling delay.
+/// A failure is detected by the source's next poll after it is due, so `device_lost` is stamped at
+/// most a poll and a late wake-up after the failure; the audio due before it, but not yet
+/// delivered, is lost with a late wake-up too.
 const DETECT_TOLERANCE_MS: u64 = 300;
 /// A lost device is retried every second.
 const RETRY_MS: u64 = 1_000;
+/// The meeting clock starts after the audio backend, so a fault that fires at `fail-at` on the
+/// backend's clock lands this much earlier on the meeting's: a descheduled process between the
+/// two statements costs at most a late wake-up.
+const SKEW_MS: u64 = HOST_LATE_MS;
+/// Closing the lost track's segment syncs it to disk on the recorder's thread before the retries
+/// are scheduled. A hosted macOS runner's `device` line came 1,375 ms after its `back-at`, so the
+/// sync and the wake-ups below took that long together. The sync is the one term that isn't a
+/// wake-up; 1.5 s is that whole 1,375 ms, rounded up.
+const CLOSE_SYNC_MS: u64 = 1_500;
+/// How long after its `back-at` the device may come back. The recorder handles the failure a poll
+/// and a late wake-up of the source after `fail-at` and a late wake-up of its own loop after that,
+/// closes the segment (`CLOSE_SYNC_MS`), and schedules its first retry a second later and the
+/// next one a second after that (the first one fails when the close was quick, as `back-at` is
+/// 2 s after `fail-at`). The attempt that finds the device back runs on the first tick after it
+/// is due: a tick and a late wake-up. Every attempt after `back-at` opens it.
+const BACK_LATE_MS: u64 = SOURCE_POLL_MS + 3 * HOST_LATE_MS + TICK_MS + CLOSE_SYNC_MS;
+
+// The tolerances above hold what their derivations say on a host that wakes 100 ms late.
+const _: () = assert!(KILL_LOSS_MS >= AUDIO_LAG_MS);
+const _: () = assert!(DETECT_TOLERANCE_MS >= SOURCE_POLL_MS + BLOCK_MS + HOST_LATE_MS);
 
 fn assert_contiguous(segs: &[Seg], what: &str) {
     for pair in segs.windows(2) {
@@ -83,7 +122,10 @@ fn hard_kill_keeps_everything_before_it() {
         .cloned()
         .unwrap();
     let resumed_at = t(&session);
-    m.wait_for_heartbeat(resumed_at + 2_000);
+    // The resumed session must record 1.5 s by this heartbeat (below). Its first segment may start
+    // `START_TOLERANCE_MS` after `resumed_at` and the audio on disk lags the heartbeat by
+    // `AUDIO_LAG_MS`, so waiting for 1.5 s + 1 s + 0.2 s, rounded up, is enough on a slow host too.
+    m.wait_for_heartbeat(resumed_at + 3_000);
     let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
     assert_eq!(reply["ok"], true, "{reply}");
     assert!(wait_exit(&mut child).success());
@@ -147,7 +189,9 @@ fn microphone_removed_keeps_the_timeline_complete() {
         &[],
     );
     let (mut client, token) = m.connect(1);
-    m.wait_for_heartbeat(6_000);
+    // The device may come back as late as `back-at` + `BACK_LATE_MS` (5,905 ms), and the audio after
+    // it has to be there before the stop: 7,000 ms leaves it a second.
+    m.wait_for_heartbeat(7_000);
     let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
     assert_eq!(reply["ok"], true, "{reply}");
     assert!(wait_exit(&mut child).success());
@@ -165,7 +209,7 @@ fn microphone_removed_keeps_the_timeline_complete() {
     assert_eq!(lost.len(), 1, "{lost:?}");
     let lost_t = t(lost[0]);
     assert!(
-        (2_000..=2_000 + DETECT_TOLERANCE_MS).contains(&lost_t),
+        (2_000 - SKEW_MS..=2_000 + DETECT_TOLERANCE_MS).contains(&lost_t),
         "device_lost at {lost_t}"
     );
     let back: Vec<_> = of_kind(&lines, "device")
@@ -176,8 +220,14 @@ fn microphone_removed_keeps_the_timeline_complete() {
     assert_eq!(back[0]["reason"], "reconnected");
     let back_t = t(back[0]);
     assert!(
-        (4_000..=4_000 + RETRY_MS + DETECT_TOLERANCE_MS).contains(&back_t),
+        (4_000 - SKEW_MS..=4_000 + BACK_LATE_MS).contains(&back_t),
         "device back at {back_t}"
+    );
+    // The first attempt comes a retry period after the recorder handled the loss, however late the
+    // host is.
+    assert!(
+        back_t + JOIN_TOLERANCE_MS >= lost_t + RETRY_MS,
+        "device back at {back_t}, lost at {lost_t}"
     );
 
     let mic = segments(&m, &lines, "mic");
@@ -208,7 +258,11 @@ fn microphone_removed_keeps_the_timeline_complete() {
         "mic audio ends at {gone}, after the device was lost at {lost_t}"
     );
     // No samples while the device was gone.
-    assert!(after[0].t >= 4_000, "mic audio resumes at {}", after[0].t);
+    assert!(
+        after[0].t >= 4_000 - SKEW_MS,
+        "mic audio resumes at {}",
+        after[0].t
+    );
     assert!(after[0].t >= back_t.saturating_sub(JOIN_TOLERANCE_MS));
     let mic_end = after.last().unwrap().end();
     assert!(
