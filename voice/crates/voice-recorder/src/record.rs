@@ -314,6 +314,19 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     Ok(())
 }
 
+/// Runs an open, turning a panic inside it (cpal, Core Audio) into a failed open, so the track
+/// retries instead of waiting for an `Opened` that never comes.
+fn catching(open: impl FnOnce() -> Result<Opened, String>) -> Result<Opened, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(open)).unwrap_or_else(|panic| {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        Err(format!("Opening the device failed: {why}"))
+    })
+}
+
 /// A macOS process tap: opening one creates objects in the audio server.
 fn is_tap(spec: &SourceSpec) -> bool {
     cfg!(target_os = "macos") && matches!(spec, SourceSpec::DefaultOutput | SourceSpec::Output(_))
@@ -773,7 +786,7 @@ impl Recorder {
         let spawned = std::thread::Builder::new()
             .name(format!("open-{}", track.name))
             .spawn(move || {
-                let result = backend.open(&spec, sink);
+                let result = catching(|| backend.open(&spec, sink));
                 // Blocks while the queue is full: the result must not be lost. A recorder that
                 // stopped has dropped the receiver, and the stream then stops right here.
                 let _ = events.send(Event::Opened {
@@ -1357,6 +1370,17 @@ mod tests {
         assert_eq!(next_segment_start(30_000, 29_950), 30_000);
         assert_eq!(next_segment_start(30_000, 30_150), 30_150);
         assert_eq!(next_segment_start(30_000, 29_850), 29_850);
+    }
+
+    #[test]
+    fn a_panic_while_opening_is_a_failed_open() {
+        let result = catching(|| panic!("the HAL went away"));
+        assert_eq!(
+            result.err().as_deref(),
+            Some("Opening the device failed: the HAL went away")
+        );
+        let missing = catching(|| Err("not connected".into()));
+        assert_eq!(missing.err().as_deref(), Some("not connected"));
     }
 
     #[test]
