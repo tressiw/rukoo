@@ -123,7 +123,7 @@ function main() {
     `::warning::This macOS host wakes sleeping threads up to ${worst.toFixed(0)} ms late (limit ${MAX_OVERSHOOT_MS} ms). ` +
       `Skipped, and reported as passed: ${SKIPPED.join('; ')}. ` +
       'Their timing windows are 20 to 300 ms, so a stalled host fails them without a bug. Windows and Linux CI still run them. ' +
-      'The speaker label tests judge the host by their own measurement.',
+      'The speaker label tests judge the host by their own speed measurement, on every platform.',
   );
 }
 

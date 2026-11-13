@@ -5,9 +5,13 @@ Packs a built NeMo runtime folder into the release zip and writes the manifest t
 .DESCRIPTION
 Checks the folder build.ps1 wrote against its runtime.json (every file present with its size and SHA-256, nothing
 else), zips it as <name>-win-x64.zip with the files at the top of the archive, and writes two files next to it:
-manifest.json, which is runtime.json plus the archive's download URL, size and SHA-256, and notes.md, the release notes
-with the source, flags, toolset, licenses and every hash. After the zip is published as the release asset, that
-manifest.json replaces voice/nemo-runtime/manifest.json (README.md, "Publishing").
+manifest.json, the per-target manifest of this folder with the Windows entry filled in (the archive's download URL,
+size and SHA-256 and every file's hash), and notes.md, the release notes with the source, flags, toolset, licenses and
+every hash. After the zip is published as the release asset, that manifest.json replaces
+voice/nemo-runtime/manifest.json (README.md, "Publishing").
+
+It packs the Windows runtime. A macOS runtime is built by build-macos.sh and needs its own packing step before it can be
+published; README.md says what that step has to write.
 
 .PARAMETER Runtime
 The runtime folder build.ps1 wrote.
@@ -48,9 +52,15 @@ function Get-Sha256 {
 $Runtime = Resolve-Full $Runtime
 $Out = Resolve-Full $Out
 $pins = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
+if ($pins.format -ne 2) { throw "voice/nemo-runtime/manifest.json is format $($pins.format), not the per-target format 2" }
 $runtimeJson = Join-Path $Runtime 'runtime.json'
 if (-not (Test-Path -LiteralPath $runtimeJson)) { throw "$Runtime has no runtime.json; build it with build.ps1" }
 $built = Get-Content -LiteralPath $runtimeJson -Raw | ConvertFrom-Json
+$target = 'windows-x86_64'
+if ($built.PSObject.Properties['target'] -and $built.target) { $target = $built.target }
+if ($target -ne 'windows-x86_64') {
+  throw "$Runtime holds the $target runtime. This script packs the Windows one; voice/nemo-runtime/README.md says what a macOS release needs."
+}
 if ($built.name -ne $pins.name -or $built.commit -ne $pins.commit) {
   throw "$Runtime holds $($built.name) at $($built.commit), not $($pins.name) at $($pins.commit)"
 }
@@ -81,18 +91,32 @@ try {
   }
 } finally { $zip.Dispose() }
 
-$manifest = [ordered]@{}
-foreach ($property in $built.PSObject.Properties) {
-  if ($property.Name -eq 'files') {
-    $manifest['archive'] = [ordered]@{
-      url = "https://github.com/$Repository/releases/download/$($pins.name)/$zipName"
-      size = (Get-Item -LiteralPath $zipPath).Length
-      sha256 = Get-Sha256 $zipPath
-    }
-  }
-  $manifest[$property.Name] = $property.Value
+$archive = [ordered]@{
+  url = "https://github.com/$Repository/releases/download/$($pins.name)/$zipName"
+  size = (Get-Item -LiteralPath $zipPath).Length
+  sha256 = Get-Sha256 $zipPath
 }
-$json = ($manifest | ConvertTo-Json -Depth 6).Replace("`r`n", "`n")
+$manifest = [ordered]@{}
+foreach ($property in $pins.PSObject.Properties) {
+  if ($property.Name -ne 'targets') {
+    $manifest[$property.Name] = $property.Value
+    continue
+  }
+  # The published target: this build's record plus its archive. The other targets stay as pinned.
+  $entry = [ordered]@{}
+  foreach ($builtProperty in $built.PSObject.Properties) {
+    if ($builtProperty.Name -in @('format', 'target', 'name', 'repository', 'commit', 'submodules')) { continue }
+    if ($builtProperty.Name -eq 'files') { $entry['archive'] = $archive }
+    $entry[$builtProperty.Name] = $builtProperty.Value
+  }
+  $targets = [ordered]@{}
+  foreach ($targetProperty in $pins.targets.PSObject.Properties) {
+    $targets[$targetProperty.Name] = $targetProperty.Value
+  }
+  $targets[$target] = $entry
+  $manifest['targets'] = $targets
+}
+$json = ($manifest | ConvertTo-Json -Depth 10).Replace("`r`n", "`n")
 [IO.File]::WriteAllText((Join-Path $Out 'manifest.json'), $json + "`n", $Utf8)
 
 # The release notes: what was built, from which source, with which toolset, under which licenses, and every hash.
@@ -111,7 +135,7 @@ if ($features.Count -gt 1) { $featureText = ($features[0..($features.Count - 2)]
 $linked = @($built.files | Where-Object { $_.path -like 'licenses/vcpkg/*' } | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.path) })
 [void]$notes.Append("- Licenses: NeMo-Speech.cpp is Apache-2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. ``licenses\LICENSE``, ``licenses\NOTICE`` and ``licenses\THIRD_PARTY_NOTICES.md`` come with it and name what the DLLs contain, such as ggml (MIT). ``licenses\darts-clone.txt`` is the BSD 2-Clause license of Darts-clone, which SentencePiece compiles in. ``licenses\vcpkg\`` holds the licenses of the libraries vcpkg linked in: $($linked -join ', '). ``msvcp140.dll``, ``vcruntime140.dll`` and ``vcruntime140_1.dll`` are unmodified Microsoft Visual C++ runtime files, redistributed under the Visual Studio license terms.`n`n")
 [void]$notes.Append("| File | Bytes | SHA-256 |`n|---|---:|---|`n")
-[void]$notes.Append("| ``$zipName`` | $($manifest.archive.size) | ``$($manifest.archive.sha256)`` |`n")
+[void]$notes.Append("| ``$zipName`` | $($archive.size) | ``$($archive.sha256)`` |`n")
 foreach ($file in $built.files) {
   $version = ''
   if ($file.PSObject.Properties['version']) { $version = " (version $($file.version))" }
@@ -119,5 +143,5 @@ foreach ($file in $built.files) {
 }
 [IO.File]::WriteAllText((Join-Path $Out 'notes.md'), $notes.ToString(), $Utf8)
 
-Write-Host "Packed $zipName ($('{0:N0}' -f $manifest.archive.size) bytes, SHA-256 $($manifest.archive.sha256))"
+Write-Host "Packed $zipName ($('{0:N0}' -f $archive.size) bytes, SHA-256 $($archive.sha256))"
 Write-Host "Wrote manifest.json and notes.md in $Out"

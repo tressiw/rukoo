@@ -211,7 +211,7 @@ check('Screen recording says what this computer can\'t record, and is off where 
 
 const SPEAKER_TEXT = {
   off: 'Off. Meetings label the whole call as one speaker.',
-  platform: 'Speaker labels work on Windows only in this version.',
+  platform: 'Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.',
   cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
   runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
   runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",

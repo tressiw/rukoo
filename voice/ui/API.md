@@ -355,7 +355,7 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
   "reason": null,
   "detail": null,
   "missing": [],
-  "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true },
+  "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true, "neon": false, "dotprod": false, "fp16": false },
   "runtime": { "location": "voice", "commit": "97a15af" },
   "live": [{ "meeting": "m-20261102-101500-1a2b", "mode": "nemotron", "state": "listening", "speakers": 3, "reason": null, "workerPid": 4242 }]
 }
@@ -365,11 +365,11 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 |---|---|
 | `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
 | `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
-| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x64), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2), `runtime` (no NeMo runtime verifies next to Voice), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
+| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
 | `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
-| `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]`; else `[]`. |
-| `cpu` | This processor's features. |
-| `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (next to Voice), `ownkey` (Ownkey's copy, read only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
+| `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]` or `["dotprod"]`; else `[]`. |
+| `cpu` | This processor's features. Windows reports the x86-64 build's four (`avx2`, `fma`, `f16c`, `bmi2`) and macOS the arm64 build's three (`neon`, `dotprod`, `fp16`); the features of the other platform are `false`. |
+| `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (Voice's own copy: next to the exe, or in its bundle's `Contents/Resources` on macOS), `ownkey` (Ownkey's copy, read only, Windows only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
 | `live` | One entry per meeting that is transcribing: `mode` `nemotron`, `mistral` or `off`; `state` `off`, `starting`, `matching`, `listening`, `catchingUp`, `restarting`, `finished` or `failed`; `speakers`, the voices labelled so far; `reason`, the code a meeting in mode `off` labels without (the codes above, `stream`, `noCall` for a meeting that records no call track, or `upgrade` for a meeting that a Voice without speaker labels started); `workerPid`, the worker's process id in a development copy, else `null`. `failed` means labels stopped for that meeting while its recording and transcription go on. |
 
 A meeting keeps the labels it started with: a change of the switch, the model or the meeting provider applies to the next meeting.

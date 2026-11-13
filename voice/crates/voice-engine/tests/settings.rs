@@ -80,7 +80,8 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["speakers"]["reason"], "platform");
     assert_eq!(state["speakers"]["runtime"], Value::Null);
     assert_eq!(state["speakers"]["live"], json!([]));
-    for feature in ["avx2", "fma", "f16c", "bmi2"] {
+    // The processor's features, as this platform's build needs them.
+    for feature in ["avx2", "fma", "f16c", "bmi2", "neon", "dotprod", "fp16"] {
         assert!(state["speakers"]["cpu"][feature].is_boolean(), "{feature}");
     }
     let mistral = state["providers"]["audio"]

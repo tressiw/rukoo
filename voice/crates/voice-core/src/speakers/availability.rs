@@ -18,14 +18,15 @@ use crate::local::Job;
 use crate::local::{Located, ModelRegistry, ModelSpec};
 use crate::paths;
 
-/// The runtime is built for Windows on x86-64 only.
-const PLATFORM_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64"));
+/// The runtime is built for Windows on x86-64 and, with its own build, for macOS on Apple Silicon.
+const PLATFORM_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64"))
+    || cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 /// Why speaker labels can't run. Serialized with the Settings reason code in `code`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "code", rename_all = "camelCase")]
 pub enum Unavailable {
-    /// Not Windows on x86-64.
+    /// Not Windows on x86-64 or macOS on Apple Silicon.
     Platform,
     /// The processor lacks features the runtime needs.
     Cpu { missing: Vec<String> },
@@ -58,7 +59,9 @@ impl fmt::Display for Unavailable {
     /// English, for logs. Settings shows its own text for each code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Unavailable::Platform => f.write_str("Speaker labels work on Windows only."),
+            Unavailable::Platform => f.write_str(
+                "Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.",
+            ),
             Unavailable::Cpu { missing } => write!(
                 f,
                 "This processor lacks {}, which speaker labels need.",
@@ -372,6 +375,9 @@ mod tests {
         fma: true,
         f16c: true,
         bmi2: true,
+        neon: true,
+        dotprod: true,
+        fp16: true,
     };
 
     fn spec() -> ModelSpec {
@@ -473,15 +479,15 @@ mod tests {
     fn missing_cpu_features_give_cpu() {
         let temp = TempDir::new("avail-cpu");
         let mut opts = ready(&temp);
-        opts.cpu = CpuFeatures {
-            bmi2: false,
-            f16c: false,
-            ..ALL
+        opts.cpu = CpuFeatures::default();
+        let expected = Unavailable::Cpu {
+            missing: CpuFeatures::default()
+                .missing()
+                .into_iter()
+                .map(String::from)
+                .collect(),
         };
         let labels = labels(opts);
-        let expected = Unavailable::Cpu {
-            missing: vec!["f16c".into(), "bmi2".into()],
-        };
         assert_eq!(labels.availability(), Err(expected.clone()));
         assert_eq!(labels.diarizer().err(), Some(expected));
     }
@@ -585,7 +591,11 @@ mod tests {
         assert_eq!(
             forced("cpu", true),
             Err(Unavailable::Cpu {
-                missing: vec!["avx2".into(), "fma".into(), "f16c".into(), "bmi2".into()]
+                missing: CpuFeatures::default()
+                    .missing()
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
             })
         );
         assert_eq!(forced("runtime", true), Err(Unavailable::Runtime));

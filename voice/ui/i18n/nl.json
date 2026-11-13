@@ -284,7 +284,7 @@
   "settings.speakers.ready": "Klaar. Nieuwe vergaderingen labelen elke stem in het gesprek.",
   "settings.speakers.readyMistral": "Klaar. Mistral labelt de stemmen in het gesprek, omdat je vergaderingen naar het realtime-model van Mistral streamen.",
   "settings.speakers.reason.off": "Uit. Vergaderingen labelen het hele gesprek als één spreker.",
-  "settings.speakers.reason.platform": "Sprekerlabels werken in deze versie alleen op Windows.",
+  "settings.speakers.reason.platform": "Sprekerlabels vragen Windows op een Intel- of AMD-pc, of een Mac met Apple Silicon.",
   "settings.speakers.reason.cpu": "Deze processor mist {missing}, en dat is nodig voor sprekerlabels. Vergaderingen labelen het hele gesprek als één spreker.",
   "settings.speakers.reason.runtime": "De runtime voor sprekerlabels ontbreekt in deze installatie. Installeer Rukoo Voice opnieuw.",
   "settings.speakers.reason.runtimeFailed": "De runtime voor sprekerlabels kon niet starten. Voice probeert het opnieuw na een herstart.",
