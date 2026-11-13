@@ -243,6 +243,17 @@ check('a development copy can\'t import or start at login', async ({ open, page 
   assert.match(await page.locator('.page-actions').innerText(), /--import-ownkey <copy>/);
 });
 
+check('a development copy starts on F13 and F14 on Windows and on the installed keys on a Mac', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&scenario=dev');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold F13 to dictate/);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  assert.match(await page.locator('body').innerText(), /Development copies start with F13 and F14/);
+  await open('settings.html?mock=1&lang=en&scenario=dev&platform=macos');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Development copies start with F13/);
+});
+
 check('Screen recording shows for a Voice that has it, and saves the choice', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en');
   assert.equal(await page.locator('[data-a^="seg:meetings.screen:"]').count(), 0, 'no screen feature, no row');
@@ -1065,6 +1076,15 @@ check('the screen notices read right in both languages, with the screen glyph', 
     }
   }
   assert.equal(await page.locator('.ind.tone-text2').count(), 1, 'a move is news, not a warning');
+});
+
+check('the silent-call notice reads right in both languages, with the info glyph in orange', async ({ open, page }) => {
+  for (const [lang, text] of [['en', 'No sound from the call'], ['nl', 'Geen geluid van het gesprek']]) {
+    await open(`pill.html?mock=meeting-call-silent&lang=${lang}`);
+    assert.equal(await page.locator('.label:not(.out)').innerText(), text, `in ${lang}`);
+    assert.equal(await page.locator('.ind [data-icon="info"]').count(), 1, `the info glyph in ${lang}`);
+    assert.equal(await page.locator('.ind.tone-orange').count(), 1, `orange in ${lang}`);
+  }
 });
 
 check('a meeting snapshot with an unknown screen mode is ignored', async ({ open, page }) => {
