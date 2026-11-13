@@ -485,11 +485,6 @@ impl Pill {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
-    pub fn native_status(&self) -> Value {
-        Value::Null
-    }
-
     // ---------- from the engine ----------
 
     pub fn snapshot(self: &Arc<Self>, s: PillSnapshot) {

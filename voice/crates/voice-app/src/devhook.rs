@@ -134,6 +134,7 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
 }
 
 /// `Pill::native_status`, read on the event loop thread that owns the windows.
+#[cfg(target_os = "macos")]
 fn pill_native(app: &AppHandle, shared: &Shared) -> Value {
     let pill = shared.pill.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -147,6 +148,12 @@ fn pill_native(app: &AppHandle, shared: &Shared) -> Value {
     }
     rx.recv_timeout(Duration::from_secs(5))
         .unwrap_or_else(|_| json!({ "error": "the event loop didn't answer" }))
+}
+
+/// Only macOS has a native recipe to report; elsewhere `status` doesn't wait on the event loop.
+#[cfg(not(target_os = "macos"))]
+fn pill_native(_app: &AppHandle, _shared: &Shared) -> Value {
+    Value::Null
 }
 
 /// The bucket sync commands of Settings > Storage.
