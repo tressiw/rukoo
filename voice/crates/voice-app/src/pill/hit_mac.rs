@@ -162,6 +162,8 @@ impl HitPanel {
         panel.setCollectionBehavior(window::collection_behavior());
         panel.setBecomesKeyOnlyIfNeeded(true);
         panel.setHidesOnDeactivate(false);
+        // Hide in Settings or Hide Others elsewhere leaves the buttons with the pill.
+        panel.setCanHide(false);
         panel.setOpaque(false);
         panel.setHasShadow(false);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));

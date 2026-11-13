@@ -14,7 +14,9 @@
 //!   never part of Cmd+`;
 //! - `ignoresMouseEvents`, so the web view never gets pointer input: the stop and screen buttons are
 //!   panels of their own (`hit_mac.rs`), as they are separate windows on Windows;
-//! - `hidesOnDeactivate = false`; Voice is an accessory app and never active anyway.
+//! - `hidesOnDeactivate = false`; Voice is an accessory app and never active anyway;
+//! - `canHide = false`, so Hide (Cmd+H in Settings) and another app's Hide Others leave it on screen
+//!   during a meeting.
 //!
 //! "Hide pill from capture" is `sharingType = .none`, which tauri's `set_content_protected` sets on
 //! macOS (`.readOnly` when off); `recipe` reports what the window has.
@@ -126,6 +128,8 @@ pub struct Recipe {
     pub sharing_type: &'static str,
     pub ignores_mouse_events: bool,
     pub hides_on_deactivate: bool,
+    /// `NSApp hide:` takes the window away with the app.
+    pub can_hide: bool,
     pub can_become_key: bool,
     pub can_become_main: bool,
     pub is_key: bool,
@@ -145,6 +149,7 @@ pub fn recipe_of(ns: &NSWindow) -> Recipe {
         sharing_type: sharing_name(ns.sharingType()),
         ignores_mouse_events: ns.ignoresMouseEvents(),
         hides_on_deactivate: ns.hidesOnDeactivate(),
+        can_hide: ns.canHide(),
         can_become_key: ns.canBecomeKeyWindow(),
         can_become_main: ns.canBecomeMainWindow(),
         is_key: ns.isKeyWindow(),
@@ -263,12 +268,15 @@ fn activated_is_us(note: NonNull<NSNotification>) -> bool {
 
 /// Level, Spaces behaviour, click-through body and no deactivation hiding.
 pub fn apply_styles(window: &WebviewWindow) {
-    with_ns(window, |ns, _| {
-        ns.setLevel(LEVEL);
-        ns.setCollectionBehavior(collection_behavior());
-        ns.setIgnoresMouseEvents(true);
-        ns.setHidesOnDeactivate(false);
-    });
+    with_ns(window, |ns, _| set_recipe(ns));
+}
+
+fn set_recipe(ns: &NSWindow) {
+    ns.setLevel(LEVEL);
+    ns.setCollectionBehavior(collection_behavior());
+    ns.setIgnoresMouseEvents(true);
+    ns.setHidesOnDeactivate(false);
+    ns.setCanHide(false);
 }
 
 /// Shows without activating: `orderFrontRegardless`, never `makeKeyAndOrderFront`.
@@ -284,10 +292,7 @@ pub fn hide(window: &WebviewWindow) {
 /// `update_hit`, so they stay above it.
 pub fn raise(window: &WebviewWindow) -> bool {
     with_ns(window, |ns, _| {
-        ns.setLevel(LEVEL);
-        ns.setCollectionBehavior(collection_behavior());
-        ns.setIgnoresMouseEvents(true);
-        ns.setHidesOnDeactivate(false);
+        set_recipe(ns);
         ns.orderFrontRegardless();
     })
     .is_some()
