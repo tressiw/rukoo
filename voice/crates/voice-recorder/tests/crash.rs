@@ -192,9 +192,20 @@ fn microphone_removed_keeps_the_timeline_complete() {
         assert!(pair[1].t.abs_diff(pair[0].end()) <= JOIN_TOLERANCE_MS);
     }
     let gone = before.last().unwrap().end();
+    // The recorder places a segment by the arrival of its first block, and the synthetic source
+    // fails by the clock but delivers its blocks when its thread wakes. A thread that wakes late
+    // at the start puts the whole segment that much later, with all its audio, so the audio ends
+    // at the failure time plus that lateness: 2,034 ms for a 2,000 ms failure on a hosted Mac whose
+    // sleeps wake a median 64 ms late, 1,990 to 1,994 ms on an idle one. The audio may end up to a
+    // detection tolerance after the failure, as the `device_lost` line may; it may not end after
+    // that line (the loss is stamped at or after the audio's end), and it may not end early.
     assert!(
-        (2_000 - DETECT_TOLERANCE_MS..=2_000 + JOIN_TOLERANCE_MS).contains(&gone),
+        (2_000 - DETECT_TOLERANCE_MS..=2_000 + DETECT_TOLERANCE_MS).contains(&gone),
         "mic audio ends at {gone}"
+    );
+    assert!(
+        gone <= lost_t + JOIN_TOLERANCE_MS,
+        "mic audio ends at {gone}, after the device was lost at {lost_t}"
     );
     // No samples while the device was gone.
     assert!(after[0].t >= 4_000, "mic audio resumes at {}", after[0].t);
