@@ -540,6 +540,27 @@ fn a_folder_keeps_objects_across_a_restart_on_the_same_port() {
     assert!(lines.iter().all(|l| l.starts_with('{') && l.ends_with('}')));
 }
 
+/// Stopping waits for an answer already on its way: the client that gets it finds its line when
+/// `stop` returns, which is what reading `log.jsonl` right after `stop` relies on.
+#[test]
+fn stopping_waits_for_an_answer_on_its_way() {
+    let dir = Scratch::new("stop-answer");
+    let fake = FakeS3::start("test", "test-key", Some(dir.path().to_path_buf())).unwrap();
+    // The answer waits half a second; the put is handled and stored before that wait begins.
+    fake.faults().stall = Some(Duration::from_millis(500));
+    let target = url(&fake, "rkv1/late", "");
+    let sent = std::thread::spawn(move || got(agent().put(target).send(b"late")));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fake.objects().is_empty() {
+        assert!(Instant::now() < deadline, "the fake never took the put");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    fake.stop();
+    assert_eq!(sent.join().unwrap().unwrap().status, 200);
+    let log = std::fs::read_to_string(dir.path().join("log.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+}
+
 #[test]
 fn listings_page_and_group() {
     let fake = start();
