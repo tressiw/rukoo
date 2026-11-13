@@ -18,7 +18,8 @@ archive is downloaded once into <cargo target dir>\nemo-runtime\<name>. It stops
 isn't published yet (voice/nemo-runtime/README.md).
 
 It checks that:
-  - THIRD_PARTY_NOTICES.md lists exactly the Rust crates the programs contain (-UpdateNotices rewrites the list);
+  - THIRD_PARTY_NOTICES.md lists exactly the Rust crates the programs contain on Windows and on macOS, checked by
+    voice/scripts/notices.mjs (-UpdateNotices runs it to rewrite the list);
   - the installer holds the five programs, the notices and the licenses, and uses Voice's NSIS hooks and texts;
   - its nemo_speech\ folder holds exactly the runtime's files and runtime.json, with the manifest's hashes;
   - none of the five programs imports a C runtime DLL (vcruntime, msvcp or the UCRT);
@@ -33,7 +34,7 @@ It checks that:
 The installer is not signed in 0.1.
 
 .PARAMETER UpdateNotices
-Rewrites the crate list in voice/THIRD_PARTY_NOTICES.md and stops, without building.
+Rewrites the crate list in voice/THIRD_PARTY_NOTICES.md, for the Windows and the macOS build, and stops, without building.
 
 .PARAMETER RuntimeManifest
 A runtime manifest to package instead of voice/nemo-runtime/manifest.json, such as the manifest.json of a runtime
@@ -123,42 +124,6 @@ function Get-ShippedCrates {
   }
   if ($crates.Count -eq 0) { throw 'cargo tree listed no crates' }
   return $crates
-}
-
-function Get-CrateBlock {
-  param($Crates)
-  $out = New-Object System.Text.StringBuilder
-  [void]$out.Append("`n$($Crates.Count) crates.`n")
-  $licenses = Sort-Ordinal @($Crates | ForEach-Object { $_.License } | Select-Object -Unique)
-  foreach ($license in $licenses) {
-    $group = @($Crates | Where-Object { $_.License -ceq $license })
-    [void]$out.Append("`n### $license`n`n")
-    foreach ($entry in (Sort-Ordinal @($group | ForEach-Object { "$($_.Name) $($_.Version)" }))) {
-      [void]$out.Append("- $entry`n")
-    }
-  }
-  return $out.ToString() + "`n"
-}
-
-# Rewrites or checks the generated part of THIRD_PARTY_NOTICES.md, between its two marker comments.
-function Sync-Notices {
-  param($Crates, [switch]$Write)
-  $text = [IO.File]::ReadAllText($NoticesFile)
-  $newline = "`n"
-  if ($text.Contains("`r`n")) { $newline = "`r`n" }
-  $text = $text.Replace("`r`n", "`n")
-  $pattern = '(?s)(<!-- rust-crates:start[^\n]*-->\n).*?(<!-- rust-crates:end -->)'
-  $match = [regex]::Match($text, $pattern)
-  if (-not $match.Success) { throw "$NoticesFile has no rust-crates markers" }
-  $block = Get-CrateBlock $Crates
-  $updated = $text.Substring(0, $match.Index) + $match.Groups[1].Value + $block + $match.Groups[2].Value +
-    $text.Substring($match.Index + $match.Length)
-  if ($updated -ceq $text) { return $true }
-  if ($Write) {
-    [IO.File]::WriteAllText($NoticesFile, $updated.Replace("`n", $newline), $Utf8)
-    return $true
-  }
-  return $false
 }
 
 # THIRD_PARTY_LICENSES.txt: the license files each crate's source package carries, plus Inter's and NeMo-Speech.cpp's
@@ -422,15 +387,19 @@ function Get-Sha256 {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-$crates = Get-ShippedCrates
+# The crate list in THIRD_PARTY_NOTICES.md covers the Windows and the macOS build, so scripts/notices.mjs makes and
+# checks it, the same way package-macos.mjs does. cargo resolves both targets from the lockfile on this computer.
+$noticesScript = Join-Path $PSScriptRoot 'notices.mjs'
 if ($UpdateNotices) {
-  [void](Sync-Notices $crates -Write)
-  Write-Host "Updated the crate list in $NoticesFile ($($crates.Count) crates)."
+  Invoke-Native node @($noticesScript, '--update')
   return
 }
-if (-not (Sync-Notices $crates)) {
-  throw "The crate list in $NoticesFile is out of date. Run voice/scripts/package.ps1 -UpdateNotices and commit the change."
+& node $noticesScript --check
+if ($LASTEXITCODE -ne 0) {
+  throw "The crate list in $NoticesFile is out of date, or notices.mjs couldn't check it (see its message above). If it is out of date, run voice/scripts/package.ps1 -UpdateNotices and commit the change."
 }
+# The crates the Windows build contains, for THIRD_PARTY_LICENSES.txt.
+$crates = Get-ShippedCrates
 $testRuntime = [bool]$RuntimeManifest
 if (-not $RuntimeManifest) { $RuntimeManifest = Join-Path $Voice 'nemo-runtime\manifest.json' }
 $RuntimeManifest = (Resolve-Path -LiteralPath $RuntimeManifest).Path
