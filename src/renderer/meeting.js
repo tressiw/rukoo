@@ -922,6 +922,8 @@ function markText(k) {
     }
     case 'device': {
       const device = k.label || t('meeting.mark.unnamedDevice');
+      // A track that never opened, such as a call waiting on macOS' permission prompt, has no device name to lose.
+      if (k.detail === 'lost' && !k.label) return t('meeting.mark.noDevice', { track });
       const key = { reconnected: 'meeting.mark.deviceBack', lost: 'meeting.mark.deviceLost' }[k.detail] || 'meeting.mark.deviceMoved';
       return t(key, { track, device });
     }

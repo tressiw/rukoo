@@ -9275,6 +9275,10 @@
     "message": "{track}: {device} is back",
     "description": "Meeting view transcript: an audio device came back; device is its name, such as Jabra Evolve2. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.noDevice": {
+    "message": "{track}: no device",
+    "description": "Meeting view transcript: a track has no audio device, for example the call while the Mac asks whether Rukoo Voice may record system audio, or no microphone is connected; track is Microphone or Call audio. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.deviceLost": {
     "message": "{track}: {device} was lost",
     "description": "Meeting view transcript: an audio device was lost. src/renderer/meeting.js (markText)"

@@ -2393,6 +2393,7 @@
   "meeting.mark.gap": "{track}: {length} geen geluid",
   "meeting.mark.unnamedDevice": "een naamloos apparaat",
   "meeting.mark.deviceBack": "{track}: {device} is terug",
+  "meeting.mark.noDevice": "{track}: geen apparaat",
   "meeting.mark.deviceLost": "{track}: {device} is weggevallen",
   "meeting.mark.deviceMoved": "{track}: nu via {device}",
   "meeting.mark.droppedDisk": "Schermopname gestopt om de audio te blijven opnemen: de schijf is vol",
