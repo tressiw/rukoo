@@ -264,6 +264,16 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
             return;
         }
     }
+    // One line per press and release of a configured hotkey, so a check at the
+    // keyboard can see which key Voice read. The poller reads every known key,
+    // but only these are worth a log line; a right-hand modifier that macOS
+    // folds onto the left-hand code shows up here as the right-hand key.
+    if lock(&this.ptt).config().mode_for(event.key()).is_some() {
+        match event {
+            HotkeyEvent::Pressed(key) => log::info!("dictation: {key} pressed"),
+            HotkeyEvent::Released(key) => log::info!("dictation: {key} released"),
+        }
+    }
     let action = lock(&this.ptt).handle(event);
     match action {
         Some(voice_input::Action::Start(mode)) => start_recording(core, mode, event.key()),
