@@ -458,13 +458,11 @@ export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
   // A Mac shows the Permissions group, Mac key names and only the keys a Mac keyboard has. A
-  // development copy keeps F13 and F14 on either platform.
+  // development copy there starts on the same keys as an installed one; F13 and F14 stay for Windows.
   if (params.get('platform') === 'macos') {
     state.platform = 'macos';
-    if (!state.devMode) {
-      state.config.dictation.hotkey = 'right alt';
-      state.config.dictation.rewriteHotkey = 'right command';
-    }
+    state.config.dictation.hotkey = 'right alt';
+    state.config.dictation.rewriteHotkey = 'right command';
     const states = {
       granted: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'granted', accessibility: 'granted', screenRecording: 'granted' },
       denied: { microphone: 'denied', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
