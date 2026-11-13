@@ -22,8 +22,9 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 
 use super::d3d::{is_device_lost, D3D};
 use super::monitors_win;
-use super::{CapturedFrame, Source};
+use super::CapturedFrame;
 use crate::clockwin;
+use crate::platform::{PlatformError, Source};
 use crate::record::Ev;
 use crate::video::size::even;
 
@@ -57,7 +58,7 @@ pub fn supported() -> bool {
 
 pub struct WgcSource {
     d3d: D3D,
-    to_main: SyncSender<Ev>,
+    to_main: SyncSender<Ev<super::Picture>>,
     features: Features,
     live: Option<Live>,
 }
@@ -71,7 +72,7 @@ struct Live {
     handler: Arc<Mutex<Handler>>,
 }
 
-pub fn new(d3d: D3D, to_main: SyncSender<Ev>) -> WgcSource {
+pub fn new(d3d: D3D, to_main: SyncSender<Ev<super::Picture>>) -> WgcSource {
     WgcSource {
         d3d,
         to_main,
@@ -81,7 +82,7 @@ pub fn new(d3d: D3D, to_main: SyncSender<Ev>) -> WgcSource {
 }
 
 impl Source for WgcSource {
-    fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> windows::core::Result<()> {
+    fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError> {
         self.stop();
         let hmon = monitors_win::hmonitor(&monitor.id).ok_or_else(|| {
             windows::core::Error::new(
@@ -163,10 +164,6 @@ impl Source for WgcSource {
             let _ = live.pool.Close();
         }
     }
-
-    fn device(&self) -> &D3D {
-        &self.d3d
-    }
 }
 
 impl Drop for WgcSource {
@@ -177,7 +174,7 @@ impl Drop for WgcSource {
 
 struct Handler {
     d3d: D3D,
-    to_main: SyncSender<Ev>,
+    to_main: SyncSender<Ev<super::Picture>>,
     generation: u64,
     size: SizeInt32,
     last_boot: u64,
@@ -275,7 +272,7 @@ impl Handler {
         // A full queue means the main thread is behind: drop this frame rather than block a
         // thread-pool thread. Its changes go with the next one.
         let sent = self.to_main.try_send(Ev::Frame(CapturedFrame {
-            texture,
+            picture: super::Texture(texture),
             boot,
             width,
             height,

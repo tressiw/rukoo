@@ -23,9 +23,10 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use super::d3d::D3D;
-use super::{CapturedFrame, Source};
+use super::CapturedFrame;
 use crate::args::TestSpec;
 use crate::clockwin;
+use crate::platform::{PlatformError, Source};
 use crate::record::Ev;
 
 /// Frames sent after each change, 66 ms apart, as a real screen sends while a slide draws.
@@ -66,12 +67,12 @@ fn epoch() -> Instant {
 
 pub struct SyntheticSource {
     d3d: D3D,
-    to_main: SyncSender<Ev>,
+    to_main: SyncSender<Ev<super::Picture>>,
     spec: TestSpec,
     worker: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
-pub fn new(d3d: D3D, to_main: SyncSender<Ev>, spec: &TestSpec) -> SyntheticSource {
+pub fn new(d3d: D3D, to_main: SyncSender<Ev<super::Picture>>, spec: &TestSpec) -> SyntheticSource {
     epoch();
     SyntheticSource {
         d3d,
@@ -82,7 +83,7 @@ pub fn new(d3d: D3D, to_main: SyncSender<Ev>, spec: &TestSpec) -> SyntheticSourc
 }
 
 impl Source for SyntheticSource {
-    fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> windows::core::Result<()> {
+    fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError> {
         self.stop();
         let index: u32 = monitor
             .id
@@ -102,7 +103,7 @@ impl Source for SyntheticSource {
                 crate::com::init_mta();
                 run(d3d, to_main, spec, index, generation, flag)
             })
-            .map_err(|_| windows::core::Error::empty())?;
+            .map_err(|e| PlatformError::new(format!("can't start the synthetic screen: {e}")))?;
         self.worker = Some((handle, stop));
         Ok(())
     }
@@ -112,10 +113,6 @@ impl Source for SyntheticSource {
             stop.store(true, Ordering::SeqCst);
             let _ = handle.join();
         }
-    }
-
-    fn device(&self) -> &D3D {
-        &self.d3d
     }
 }
 
@@ -127,7 +124,7 @@ impl Drop for SyntheticSource {
 
 fn run(
     d3d: D3D,
-    to_main: SyncSender<Ev>,
+    to_main: SyncSender<Ev<super::Picture>>,
     spec: TestSpec,
     monitor: u32,
     generation: u64,
@@ -183,7 +180,7 @@ fn run(
             match d3d.upload(width, height, canvas.pixels()) {
                 Ok(texture) => {
                     let frame = CapturedFrame {
-                        texture,
+                        picture: super::Texture(texture),
                         boot: clockwin::boot_100ns(),
                         width,
                         height,

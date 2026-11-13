@@ -6,7 +6,8 @@ use windows::Globalization::Language;
 use windows::Graphics::Imaging::SoftwareBitmap;
 use windows::Media::Ocr::OcrEngine;
 
-use super::jpeg::{self, Pixels};
+use super::jpeg;
+use crate::platform::Pixels;
 
 /// Frames at most this high are read at twice their size.
 pub const UPSCALE_MAX_HEIGHT: u32 = 1080;

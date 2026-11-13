@@ -1,7 +1,8 @@
-//! Hardware H.264 into fragmented MP4 through Media Foundation's sink writer, one file per
-//! continuous stretch of video.
+//! The video files: a queue and one encoder thread per file, with the platform's writer behind
+//! `platform::VideoWriter` (Media Foundation's sink writer on Windows).
 
 pub mod size;
+pub mod thread;
 
 #[cfg(windows)]
 pub mod encoders;
@@ -9,8 +10,6 @@ pub mod encoders;
 pub mod fault;
 #[cfg(windows)]
 pub mod mf;
-#[cfg(windows)]
-pub mod thread;
 #[cfg(windows)]
 pub mod writer;
 
