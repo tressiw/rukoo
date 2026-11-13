@@ -942,7 +942,7 @@ function markText(k) {
     }
     // Voice heard only exact silence on the call while another app played sound: on a Mac, System Audio Recording may be off.
     case 'silent':
-      return t('meeting.mark.silent', { track });
+      return span ? t('meeting.mark.silentUntil', { track, length: span }) : t('meeting.mark.silent', { track });
     // A stretch without frames; a gap stays about missing audio.
     case 'screen_gap': {
       const key = { locked: 'meeting.mark.gapScreenLocked', crash: 'meeting.mark.gapScreenCrash', device: 'meeting.mark.gapScreenDevice', monitor: 'meeting.mark.gapScreenMonitor' }[k.detail] || 'meeting.mark.gapScreen';

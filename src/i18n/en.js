@@ -9319,6 +9319,10 @@
     "message": "{track}: no sound from here while another app had its audio output open. If people were talking, macOS may not have let Rukoo Voice record it: check that Rukoo Voice is switched on under System Settings › Privacy & Security › Screen & System Audio Recording › System Audio Recording Only.",
     "description": "Meeting view transcript: Rukoo Voice recorded only exact silence on the call for a minute while another app had its audio output open. That can mean System Audio Recording is off for Voice on the Mac, or simply that nobody talked, so it is a hint, not an error; track is Call audio. Name the System Settings panes as macOS does in this language. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.silentUntil": {
+    "message": "{track}: no sound for {length} while another app had its audio output open, then the call had sound",
+    "description": "Meeting view transcript: Rukoo Voice warned that the call was silent, and the call had sound after {length}, so the warning was taken back; track is Call audio, length a duration such as 2 min. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.monitorLost": {
     "message": "The recorded monitor went away; screen recording moved to {name}",
     "description": "Meeting view transcript: the monitor Rukoo Voice recorded was unplugged or turned off, so it records another; name is that monitor's name. src/renderer/meeting.js (markText)"

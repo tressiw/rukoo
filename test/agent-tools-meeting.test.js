@@ -750,6 +750,15 @@ test('the transcript says when the call held only silence while another app play
     startedEv(M),
     ev('mark', M, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null })
   ]);
+  const ended = (await setup(t));
+  ended.feed([
+    startedEv(M),
+    ev('mark', M, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null }),
+    ev('mark', M, { id: 'silent-call-30', kind: 'silent', at: 30, until: 61030, track: 'call', detail: null, label: null })
+  ]);
+  assert.deepEqual(untag(data(await ended.call('read_meeting_transcript', { meeting_id: M })).transcript).trim().split('\n'), [
+    '[00:00:00] [No sound on the call audio for 61 s while another app had its audio output open; then it had sound]'
+  ]);
   const res = data(await call('read_meeting_transcript', { meeting_id: M }));
   assert.deepEqual(untag(res.transcript).trim().split('\n'), [
     '[00:00:00] [No sound on the call audio from here while another app had its audio output open; if people were talking, the computer may not have let Rukoo Voice record it]'

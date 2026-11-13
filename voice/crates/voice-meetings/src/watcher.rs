@@ -52,7 +52,7 @@ impl Derived {
     pub fn key(&self) -> String {
         match self {
             Derived::State(s) => state_key(s.state, s.at),
-            Derived::Mark(m) => mark_key(&m.id),
+            Derived::Mark(m) => mark_key(&m.id, m.kind.as_str(), m.until),
         }
     }
 }
@@ -61,8 +61,16 @@ pub(crate) fn state_key(state: MeetingState, at: u64) -> String {
     format!("state:{state}:{at}")
 }
 
-pub(crate) fn mark_key(id: &str) -> String {
-    format!("mark:{id}")
+/// The `kind` of the mark that says a call track held only silence (PROTOCOL.md).
+pub(crate) const SILENT: &str = "silent";
+
+/// A mark is sent once, except a `silent` mark, which is sent again with its end when the call
+/// had sound; that second one has a key of its own.
+pub(crate) fn mark_key(id: &str, kind: &str, until: Option<u64>) -> String {
+    match until {
+        Some(until) if kind == SILENT => format!("mark:{id}:until:{until}"),
+        _ => format!("mark:{id}"),
+    }
 }
 
 /// Turns timeline lines into events, one line at a time, and keeps what the transcriber needs to
@@ -75,6 +83,8 @@ pub struct Mapper {
     stretches: Vec<Stretch>,
     /// Tracks without a device, since when.
     lost: BTreeMap<String, u64>,
+    /// The `silent` mark each track has open, until its sound.
+    silent: BTreeMap<String, Mark>,
     /// The device each track last opened.
     devices: BTreeMap<String, String>,
     ids: HashSet<String>,
@@ -219,20 +229,29 @@ impl Mapper {
             // The call track records only exact zeros while another app plays sound: macOS may
             // not let Voice record system audio. Rukoo hears of it at once, not at the end.
             Line::Silent { track, since, .. } => {
-                self.mark(
-                    &mut out,
-                    Mark {
-                        id: format!("silent-{track}-{since}"),
-                        kind: MarkKind::Other("silent".into()),
-                        at: *since,
-                        until: None,
-                        track: track_of(track),
-                        detail: None,
-                        label: None,
-                    },
-                );
+                let mark = Mark {
+                    id: format!("silent-{track}-{since}"),
+                    kind: MarkKind::Other(SILENT.into()),
+                    at: *since,
+                    until: None,
+                    track: track_of(track),
+                    detail: None,
+                    label: None,
+                };
+                self.mark(&mut out, mark);
+                if let Some(Derived::Mark(sent)) = out.last() {
+                    self.silent.insert(track.clone(), sent.clone());
+                }
             }
-            Line::Heartbeat { .. } | Line::Sound { .. } | Line::Unknown => {}
+            // The call had sound after all: the same mark again, now with its end, which
+            // replaces the first in Rukoo.
+            Line::Sound { t, track } => {
+                if let Some(mut mark) = self.silent.remove(track) {
+                    mark.until = Some((*t).max(mark.at));
+                    out.push(Derived::Mark(mark));
+                }
+            }
+            Line::Heartbeat { .. } | Line::Unknown => {}
         }
         out
     }
@@ -503,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_call_gives_a_mark_at_once_and_its_sound_none() {
+    fn a_silent_call_gives_a_mark_at_once_and_its_sound_ends_it() {
         let (_, events) = derive(&lines(&[
             session(0, 1),
             json!({"kind":"track","t":20,"track":"call","source":"default-output","device":"Mac mini Speakers","deviceId":"coreaudio:BuiltInSpeakerDevice","nativeRate":48000,"nativeChannels":2}),
@@ -512,18 +531,24 @@ mod tests {
             json!({"kind":"sound","t":41_000,"track":"call"}),
         ]));
         let m = marks(&events);
-        assert_eq!(
-            m,
-            vec![&Mark {
-                id: "silent-call-30".into(),
-                kind: MarkKind::Other("silent".into()),
-                at: 30,
-                until: None,
-                track: Some(MarkTrack::Call),
-                detail: None,
-                label: None,
-            }]
-        );
+        let first = Mark {
+            id: "silent-call-30".into(),
+            kind: MarkKind::Other("silent".into()),
+            at: 30,
+            until: None,
+            track: Some(MarkTrack::Call),
+            detail: None,
+            label: None,
+        };
+        let ended = Mark {
+            until: Some(41_000),
+            ..first.clone()
+        };
+        assert_eq!(m, vec![&first, &ended]);
+        // Two events with one id: the pipeline keeps a key for each.
+        let keys: Vec<String> = events.iter().map(Derived::key).collect();
+        assert!(keys.contains(&"mark:silent-call-30".to_string()));
+        assert!(keys.contains(&"mark:silent-call-30:until:41000".to_string()));
     }
 
     #[test]

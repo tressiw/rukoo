@@ -293,6 +293,11 @@
       "message": { "type": "event", "seq": 1083, "event": "mark", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793006630040, "data": { "id": "silent-call-30", "kind": "silent", "at": 30, "until": null, "track": "call", "detail": null, "label": null } }
     },
     {
+      "name": "call track silent until it had sound",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1084, "event": "mark", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793006641000, "data": { "id": "silent-call-30", "kind": "silent", "at": 30, "until": 41000, "track": "call", "detail": null, "label": null } }
+    },
+    {
       "name": "frames dropped for a full disk",
       "from": "voice",
       "message": { "type": "event", "seq": 1082, "event": "mark", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793009000000, "data": { "id": "dropped-frames", "kind": "dropped", "at": 2400000, "until": null, "track": "screen", "detail": "disk", "label": null } }
