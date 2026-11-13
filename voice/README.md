@@ -107,7 +107,7 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 ## What 0.1 leaves out
 
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
-- macOS and Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows only.
+- Meeting audio capture on macOS and Linux. The recorder there reads synthetic and file sources only. The app also runs on a Mac, a port still being checked by hand: speaker labels there need a development copy of the NeMo runtime. Linux has no app; its recorder, bridge and transcript pipeline are tested there.
 - A signed installer and automatic updates. The opt-in update check tells you a new version exists.
 
 ## Open decisions
