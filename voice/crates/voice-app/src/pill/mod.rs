@@ -540,15 +540,32 @@ impl Pill {
     /// The engine's paint watchdog (`UiSink::pill_repair`): the page didn't ack `seq`. A nudge
     /// reapplies size, position, styles and topmost; a rebuild makes a new window, off the event
     /// loop thread, where building a WebView2 window would deadlock.
+    ///
+    /// The engine calls this under its pill lock, so nothing here waits: the decision is made on the
+    /// event loop thread, which owns the window.
     pub fn engine_repair(self: &Arc<Self>, seq: u64, repair: PillRepair) {
+        self.on_main(move |p| p.engine_repair_now(seq, repair));
+    }
+
+    fn engine_repair_now(self: &Arc<Self>, seq: u64, repair: PillRepair) {
         let want = match repair {
             PillRepair::Nudge => Repair::Nudge,
             PillRepair::Rebuild => Repair::Rebuild,
         };
-        // A pill nobody can see doesn't paint on macOS; the app's own watchdog repairs it once it can
-        // be seen again and still doesn't.
-        if !self.paint_expected() {
-            log::info!("pill: the engine saw no paint of snapshot {seq} while the pill can't be seen; no {repair:?}");
+        if !self.paint_expected_here() {
+            // A pill nobody can see doesn't paint on macOS. The app's watchdog takes the snapshot on
+            // and repairs it once the pill can be seen and still isn't painted; it may not be armed
+            // already (a hide and show within one phase arms only the engine's).
+            let current = {
+                let i = self.lock();
+                i.shown && i.acked < seq && i.snapshot.as_ref().is_some_and(|s| s.seq == seq)
+            };
+            log::info!(
+                "pill: the engine saw no paint of snapshot {seq} while the pill can't be seen; no {repair:?}"
+            );
+            if current {
+                self.arm_watchdog(seq);
+            }
             return;
         }
         if !self.claim_repair(seq, want) {
@@ -556,7 +573,7 @@ impl Pill {
         }
         log::warn!("pill: the engine saw no paint of snapshot {seq}; {repair:?}");
         match repair {
-            PillRepair::Nudge => self.on_main(|p| p.nudge_now()),
+            PillRepair::Nudge => self.nudge_now(),
             PillRepair::Rebuild => {
                 let this = self.clone();
                 thread::spawn(move || this.rebuild(seq));
@@ -989,21 +1006,30 @@ impl Pill {
     /// window wholly covered, the lock screen, a switched-out session), so a missing acknowledgement
     /// then says nothing about the window. Asked on the event loop thread, which owns the window; an
     /// event loop that doesn't answer counts as painting, so the watchdog still repairs.
+    ///
+    /// Only the watchdog's own thread calls this, which holds no lock while it waits.
     #[cfg(target_os = "macos")]
     fn paint_expected(self: &Arc<Self>) -> bool {
-        let ask = |pill: &Pill| pill.window().is_none_or(|win| window::paint_expected(&win));
         if objc2::MainThreadMarker::new().is_some() {
-            return ask(self);
+            return self.paint_expected_here();
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.on_main(move |p| {
-            let _ = tx.send(ask(p));
+            let _ = tx.send(p.paint_expected_here());
         });
         rx.recv_timeout(Duration::from_secs(1)).unwrap_or(true)
     }
 
     #[cfg(not(target_os = "macos"))]
     fn paint_expected(self: &Arc<Self>) -> bool {
+        true
+    }
+
+    /// `paint_expected` on the event loop thread.
+    fn paint_expected_here(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.window().is_none_or(|win| window::paint_expected(&win));
+        #[cfg(not(target_os = "macos"))]
         true
     }
 
