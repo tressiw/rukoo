@@ -30,7 +30,7 @@ use crate::api::{Activity, PillPhase};
 use crate::engine::Core;
 use crate::meetings::tap::{self, TapEnd};
 use crate::pill::{self, notices};
-use crate::services::{AudioSink, MicStream};
+use crate::services::{AudioSink, MicLost, MicStream};
 
 /// Ownkey's micro-tap gates (`ownkey.py:3189-3196`): under 800 WAV bytes (378 samples after the
 /// 44-byte header), or under 0.10 s without anything heard, nothing is sent anywhere.
@@ -47,6 +47,13 @@ const DEFER_LIMIT: Duration = Duration::from_secs(300);
 const DEFER_POLL: Duration = Duration::from_millis(20);
 /// How often a held dictation checks that the meeting's current recorder knows about it.
 const MARK_RETRY: Duration = Duration::from_millis(100);
+/// How long a session release waits to be handled. Closing a microphone takes milliseconds, but
+/// a press whose microphone is still opening is handled first.
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// A key-down this soon before the release was seen may have come right after it: the poll
+/// sees a release up to one interval late.
+const TYPED_MARGIN: Duration = voice_input::POLL_INTERVAL;
 
 pub(crate) struct Dictation {
     ptt: Mutex<PushToTalk>,
@@ -62,6 +69,11 @@ pub(crate) struct Dictation {
 
 struct Recording {
     id: u64,
+    /// The key that started it, and when the press was seen.
+    key: Key,
+    pressed: Instant,
+    /// Voice posted Cmd+C or Ctrl+C during the hold, for the selection.
+    posted_keys: bool,
     mode: Mode,
     cfg: Arc<Config>,
     stream: Option<Box<dyn MicStream>>,
@@ -79,6 +91,8 @@ struct Captured {
     meter: LevelMeter,
     last_push: Option<Instant>,
     closed: bool,
+    /// How often Voice's own microphone was opened again after it stopped mid-dictation.
+    reopens: u32,
 }
 
 struct Job {
@@ -235,6 +249,12 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
     }
     let this = &core.dictation;
     if let HotkeyEvent::Pressed(key) = event {
+        // A locked screen or a session switched out: whoever pressed the key isn't the user at
+        // this session, and nothing they say should be recorded, sent or inserted.
+        if !(core.svc.at_console)() {
+            log::info!("dictation: {key} pressed away from the console; ignored");
+            return;
+        }
         if *lock(&this.stop_key) == Some(key) {
             core.stop_clicked();
             return;
@@ -252,7 +272,38 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
 /// lock screen, or the Mac sleeping. The app hears those from the system and
 /// calls this, which treats the held hotkey as released and stops the
 /// dictation. A key-up that arrives later changes nothing.
+///
+/// The release runs on the hotkey handler's thread, after the presses and
+/// releases already queued there, so push-to-talk changes on one thread only.
+/// A release that came in while a press was still opening the microphone
+/// therefore stops the recording that press stored, instead of finding nothing
+/// to stop and leaving the microphone on. Returns once the release was
+/// handled, or after [`RELEASE_WAIT`].
 pub(crate) fn release_all(core: &Arc<Core>) {
+    if core.shutting_down() {
+        return;
+    }
+    let in_order = lock(&core.dictation.poller)
+        .as_ref()
+        .and_then(HotkeyPoller::in_order);
+    let Some(in_order) = in_order else {
+        // No poller, so no press can be in flight.
+        release_now(core);
+        return;
+    };
+    let weak = Arc::downgrade(core);
+    let queued = in_order.run(move || {
+        if let Some(core) = weak.upgrade() {
+            release_now(&core);
+        }
+    });
+    if let Some(done) = queued {
+        let _ = done.recv_timeout(RELEASE_WAIT);
+    }
+}
+
+/// [`release_all`] on the hotkey handler's thread.
+fn release_now(core: &Arc<Core>) {
     if core.shutting_down() {
         return;
     }
@@ -265,28 +316,32 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
     let this = &core.dictation;
     let cfg = core.config();
     let id = this.next_id.fetch_add(1, Ordering::SeqCst);
+    let pressed = Instant::now();
     // The local model loads while the user speaks (ownkey-dictation.md 4.2, step 3).
     if cfg.audio_provider == "orukeet" {
         core.svc.speech.local_preload();
     }
-    let selection = if mode == Mode::Rewrite && key.can_copy_while_held() {
+    let posted_keys = mode == Mode::Rewrite && key.can_copy_while_held();
+    let selection = if posted_keys {
         let pending = Selection::pending();
         let (input, slot) = (Arc::clone(&core.svc.input), Arc::clone(&pending));
         let _ = thread::Builder::new()
             .name("selection".into())
             .spawn(move || {
-                // The rewrite key is down on purpose here; it doesn't change Ctrl+C.
+                // The rewrite key is down on purpose here; it doesn't change the copy chord.
                 let copied = input.capture_selection(CAPTURE_TIMEOUT, &mut || Ok(()));
                 slot.set(copied.ok().flatten())
             });
         pending
     } else {
-        // Right Alt and Right Shift would turn Ctrl+C into another shortcut: copy after the release.
+        // A key that would add a modifier to the copy, such as Right Alt or, on a Mac, Right
+        // Control: copy after the release.
         Selection::ready(None)
     };
     let activity = activity_of(mode);
-    let no_text_box = core.svc.input.text_target() == TextTarget::NotSelected;
-    core.pill.update(|p, _| p.press(id, activity, no_text_box));
+    // Whether the focused app takes text comes after the microphone opens: on a Mac it is two
+    // Accessibility requests, and a busy app would hold up the first words.
+    core.pill.update(|p, _| p.press(id, activity, false));
     core.meetings.set_dictating(true);
 
     let captured = Arc::new(Mutex::new(Captured {
@@ -297,19 +352,26 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         meter: lock(&this.meter).restart(),
         last_push: None,
         closed: false,
+        reopens: 0,
     }));
     let make_sink = || audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
     let on_end = tap_ended(core, id, Arc::clone(&captured));
     let opened = match core.meetings.open_tap(make_sink(), on_end) {
         Some(Ok(stream)) => Ok(stream),
         // The recorder's tap failed: dictation still works on its own capture.
-        Some(Err(_)) | None => core.svc.microphone.open(make_sink()),
+        Some(Err(_)) | None => core
+            .svc
+            .microphone
+            .open_watched(make_sink(), mic_lost(core, id, Arc::clone(&captured))),
     };
     match opened {
         Ok(stream) => {
             let recovered = lock(&this.mic_error).take().is_some();
             *lock(&this.recording) = Some(Recording {
                 id,
+                key,
+                pressed,
+                posted_keys,
                 mode,
                 cfg,
                 stream: Some(stream),
@@ -318,6 +380,8 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 marked: None,
             });
             mark(core, id);
+            watch(core, id, key);
+            read_target(core, id);
             if recovered {
                 // Settings shows "no microphone" until it hears otherwise.
                 core.settings_changed();
@@ -440,16 +504,9 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
             Some(r) => r.marked = None,
             None => return,
         }
-        let sink = audio_sink(Arc::downgrade(&core), id, captured);
-        match core.svc.microphone.open(sink) {
-            Ok(stream) => {
-                let old = match lock(&this.recording).as_mut().filter(|r| r.id == id) {
-                    Some(r) => r.stream.replace(stream),
-                    // Let go meanwhile: the new capture closes again.
-                    None => Some(stream),
-                };
-                // The tap, closed from its own reader thread.
-                drop(old);
+        // The tap is closed from its own reader thread.
+        match reopen(&core, id, captured) {
+            Ok(()) => {
                 // A recorder that lost its device but lives on is told at once.
                 try_mark(&core, id);
             }
@@ -463,6 +520,64 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
                     ),
                 );
             }
+        }
+    })
+}
+
+/// Opens Voice's own microphone into recording `id`'s buffer and puts it in place of the stream
+/// that ended, which is dropped here.
+fn reopen(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Result<(), String> {
+    let sink = audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
+    let stream = core
+        .svc
+        .microphone
+        .open_watched(sink, mic_lost(core, id, captured))?;
+    let old = match lock(&core.dictation.recording)
+        .as_mut()
+        .filter(|r| r.id == id)
+    {
+        Some(r) => r.stream.replace(stream),
+        // Let go meanwhile: the new capture closes again.
+        None => Some(stream),
+    };
+    drop(old);
+    Ok(())
+}
+
+/// How often one dictation opens Voice's own microphone again before it gives up.
+const MIC_REOPENS: u32 = 3;
+
+/// Runs when Voice's own microphone stops while the key may still be held: the device went away,
+/// or changed its format, as a Bluetooth headset or a new default microphone does. The rest of
+/// the dictation comes from the default microphone, opened again into the same buffer, as
+/// [`tap_ended`] does for the meeting's. When that fails, the pill says no audio is coming in.
+fn mic_lost(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> MicLost {
+    let weak = Arc::downgrade(core);
+    Box::new(move || {
+        let Some(core) = weak.upgrade() else {
+            return;
+        };
+        if core.shutting_down() || !holds(&core, id) {
+            return;
+        }
+        let attempt = {
+            let mut c = lock(&captured);
+            c.reopens += 1;
+            c.reopens
+        };
+        let result = if attempt > MIC_REOPENS {
+            Err("it stopped again".to_string())
+        } else {
+            reopen(&core, id, captured)
+        };
+        if let Err(message) = result {
+            core.pill.update(|p, _| p.no_audio(id, true));
+            core.notify(
+                errors::TITLE_DICTATION,
+                format!(
+                    "The microphone stopped during the dictation and didn't open again: {message}"
+                ),
+            );
         }
     })
 }
@@ -518,11 +633,118 @@ fn audio_sink(core: Weak<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Audi
     })
 }
 
-fn stop_recording(core: &Arc<Core>) {
+/// Reads whether the focused app takes text on a thread of its own, so a slow app holds up
+/// neither the recording nor its release, and shows the warning while the key is held.
+fn read_target(core: &Arc<Core>, id: u64) {
+    let weak = Arc::downgrade(core);
+    let _ = thread::Builder::new()
+        .name("dictation-target".into())
+        .spawn(move || {
+            let Some(core) = weak.upgrade() else {
+                return;
+            };
+            let warning = core.svc.input.text_target() == TextTarget::NotSelected;
+            core.pill.update(|p, _| p.target_warning(id, warning));
+        });
+}
+
+/// Why the watchdog stopped a recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overrun {
+    /// The key read up twice in a row, a watchdog interval apart, and no release stopped it.
+    KeyUp,
+    /// It ran for [`crate::services::DictationTiming::longest`].
+    TooLong,
+}
+
+/// The last line of defense for "a missed key-up must never leave recording on" (Ownkey #11).
+/// While the recording exists, a thread reads its key every watchdog interval and stops the
+/// recording when the key reads up twice in a row, or when it has run for the longest time a
+/// recording may take. A release seen by the poller stops it within one poll, so the watchdog
+/// acts only when that release was lost or its handler is stuck, or when a key reads down for
+/// ten minutes, such as a key-down another app posted without its key-up.
+fn watch(core: &Arc<Core>, id: u64, key: Key) {
+    let weak = Arc::downgrade(core);
+    let timing = core.svc.dictation_timing;
+    let started = Instant::now();
+    let _ = thread::Builder::new()
+        .name("dictation-watchdog".into())
+        .spawn(move || {
+            let mut up = 0;
+            loop {
+                thread::sleep(timing.watchdog);
+                let Some(core) = weak.upgrade() else {
+                    return;
+                };
+                if core.shutting_down() || !holds(&core, id) {
+                    return;
+                }
+                up = if core.key_down(key) { 0 } else { up + 1 };
+                let overrun = if up >= 2 {
+                    Some(Overrun::KeyUp)
+                } else if started.elapsed() >= timing.longest {
+                    Some(Overrun::TooLong)
+                } else {
+                    None
+                };
+                if let Some(overrun) = overrun {
+                    stop_overrun(&core, id, overrun);
+                    return;
+                }
+            }
+        });
+}
+
+/// Whether recording `id` is still the one running.
+fn holds(core: &Core, id: u64) -> bool {
+    lock(&core.dictation.recording)
+        .as_ref()
+        .is_some_and(|r| r.id == id)
+}
+
+/// Stops recording `id` from the watchdog, as a release would. Push-to-talk lets go of its key
+/// under the recording's lock, so a release the handler thread works on at the same time finds
+/// nothing more to stop, and a newer recording is never stopped instead.
+fn stop_overrun(core: &Arc<Core>, id: u64, overrun: Overrun) {
     let this = &core.dictation;
-    let Some(mut recording) = lock(&this.recording).take() else {
+    let recording = {
+        let mut slot = lock(&this.recording);
+        if slot.as_ref().map(|r| r.id) != Some(id) {
+            return;
+        }
+        // Lock order: `recording`, then `ptt`; nothing takes them the other way round.
+        lock(&this.ptt).release_all();
+        slot.take()
+    };
+    let Some(recording) = recording else {
         return;
     };
+    match overrun {
+        Overrun::KeyUp => log::warn!("dictation: the key read up but no release came; stopped"),
+        Overrun::TooLong => {
+            log::warn!("dictation: stopped at the longest recording");
+            core.notify(
+                errors::TITLE_DICTATION,
+                format!(
+                    "Dictation stopped after {} minutes, the longest one recording can be.",
+                    core.svc.dictation_timing.longest.as_secs().div_ceil(60)
+                ),
+            );
+        }
+    }
+    end_recording(core, recording);
+}
+
+fn stop_recording(core: &Arc<Core>) {
+    let Some(recording) = lock(&core.dictation.recording).take() else {
+        return;
+    };
+    end_recording(core, recording);
+}
+
+/// Closes a recording taken out of its slot and queues it for the worker.
+fn end_recording(core: &Arc<Core>, mut recording: Recording) {
+    let this = &core.dictation;
     // Closing the stream first, so no audio arrives after the release is handled.
     drop(recording.stream.take());
     if let Some(file) = recording.marked.take() {
@@ -536,6 +758,14 @@ fn stop_recording(core: &Arc<Core>) {
     };
     // Keeps the meter calibrated to this microphone for the next press.
     *lock(&this.meter) = meter;
+    let held = recording.pressed.elapsed();
+    if !recording.posted_keys && typed_during(recording.key, held, (core.svc.key_activity)()) {
+        // Right Option with a letter types é or @, and Right Command with one is a shortcut:
+        // the key was held to type, not to talk.
+        log::info!("dictation: another key went down during the hold; dropped");
+        core.pill.update(|p, _| p.dropped(recording.id));
+        return;
+    }
     let phase = match recording.mode {
         Mode::Dictate => PillPhase::Transcribing,
         Mode::Rewrite => PillPhase::Rewriting,
@@ -554,6 +784,18 @@ fn stop_recording(core: &Arc<Core>) {
     if let Some(queue) = lock(&this.queue).as_ref() {
         let _ = queue.send(job);
     }
+}
+
+/// Whether a key that isn't a modifier went down while `key` was held for `held`, from how long
+/// ago the last one went down. Only a modifier hotkey can be part of a chord that types or runs a
+/// shortcut; an F key's own press and its repeats are key-downs themselves. A key-down within
+/// [`TYPED_MARGIN`] of the release may have followed it, so it doesn't count.
+fn typed_during(key: Key, held: Duration, since_key_down: Option<Duration>) -> bool {
+    let modifier = matches!(
+        key,
+        Key::RightAlt | Key::RightCommand | Key::RightCtrl | Key::RightShift
+    );
+    modifier && since_key_down.is_some_and(|since| since > TYPED_MARGIN && since < held)
 }
 
 fn work(core: Weak<Core>, jobs: Receiver<Job>) {
@@ -937,6 +1179,22 @@ mod tests {
         );
         let (keys, _) = hotkeys(&cfg, false);
         assert_eq!(keys.dictate, Key::RightAlt);
+    }
+
+    #[test]
+    fn a_key_typed_during_a_modifier_hold_drops_the_recording() {
+        let held = Duration::from_secs(2);
+        let ago = |ms| Some(Duration::from_millis(ms));
+        // Right Option and a letter, a second before the release.
+        assert!(typed_during(Key::RightAlt, held, ago(1000)));
+        assert!(typed_during(Key::RightCommand, held, ago(1000)));
+        assert!(typed_during(Key::RightShift, held, ago(500)));
+        // Before the press, or right at the release, it doesn't count.
+        assert!(!typed_during(Key::RightAlt, held, ago(2500)));
+        assert!(!typed_during(Key::RightAlt, held, ago(20)));
+        // An F key's own press is a key-down; a platform that can't say drops nothing.
+        assert!(!typed_during(Key::F13, held, ago(1000)));
+        assert!(!typed_during(Key::RightAlt, held, None));
     }
 
     #[test]

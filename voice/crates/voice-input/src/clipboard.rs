@@ -106,6 +106,13 @@ pub(crate) trait Clipboard {
     /// `GetClipboardSequenceNumber` or `NSPasteboard.changeCount`: changes
     /// whenever the content does.
     fn sequence(&self) -> u32;
+    /// Whether Voice may read what someone else put on the clipboard without
+    /// the system asking the user. Always on Windows. macOS 15.4 and later ask
+    /// unless the user allows it: Voice then takes no snapshot and puts
+    /// nothing back, and the dictation stays on the clipboard as in Ownkey.
+    fn may_read(&self) -> bool {
+        true
+    }
     /// Copies everything the platform can put back: Windows' formats, or the
     /// pasteboard's items and their types.
     fn snapshot(&mut self) -> Result<Self::Snapshot, InputError>;
@@ -219,7 +226,8 @@ impl Clock for SystemClock {
 /// The user's clipboard, waiting to be put back after a paste.
 #[derive(Debug)]
 pub(crate) struct PendingRestore<J> {
-    snapshot: J,
+    /// `None` when Voice may not read the clipboard: nothing goes back.
+    snapshot: Option<J>,
     /// The sequence number our text got, read while the clipboard was open.
     ours: u32,
 }
@@ -232,15 +240,19 @@ pub(crate) fn paste<J>(
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
 ) -> Result<PendingRestore<J>, InputError> {
-    let snapshot = clipboard.snapshot()?;
+    let snapshot = if clipboard.may_read() {
+        Some(clipboard.snapshot()?)
+    } else {
+        None
+    };
     let before = clipboard.sequence();
     let ours = match clipboard.set_text(text) {
         Ok(ours) => ours,
         Err(err) => {
             let after = clipboard.sequence();
-            if after != before {
+            if let Some(snapshot) = snapshot.as_ref().filter(|_| after != before) {
                 // It may have emptied the clipboard before it failed.
-                let _ = clipboard.restore(&snapshot, Some(after));
+                let _ = clipboard.restore(snapshot, Some(after));
             }
             return Err(err);
         }
@@ -265,6 +277,9 @@ pub(crate) fn finish_paste<J>(
     target: &dyn Target,
     pending: &PendingRestore<J>,
 ) -> Result<bool, InputError> {
+    if pending.snapshot.is_none() {
+        return Ok(false);
+    }
     clock.sleep(RESTORE_AFTER);
     if !target.answers(TARGET_ANSWER) {
         return Ok(false);
@@ -278,24 +293,33 @@ pub(crate) fn restore_if_unchanged<J>(
     clipboard: &mut dyn Clipboard<Snapshot = J>,
     pending: &PendingRestore<J>,
 ) -> Result<bool, InputError> {
+    let Some(snapshot) = &pending.snapshot else {
+        return Ok(false);
+    };
     if clipboard.sequence() != pending.ours {
         // Someone copied something since; theirs wins.
         return Ok(false);
     }
     // Checked again with the clipboard open: a copy made in between wins too.
-    clipboard.restore(&pending.snapshot, Some(pending.ours))
+    clipboard.restore(snapshot, Some(pending.ours))
 }
 
 /// Copies the selection with Ctrl+C and returns its text, then puts the
 /// user's clipboard back. Makes two attempts, as Ownkey did, each waiting up
 /// to `timeout` for the app to copy. `None` when nothing with text was copied.
+/// Where Voice may not read the clipboard unasked, it still reads the copy it
+/// asked for but takes no snapshot, so the selection stays on the clipboard.
 pub(crate) fn capture<J>(
     clipboard: &mut dyn Clipboard<Snapshot = J>,
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
     timeout: Duration,
 ) -> Result<Option<String>, InputError> {
-    let snapshot = clipboard.snapshot()?;
+    let snapshot = if clipboard.may_read() {
+        Some(clipboard.snapshot()?)
+    } else {
+        None
+    };
     let original = clipboard.sequence();
     let copied = copy_selection(clipboard, keyboard, clock, timeout);
     // The selection's copy is what goes; a copy the user makes after it stays.
@@ -303,7 +327,7 @@ pub(crate) fn capture<J>(
         Ok(Some((_, seen))) => *seen,
         _ => clipboard.sequence(),
     };
-    if selection != original {
+    if let Some(snapshot) = snapshot.filter(|_| selection != original) {
         // A failed restore leaves the selection on the clipboard, which is
         // what Ownkey always did; the captured text is still good.
         let _ = clipboard.restore(&snapshot, Some(selection));
@@ -447,6 +471,9 @@ mod tests {
         copied_after_write: Option<Vec<Format>>,
         /// The window the paste went to doesn't answer, as while it is busy.
         target_busy: bool,
+        /// Reading what another app copied would make the system ask the user.
+        unreadable: bool,
+        snapshots: u32,
         /// How long each question to the target waited.
         asked: Vec<Duration>,
         sent: Vec<Vec<Stroke>>,
@@ -538,8 +565,13 @@ mod tests {
             desk.sequence
         }
 
+        fn may_read(&self) -> bool {
+            !self.desk().unreadable
+        }
+
         fn snapshot(&mut self) -> Result<Snapshot, InputError> {
-            let desk = self.desk();
+            let mut desk = self.desk();
+            desk.snapshots += 1;
             desk.open()?;
             let formats = desk
                 .formats
@@ -872,6 +904,39 @@ mod tests {
         );
         assert_eq!(desk.formats, rich_clipboard());
         assert_eq!(desk.sequence, 100);
+    }
+
+    /// macOS would ask the user before Voice reads their clipboard: no snapshot, no restore and no
+    /// 2 s wait, and the dictation stays on the clipboard.
+    #[test]
+    fn without_read_access_the_dictation_stays_on_the_clipboard() {
+        let mut desk = Desk::with(rich_clipboard());
+        desk.unreadable = true;
+        let fake = Fake::new(desk);
+        let pending = fake.paste("dictated").unwrap();
+        assert_eq!(fake.finish(&pending), Ok(false));
+        let desk = fake.desk();
+        assert_eq!(desk.pasted, [Some("dictated".to_string())]);
+        assert_eq!(desk.snapshots, 0, "nothing of the user's was read");
+        assert_eq!(desk.restores, 0);
+        assert_eq!(desk.sleeps, [PASTE_SETTLE]);
+        assert!(desk.asked.is_empty());
+        assert_eq!(decode(&desk.formats).as_deref(), Some("dictated"));
+    }
+
+    /// The copy Voice asked for is still read, but nothing else of the user's, and the selection
+    /// stays on the clipboard.
+    #[test]
+    fn without_read_access_a_capture_reads_only_its_copy() {
+        let mut desk = Desk::with(rich_clipboard());
+        desk.unreadable = true;
+        desk.selection = Some(vec![text_format("selected words")]);
+        let fake = Fake::new(desk);
+        assert_eq!(fake.capture(), Ok(Some("selected words".to_string())));
+        let desk = fake.desk();
+        assert_eq!(desk.snapshots, 0);
+        assert_eq!(desk.restores, 0);
+        assert_eq!(decode(&desk.formats).as_deref(), Some("selected words"));
     }
 
     #[test]

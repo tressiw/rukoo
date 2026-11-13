@@ -81,7 +81,16 @@ pub fn start(
             let engine: Engine = crate::fake::FakeEngine::start(options, sink, scenario)?;
             Ok(engine)
         }
-        None => voice_engine::start(options, sink),
+        None => {
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut services = voice_engine::Services::system(&options);
+            // A press at the lock screen or from a switched-out session records nothing.
+            #[cfg(target_os = "macos")]
+            {
+                services.at_console = Arc::new(crate::session_mac::at_the_console);
+            }
+            voice_engine::start_with(options, sink, services)
+        }
     }
 }
 

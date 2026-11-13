@@ -7,11 +7,11 @@ mod common;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{wait_for, Keyboard, Latch, INTERVAL, PATIENCE};
 use voice_input::HotkeyEvent::{Pressed, Released};
-use voice_input::{HotkeyEvent, HotkeyPoller, Key, Stopper, STALL_LIMIT};
+use voice_input::{HotkeyEvent, HotkeyPoller, Key, Stopper};
 
 type Events = Arc<Mutex<Vec<HotkeyEvent>>>;
 
@@ -242,78 +242,64 @@ fn a_slow_channel_reader_still_gets_every_change_in_order() {
     poller.join();
 }
 
-/// A clock the test moves by hand, for the stalled-poll rule.
-struct Clock(Mutex<Instant>);
-
-impl Clock {
-    fn new() -> Arc<Clock> {
-        Arc::new(Clock(Mutex::new(Instant::now())))
-    }
-
-    fn advance(&self, by: Duration) {
-        *self.0.lock().unwrap() += by;
-    }
-
-    fn reader(self: &Arc<Self>) -> impl FnMut() -> Instant + Send + 'static {
-        let clock = Arc::clone(self);
-        move || *clock.0.lock().unwrap()
-    }
-}
-
+/// Work from another thread, such as the app releasing a held key when the screen locks, runs on
+/// the handler's thread after the events queued before it: a release that arrives while a slow
+/// press is still handled can't overtake that press.
 #[test]
-fn a_release_during_a_stalled_poll_arrives_when_the_poller_wakes() {
-    let keyboard = Keyboard::new(1, &[Key::RightAlt]);
-    let clock = Clock::new();
-    let (tx, rx) = mpsc::channel();
-    let poller = HotkeyPoller::spawn_with_clock(
-        vec![Key::RightAlt],
-        tx,
-        keyboard.state(),
-        INTERVAL,
-        clock.reader(),
-    )
-    .unwrap();
+fn work_from_another_thread_runs_after_the_events_queued_before_it() {
+    let (keyboard, opening) = (Keyboard::new(1, &[]), Arc::new(Latch::new(false)));
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let poller = listen(&keyboard, {
+        let (log, opening) = (Arc::clone(&log), Arc::clone(&opening));
+        move |event| {
+            log.lock().unwrap().push(format!("{event:?}"));
+            if event == Pressed(Key::RightAlt) {
+                opening.wait();
+            }
+        }
+    });
+    keyboard.set(Key::RightAlt, true);
+    assert!(wait_for(|| log.lock().unwrap().len() == 1));
+    keyboard.set(Key::RightAlt, false);
+    // The release is queued while the press is still handled.
+    thread::sleep(INTERVAL * 4);
+    let done = poller
+        .in_order()
+        .expect("a handler poller runs work in order")
+        .run({
+            let log = Arc::clone(&log);
+            move || log.lock().unwrap().push("work".into())
+        })
+        .expect("the poller runs");
     assert_eq!(
-        rx.recv_timeout(PATIENCE),
-        Ok(Pressed(Key::RightAlt)),
-        "held since the start"
+        done.recv_timeout(Duration::from_millis(100)),
+        Err(RecvTimeoutError::Timeout),
+        "the work waits for the press"
     );
-    // The key comes up while the poll thread is stopped for longer than the
-    // limit. The poll that wakes releases it, so recording stops.
-    keyboard.held.lock().unwrap().remove(&Key::RightAlt);
-    clock.advance(STALL_LIMIT + Duration::from_millis(900));
-    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Released(Key::RightAlt)));
-    // One release, and no press from the stale state after it.
+    opening.open();
+    assert_eq!(done.recv_timeout(PATIENCE), Ok(()));
     assert_eq!(
-        rx.recv_timeout(Duration::from_millis(100)),
-        Err(RecvTimeoutError::Timeout)
+        *log.lock().unwrap(),
+        ["Pressed(RightAlt)", "Released(RightAlt)", "work"]
     );
     poller.join();
 }
 
+/// Only a poller with a handler thread runs work, and only until it stops. A handle that is still
+/// around doesn't keep the handler thread alive: `join` returns.
 #[test]
-fn a_key_still_down_across_a_stalled_poll_keeps_its_hold() {
-    let keyboard = Keyboard::new(1, &[Key::RightAlt]);
-    let clock = Clock::new();
-    let (tx, rx) = mpsc::channel();
-    let poller = HotkeyPoller::spawn_with_clock(
-        vec![Key::RightAlt],
-        tx,
-        keyboard.state(),
-        INTERVAL,
-        clock.reader(),
-    )
-    .unwrap();
-    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Pressed(Key::RightAlt)));
-    // The user holds the key through the gap: no invented release, no second press.
-    clock.advance(STALL_LIMIT + Duration::from_millis(900));
-    assert_eq!(
-        rx.recv_timeout(Duration::from_millis(150)),
-        Err(RecvTimeoutError::Timeout)
-    );
-    keyboard.held.lock().unwrap().remove(&Key::RightAlt);
-    assert_eq!(rx.recv_timeout(PATIENCE), Ok(Released(Key::RightAlt)));
+fn work_runs_only_on_a_running_handler_poller() {
+    let keyboard = Keyboard::new(1, &[]);
+    let (tx, _rx) = mpsc::channel();
+    let channel = HotkeyPoller::spawn_with(vec![Key::F13], tx, keyboard.state(), INTERVAL).unwrap();
+    assert!(channel.in_order().is_none(), "no handler thread to run on");
+    channel.join();
+    let poller = listen(&keyboard, |_| {});
+    let in_order = poller.in_order().unwrap();
+    let done = in_order.run(|| {}).unwrap();
+    assert_eq!(done.recv_timeout(PATIENCE), Ok(()));
     poller.join();
+    assert!(in_order.run(|| {}).is_none(), "stopped: nothing runs");
 }
 
 #[test]

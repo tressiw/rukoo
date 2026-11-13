@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use objc2::rc::autoreleasepool;
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
 use crate::clipboard::{self, BeforeKeys, Guarded, Keyboard, SystemClock};
 use crate::target::{self, WindowInfo};
@@ -48,6 +48,11 @@ pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
 /// never down.
 pub(crate) fn is_key_down(key: Key) -> bool {
     keys::is_key_down(key)
+}
+
+/// How long ago any key that isn't a modifier went down.
+pub(crate) fn since_key_down() -> Option<std::time::Duration> {
+    keys::since_key_down()
 }
 
 /// Types the text with Cmd+V, keeping the clipboard as `win.rs` does: the
@@ -111,10 +116,17 @@ pub(crate) trait Selection {
 /// though: Electron apps without the attribute, terminals, and apps whose
 /// selection isn't text at all. Cmd+C still works there, as it does on
 /// Windows.
-fn capture_with(source: &mut dyn Selection) -> Result<Option<String>, InputError> {
+///
+/// Only Cmd+C takes the clipboard's turn (`gate`): the Accessibility read
+/// never touches the pasteboard, so it doesn't wait for a paste's restore.
+fn capture_with(
+    source: &mut dyn Selection,
+    gate: &dyn Fn() -> clipboard::Turn,
+) -> Result<Option<String>, InputError> {
     if let Some(text) = source.accessibility().filter(|text| !text.is_empty()) {
         return Ok(Some(text));
     }
+    let _turn = gate();
     source.copy()
 }
 
@@ -146,14 +158,13 @@ pub(crate) fn capture_selection(
     before_keys: BeforeKeys,
 ) -> Result<Option<String>, InputError> {
     check()?;
-    let _turn = pasteboard::enter_gate();
     let mut keys = events::Keys;
     let mut guarded = Guarded::new(&mut keys, before_keys);
     let mut desktop = Desktop {
         timeout,
         keyboard: &mut guarded,
     };
-    capture_with(&mut desktop)
+    capture_with(&mut desktop, &pasteboard::enter_gate)
 }
 
 /// The app in front, as AppKit names it.
@@ -176,12 +187,20 @@ impl Frontmost {
     }
 }
 
-/// Whether the pid an app had is still the app in front and still running.
-fn is_still_in_front(pid: i32) -> bool {
+/// Whether the app with this pid still runs.
+fn is_running(pid: i32) -> bool {
+    autoreleasepool(|_| {
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .is_some_and(|app| !app.isTerminated())
+    })
+}
+
+/// Whether the app with this pid is the one in front.
+fn is_in_front(pid: i32) -> bool {
     autoreleasepool(|_| {
         NSWorkspace::sharedWorkspace()
             .frontmostApplication()
-            .is_some_and(|app| app.processIdentifier() == pid && !app.isTerminated())
+            .is_some_and(|app| app.processIdentifier() == pid)
     })
 }
 
@@ -219,6 +238,13 @@ mod tests {
         copy: Option<&'static str>,
         copy_error: Option<InputError>,
         copied: bool,
+    }
+
+    /// The clipboard's turn for these tests alone.
+    static GATE: clipboard::Gate = clipboard::Gate::new();
+
+    fn capture_with(source: &mut Fake) -> Result<Option<String>, InputError> {
+        super::capture_with(source, &|| GATE.enter())
     }
 
     impl Fake {
@@ -268,6 +294,23 @@ mod tests {
         let mut fake = Fake::new(None);
         assert_eq!(capture_with(&mut fake), Ok(Some("copied".to_string())));
         assert!(fake.copied);
+    }
+
+    /// A selection the Accessibility API reads doesn't wait for a paste's restore; Cmd+C does.
+    #[test]
+    fn only_cmd_c_waits_for_the_clipboard() {
+        let entered = std::cell::Cell::new(0);
+        let gate = || {
+            entered.set(entered.get() + 1);
+            GATE.enter()
+        };
+        let mut answered = Fake::new(Some("selected words"));
+        super::capture_with(&mut answered, &gate).unwrap();
+        assert_eq!(entered.get(), 0, "the Accessibility read took no turn");
+        let mut copies = Fake::new(None);
+        super::capture_with(&mut copies, &gate).unwrap();
+        assert_eq!(entered.get(), 1);
+        assert!(copies.copied);
     }
 
     #[test]

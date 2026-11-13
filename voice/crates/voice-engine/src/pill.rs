@@ -225,6 +225,14 @@ impl Pill {
         });
     }
 
+    /// Whether the focused app takes text, known once the microphone is open: the "select a text
+    /// box" warning shows while the key is held.
+    pub fn target_warning(&mut self, recording: u64, warning: bool) {
+        if let Some(d) = self.current_dictation(recording) {
+            d.target_warning = warning;
+        }
+    }
+
     fn current_dictation(&mut self, recording: u64) -> Option<&mut Dictation> {
         if recording != self.latest {
             return None;
@@ -299,6 +307,13 @@ impl Pill {
             target_warning: false,
             until: Some(now + hold),
         });
+    }
+
+    /// A recording dropped without a word: the pill goes away at once.
+    pub fn dropped(&mut self, recording: u64) {
+        if self.current_dictation(recording).is_some() {
+            self.dictation = None;
+        }
     }
 
     /// Whether level ticks may go out for this recording now.
