@@ -77,9 +77,28 @@ pub trait Permissions: Send + Sync {
 /// A permission the service can't report is `unknown` rather than missing, so the row keeps its
 /// place.
 pub fn view(permissions: &dyn Permissions) -> Option<Value> {
+    view_learning(permissions, None)
+}
+
+/// [`view`], with what the last meeting's call track showed about System Audio Recording, which
+/// has no preflight call: sound means granted, only silence while another app played means
+/// denied or stale. It stands in only where the system can't tell.
+pub fn view_learning(
+    permissions: &dyn Permissions,
+    system_audio: Option<PermissionState>,
+) -> Option<Value> {
     let states: Vec<Option<PermissionState>> = Permission::ALL
         .iter()
-        .map(|permission| permissions.state(*permission))
+        .map(
+            |permission| match (permissions.state(*permission), system_audio) {
+                (Some(PermissionState::Unknown), Some(learned))
+                    if *permission == Permission::SystemAudio =>
+                {
+                    Some(learned)
+                }
+                (state, _) => state,
+            },
+        )
         .collect();
     if states.iter().all(Option::is_none) {
         return None;
@@ -252,6 +271,25 @@ mod tests {
                 assert_eq!(view[permission.id()], "unknown");
             }
         }
+    }
+
+    #[test]
+    fn the_last_meeting_tells_system_audio_where_the_system_cannot() {
+        let mac = Fake(HashMap::from([
+            (Permission::Microphone, PermissionState::Granted),
+            (Permission::SystemAudio, PermissionState::Unknown),
+        ]));
+        let heard = view_learning(&mac, Some(PermissionState::Granted)).unwrap();
+        assert_eq!(heard["systemAudio"], "granted");
+        let silent = view_learning(&mac, Some(PermissionState::Denied)).unwrap();
+        assert_eq!(silent["systemAudio"], "denied");
+        // It never overrides what the system itself reports.
+        assert_eq!(silent["microphone"], "granted");
+        assert_eq!(
+            view_learning(&mac, Option::None).unwrap()["systemAudio"],
+            "unknown"
+        );
+        assert!(view_learning(&None, Some(PermissionState::Denied)).is_none());
     }
 
     #[test]
