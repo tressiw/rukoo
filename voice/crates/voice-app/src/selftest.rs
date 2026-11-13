@@ -188,6 +188,70 @@ fn yield_front(_app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// macOS: a button panel made the way the pill makes its own, clicked by handing mouse events
+/// straight to it (nothing reaches the window server): a click, a press dragged off before the
+/// release, and a click again. Two clicks must arrive, and neither the panel nor Voice may become key or active.
+#[cfg(target_os = "macos")]
+fn panel_clicks(app: &AppHandle) -> Result<Value, String> {
+    on_main(app, || {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use crate::pill::hit_mac::{HitEvent, HitPanel};
+        let clicks = Rc::new(Cell::new(0u32));
+        let counter = clicks.clone();
+        let panel = HitPanel::create(
+            "self-test",
+            Box::new(move |event| {
+                if event == HitEvent::Click {
+                    counter.set(counter.get() + 1);
+                }
+            }),
+        )?;
+        for inside in [true, false, true] {
+            panel.click_for_test(inside)?;
+        }
+        let recipe = panel.recipe();
+        let active = objc2::MainThreadMarker::new()
+            .is_some_and(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive());
+        Ok::<_, String>(json!({
+            "clicks": clicks.get(),
+            "recipe": recipe,
+            "voiceActive": active,
+            "ok": clicks.get() == 2 && !recipe.is_key && !recipe.can_become_key && !active,
+        }))
+    })?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn panel_clicks(_app: &AppHandle) -> Result<Value, String> {
+    Ok(json!({ "ok": true }))
+}
+
+/// One click on the stop button. Windows calls what its stop window calls; macOS clicks the real stop
+/// panel and waits for the engine's next snapshot, which its click handler asks for on a thread.
+fn stop_click(
+    app: &AppHandle,
+    engine: &dyn voice_engine::EngineApi,
+    pill: &std::sync::Arc<Pill>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let before = engine.pill_snapshot().seq;
+        let p = pill.clone();
+        on_main(app, move || p.click_stop_for_test())??;
+        wait("the stop panel's click", Duration::from_secs(5), || {
+            engine.pill_snapshot().seq > before
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, pill);
+        engine.pill_stop_clicked();
+        Ok(())
+    }
+}
+
 fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, String> {
     let pill = pill.clone();
     on_main(app, move || {
@@ -371,12 +435,13 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     steps.push("captured");
 
     // 4. The two-step stop as the stop window reports it, then the pill hides and shows again.
-    engine.pill_stop_clicked();
+    let panel = panel_clicks(app)?;
+    stop_click(app, &*engine, &pill)?;
     let asked = engine
         .pill_snapshot()
         .meeting
         .is_some_and(|m| m.confirm_stop);
-    engine.pill_stop_clicked();
+    stop_click(app, &*engine, &pill)?;
     let saving = engine.pill_snapshot().meeting.map(|m| m.state);
     wait(
         "the pill to hide after saving",
@@ -410,6 +475,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         && styles_ok(&shown)
         && styles_ok(&hidden)
         && styles_ok(&reshown)
+        && panel["ok"] == true
         && asked
         && saving.as_deref() == Some("processing")
         && captures.iter().all(|c| c["png"] == true);
@@ -427,6 +493,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         "pill": pill.status(),
         "settingsLoads": shared.settings_loads.load(Ordering::Relaxed),
         "twoStepStop": { "firstClickAsks": asked, "secondClickStops": saving },
+        "panelClicks": panel,
         "captures": captures,
     }))
 }

@@ -473,6 +473,16 @@ impl Pill {
         })
     }
 
+    /// For the self-test: one click on the stop panel, handed straight to the panel (no event goes
+    /// through the window server), so it reaches the engine as a user's click would. Main thread only.
+    #[cfg(target_os = "macos")]
+    pub fn click_stop_for_test(&self) -> Result<(), String> {
+        HIT.with(|cell| match cell.borrow().as_ref() {
+            Some(panel) => panel.click_for_test(true),
+            None => Err("there is no stop panel".into()),
+        })
+    }
+
     #[cfg(not(target_os = "macos"))]
     pub fn native_status(&self) -> Value {
         Value::Null

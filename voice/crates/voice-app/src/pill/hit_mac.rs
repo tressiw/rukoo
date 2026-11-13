@@ -19,8 +19,8 @@ use std::cell::RefCell;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSPanel, NSTrackingArea, NSTrackingAreaOptions, NSView,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSEventType, NSPanel,
+    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use voice_engine::UiOptions;
@@ -204,6 +204,39 @@ impl HitPanel {
 
     pub fn is_visible(&self) -> bool {
         self.panel.isVisible()
+    }
+
+    /// For the self-test: a press in the panel's middle, released there or just right of it, made as
+    /// `NSEvent`s and given to the panel's `sendEvent:`, the way AppKit dispatches a real click: through
+    /// the content view (first mouse) to the panel's own `mouseDown:` and `mouseUp:`, with whatever
+    /// AppKit does about key windows and activation on the way. Nothing is posted to the window server,
+    /// so no other app sees it and the pointer doesn't move. Main thread only.
+    pub fn click_for_test(&self, release_inside: bool) -> Result<(), String> {
+        let size = self.panel.frame().size;
+        let middle = NSPoint::new(size.width / 2.0, size.height / 2.0);
+        let off = NSPoint::new(size.width + 10.0, size.height / 2.0);
+        let event = |kind, point| {
+            NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                kind,
+                point,
+                NSEventModifierFlags::empty(),
+                0.0,
+                self.panel.windowNumber(),
+                None,
+                0,
+                1,
+                1.0,
+            )
+            .ok_or("AppKit made no mouse event")
+        };
+        let down = event(NSEventType::LeftMouseDown, middle)?;
+        let up = event(
+            NSEventType::LeftMouseUp,
+            if release_inside { middle } else { off },
+        )?;
+        self.panel.sendEvent(&down);
+        self.panel.sendEvent(&up);
+        Ok(())
     }
 
     /// "Hide pill from capture": the panel draws nothing, but it is a window over the pill and follows
