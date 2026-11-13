@@ -98,6 +98,18 @@ pub enum Line {
         t: u64,
         last_seen: u64,
     },
+    /// The track has recorded only exact zeros since `since` while another app played sound:
+    /// the system may not let Voice record it (`silence.rs`). Written once per session.
+    Silent {
+        t: u64,
+        track: String,
+        since: u64,
+    },
+    /// The first sound on a track after its `silent` line.
+    Sound {
+        t: u64,
+        track: String,
+    },
     Stop {
         t: u64,
         wall: u64,
@@ -124,6 +136,8 @@ impl Line {
             | Line::Dictation { t, .. }
             | Line::Suspend { t, .. }
             | Line::Crash { t, .. }
+            | Line::Silent { t, .. }
+            | Line::Sound { t, .. }
             | Line::Stop { t, .. } => Some(*t),
             Line::Unknown => None,
         }

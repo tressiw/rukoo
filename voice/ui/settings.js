@@ -390,9 +390,11 @@ function permissionsCard() {
           ? t('settings.permissions.denied', { name: t(name) })
           : value === 'notAsked'
             ? t('settings.permissions.notAskedHelp')
-            : id === 'systemAudio' && value === 'unknown'
-              ? t('settings.permissions.systemAudioUnknown')
-              : '';
+            : id === 'systemAudio' && value !== 'granted' && state.callSound === 'silent'
+              ? t('settings.permissions.systemAudioSilent')
+              : id === 'systemAudio' && value === 'unknown'
+                ? t('settings.permissions.systemAudioUnknown')
+                : '';
       return row({
         title: t(name),
         desc: t(why),
@@ -1398,7 +1400,7 @@ async function keyChoice(role) {
     disabled: Boolean(taken[key]),
     hint: taken[key] ? t(taken[key]) : ownkeyKeys.includes(key) ? t('settings.keys.ownkey') : ''
   }));
-  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode ? t('settings.keys.dev') : '' });
+  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode && !macos() ? t('settings.keys.dev') : '' });
   if (value != null && value !== getPath(c, role)) setValue(role, value);
 }
 

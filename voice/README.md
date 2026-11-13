@@ -8,7 +8,7 @@ Rukoo Voice is a desktop app for push-to-talk dictation that also records meetin
 
 **Meetings.** Voice records your microphone, the call audio and, if you want, your screen. It transcribes while you talk and streams the transcript to Rukoo. Rukoo shows the meeting next to your agent, so you can ask the agent questions during the call. Afterwards the agent writes the notes with its own meeting-notes skill and stores them where you keep notes.
 
-Voice has no meeting screens of its own. During a meeting the pill shows that it's recording and has a stop button. Meetings need Rukoo. Dictation works without it.
+Voice has no meeting screens of its own. During a meeting the recording indicator shows that it's recording and has a stop button. Meetings need Rukoo. Dictation works without it.
 
 ## How Voice and Rukoo work together
 
@@ -35,10 +35,10 @@ Voice has no meeting screens of its own. During a meeting the pill shows that it
 
 Each meeting can record the screen in one of three ways: off, frames only, or the full video. Settings has the default, and Rukoo can pick another one for a meeting it starts.
 
-While recording or paused, the pill's screen button and Rukoo's meeting header offer Off, Frames, Video and a monitor. Off releases capture while audio continues. Capture can start again on the same clock, including after an audio-only start. The transcript marks each mode change. Before enabling capture, Voice waits for every connected Rukoo to confirm its window protection; a missing confirmation leaves the previous mode unchanged. These live controls use bridge protocol 2 and require updated copies of both apps. Updated Rukoo still connects to older Voice with the live controls hidden.
+While recording or paused, the recording indicator's screen button and Rukoo's meeting header offer Off, Frames, Video and a monitor. Off releases capture while audio continues. Capture can start again on the same clock, including after an audio-only start. The transcript marks each mode change. Before enabling capture, Voice waits for every connected Rukoo to confirm its window protection; a missing confirmation leaves the previous mode unchanged. These live controls use bridge protocol 2 and require updated copies of both apps. Updated Rukoo still connects to older Voice with the live controls hidden.
 
 - A process of its own, `rukoo-voice-screen`, records the screen, so a crash in the graphics driver, the encoder or the text reader never costs audio.
-- Voice records one monitor at most. It starts with the monitor of the frontmost window, skipping hidden and minimized windows and windows kept out of screen capture, such as Rukoo's. You can switch monitors with the pill's screen button or from the meeting in Rukoo. Recording a single window doesn't work when you share your own screen, because you keep switching windows.
+- Voice records one monitor at most. It starts with the monitor of the frontmost window, skipping hidden and minimized windows and windows kept out of screen capture, such as Rukoo's. You can switch monitors with the recording indicator's screen button or from the meeting in Rukoo. Recording a single window doesn't work when you share your own screen, because you keep switching windows.
 - The agent gets frames, not the video. Each time the screen changes noticeably and then settles, Voice saves a frame at that moment in the transcript, and Windows reads the text on it, on this computer. When the agent needs more, it asks for a clip between two times. A clip is an MP4 file cut from the recording, so only an agent on this computer gets the file; other agents get a handful of frames from that stretch.
 - Audio and video share one clock. A passage in the transcript jumps to the same moment in the video. Rukoo doesn't play the video yet.
 - Video is encoded on the graphics card, because transcription already uses more than one CPU core during a meeting. Without a hardware encoder, Voice records frames only. The frame rate follows the screen: up to 15 frames a second while it changes, and about 4 a second while it is still, also when Windows keeps handing over unchanged frames. Small changes, such as typed text, reach the video at that slower pace, within half a second.
@@ -48,7 +48,7 @@ While recording or paused, the pill's screen button and Rukoo's meeting header o
 | | Screen | Call audio | Hardware encoder |
 |---|---|---|---|
 | Windows | Windows.Graphics.Capture | WASAPI loopback, or one app through process loopback | Media Foundation: NVENC, AMF or Quick Sync |
-| macOS | ScreenCaptureKit, after the Screen & System Audio Recording permission | ScreenCaptureKit audio, or Core Audio process taps | VideoToolbox |
+| macOS | ScreenCaptureKit, after the Screen & System Audio Recording permission | A Core Audio process tap of the default output, after the System Audio Recording Only permission | VideoToolbox |
 | Linux | xdg-desktop-portal ScreenCast over PipeWire | The PipeWire monitor of the output device | VA-API or NVENC |
 
 Rukoo can hide its window from screen capture while a meeting records, so your agent chat stays out of the recording. On Windows 10 2004 and later, that also keeps it out of Teams and Zoom screen shares. On macOS 15 and later, other apps' screen shares still show Rukoo, although Voice can leave it out of its own recording. Linux has no way to hide a window, so keep Rukoo on a monitor you don't record.
@@ -73,6 +73,8 @@ A meeting can't be repeated, so losing a recording is the worst thing Voice can 
 - The screen process runs detached like the recorder, with its own watchdog. A crashed screen process restarts into the same meeting, and the transcript marks the gap in the screen.
 - When the disk fills up or the video encoder fails, Voice drops the video first, then the frames, and never the audio. Video stops when less than 4 GiB is free and frames below 2 GiB, so the audio of a long meeting still fits. Voice tells you what it dropped.
 - Voice follows device changes: an unplugged headset, a Bluetooth headset switching profile, a new default device, sleep and resume. It marks the switch instead of recording silence.
+- A device that takes long to open never holds up the rest. The first time a Mac records the call, macOS waits for you to answer its System Audio Recording prompt; meanwhile the microphone records, and the call joins when you answer, with the gap marked.
+- On a Mac, a call track without the System Audio Recording permission records silence and no error, also when the permission went stale after an update. When the call holds nothing but exact silence for a minute in a row while another app has its audio output open, Voice says so in the pill, in a notification and in Rukoo: the call is silent, and the permission may be why. It points to the System Audio Recording Only switch first, and to removing and adding Voice again only when the switch is on and the call stays silent after an update. It keeps recording. Waiting alone in a call, everyone muted, or a browser tab that keeps its output open can trigger it while the permission is fine; the first sound on the call takes it back.
 
 ## Storage
 
@@ -94,11 +96,13 @@ On its first start, Voice imports Ownkey's settings and uses the speech models O
 
 The Mac build is ad-hoc signed and not notarized, as Rukoo Mail's Mac builds are. The first time you open it, macOS says it can't check the app for malicious software. Open System Settings › Privacy & Security, find Rukoo Voice and choose Open Anyway, then open it again.
 
-macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on.
+macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on. System Audio Recording has no way to be checked before a meeting: Settings shows the permission as on once a meeting's call track recorded sound, and a meeting tells you when its call holds only silence.
+
+Voice records everything the Mac plays, its own sounds included, as it does on Windows. Its only sound is the optional ready chime when you start dictating, and macOS' system sound server plays it, so leaving Voice's own processes out of the tap wouldn't keep it out. The timeline marks every dictation, so the chime sits at the start of a marked stretch.
 
 ## How it's built
 
-Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens. Bucket sync runs inside the app and only reads finished files. The local speech worker and the speaker worker end with the app, so a crashed Voice never leaves a model loaded in a process nobody talks to; the recorder does not, because a meeting can't be repeated.
+Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the recording indicator, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens. Bucket sync runs inside the app and only reads finished files. The local speech worker and the speaker worker end with the app, so a crashed Voice never leaves a model loaded in a process nobody talks to; the recorder does not, because a meeting can't be repeated.
 
 The bridge between Voice and Rukoo is specified in [PROTOCOL.md](PROTOCOL.md), with examples both apps test against in `fixtures/`.
 
@@ -107,7 +111,7 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 ## What 0.1 leaves out
 
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
-- Meeting audio capture on macOS and Linux. The recorder there reads synthetic and file sources only. The app also runs on a Mac, a port still being checked by hand: speaker labels there need a development copy of the NeMo runtime. Linux has no app; its recorder, bridge and transcript pipeline are tested there.
+- Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows and macOS.
 - A signed installer and automatic updates. The opt-in update check tells you a new version exists.
 
 ## Open decisions
