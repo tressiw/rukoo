@@ -2,17 +2,17 @@
 //! in a process of its own, so a crash in the native runtime never takes the app down.
 //!
 //! The app's speaker client (voice-core `speakers::client`) starts one worker per labelled
-//! meeting stream, in its kill-on-close job and at below-normal priority. The worker only runs
-//! NVIDIA Nemotron 3 Diarization; turning the probabilities into speaker turns and stable `call-N`
-//! ids happens in the app. It reads the runtime folder and the model file it is given and writes
-//! nothing to disk.
+//! meeting stream, in its kill-on-close job on Windows and watching its parent on Unix, at
+//! below-normal priority. The worker only runs NVIDIA Nemotron 3 Diarization; turning the
+//! probabilities into speaker turns and stable `call-N` ids happens in the app. It reads the
+//! runtime folder and the model file it is given and writes nothing to disk.
 //!
 //! # Protocol
 //!
 //! The framing is voice-local's: one JSON request per line on stdin, a request that names `bytes`
 //! followed by that many raw bytes, one JSON line per request on stdout in order, except `quit`.
 //! Logs and the runtime's own output go to stderr. The worker exits 0 on `quit` and when stdin
-//! closes.
+//! closes, and 70 on Unix when the app that started it is gone.
 //!
 //! | Request | Response |
 //! |---|---|
@@ -48,6 +48,11 @@ mod backend;
 mod cpu;
 #[cfg(windows)]
 mod nemo;
+// The watch Voice uses to end this worker with itself lives in voice-core, next to the client that
+// spawns it. Included by path rather than as a dependency: a worker that a native runtime takes
+// down shouldn't link the app's network and archive stacks for a `kqueue` and `pidfd` watch.
+#[path = "../../voice-core/src/local/parent.rs"]
+mod parent;
 mod protocol;
 mod selftest;
 mod stdio;
@@ -60,6 +65,9 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     #[cfg(windows)]
     quiet_crashes();
+    // Before the arguments are read: when the app that started this worker is gone, so is the
+    // worker. A worker started by hand has no parent to watch.
+    parent::watch(worker::log);
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match args.first().and_then(|arg| arg.to_str()) {
         None => serve(),
