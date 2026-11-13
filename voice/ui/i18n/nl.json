@@ -102,6 +102,7 @@
   "settings.permissions.state.unknown": "Onbekend",
   "settings.permissions.denied": "Open Systeeminstellingen en zet {name} aan; staat Rukoo Voice daar al aan, verwijder het dan met de minknop en voeg het opnieuw toe.",
   "settings.permissions.notAskedHelp": "Voice vraagt erom zodra het dit nodig heeft.",
+  "settings.permissions.systemAudioSilent": "Het gesprek van de laatste vergadering was een minuut stil, terwijl een andere app zijn audio-uitvoer open had. Werd er gepraat, kijk dan of Rukoo Voice hier aanstaat. Staat het aan en blijft het gesprek na een update van Voice stil, verwijder Rukoo Voice dan met de minknop en voeg het opnieuw toe.",
   "settings.permissions.systemAudioUnknown": "macOS laat Voice dit niet controleren; het vraagt erom als een vergadering het gesprek opneemt.",
   "settings.permissions.open": "Openen",
   "settings.permissions.openFailed": "Kon Systeeminstellingen niet openen.",

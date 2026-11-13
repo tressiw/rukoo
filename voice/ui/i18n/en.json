@@ -387,6 +387,10 @@
     "message": "Voice asks when it first needs it.",
     "description": "Settings > Permissions: note under a permission macOS hasn't asked for yet. voice/ui/settings.js (permissionsCard)."
   },
+  "settings.permissions.systemAudioSilent": {
+    "message": "The last meeting's call held only silence for a minute while another app had its audio output open. If people were talking, check that Rukoo Voice is switched on here. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice with the minus button and add it again.",
+    "description": "Settings > Permissions: note under System Audio Recording after a meeting whose call held only exact silence while another app had its audio output open (SettingsState.callSound \"silent\"). A hint, not an error: it can also mean nobody talked. voice/ui/settings.js (permissionsCard)."
+  },
   "settings.permissions.systemAudioUnknown": {
     "message": "macOS doesn't let Voice check this one; it asks when a meeting records the call.",
     "description": "Settings > Permissions: note under System Audio Recording, which has no public preflight call. Not an error. voice/ui/settings.js (permissionsCard)."

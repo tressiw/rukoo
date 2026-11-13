@@ -434,6 +434,12 @@ fn a_silent_call_says_so_once_and_settings_learns_it() {
     assert_eq!(notice.as_deref(), Some("pill.callSilent"));
     assert_eq!(pill_meeting_state(&h).as_deref(), Some("recording"));
     let state = engine.settings_state();
+    // Every Settings state says what the call showed, whether or not it reads the permissions:
+    // the one pushed while Settings is closed too, which has no permissions.
+    assert_eq!(state["callSound"], "silent", "{}", state["callSound"]);
+    let pushed = h.sink.last_settings();
+    assert_eq!(pushed["callSound"], "silent", "{}", pushed["callSound"]);
+    assert_eq!(pushed["permissions"], Value::Null);
     if cfg!(target_os = "macos") {
         // Only a hint, so the row doesn't claim macOS refused.
         assert_eq!(

@@ -490,6 +490,15 @@ impl Core {
         self.settings_changed();
     }
 
+    /// `SettingsState.callSound`: `heard`, `silent` or `null`.
+    pub fn call_sound_view(&self) -> Value {
+        match lock(&self.call_sound).as_ref().map(|(_, sound)| *sound) {
+            Some(CallSound::Heard) => Value::from("heard"),
+            Some(CallSound::Silent) => Value::from("silent"),
+            _ => Value::Null,
+        }
+    }
+
     /// What the last meeting learned about System Audio Recording, for Settings.
     pub fn system_audio_learned(&self) -> Option<PermissionState> {
         match lock(&self.call_sound).as_ref()?.1 {

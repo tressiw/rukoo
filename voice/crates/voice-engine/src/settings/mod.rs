@@ -164,6 +164,9 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
         "permissions": permissions,
+        // What the last meeting's call track showed while Voice runs, in every state, also one
+        // built while Settings is closed (voice/ui/API.md).
+        "callSound": core.call_sound_view(),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),
