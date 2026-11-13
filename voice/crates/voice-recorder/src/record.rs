@@ -35,6 +35,9 @@ const APPEND_SAMPLES: usize = 2 * 1_600;
 /// PAD_THRESHOLD_SECONDS).
 const PAD_THRESHOLD_MS: u64 = 500;
 const RETRY: Duration = Duration::from_secs(1);
+/// A macOS process tap that fails to open is retried less and less often, up to this: each try
+/// creates and destroys a tap and an aggregate device in the audio server.
+const TAP_RETRY_MAX: Duration = Duration::from_secs(30);
 const DEFAULT_POLL: Duration = Duration::from_secs(2);
 const SYNC: Duration = Duration::from_secs(5);
 /// A microphone delivers blocks continuously, even of silence; one that stops is gone.
@@ -114,6 +117,17 @@ pub fn padding(
     } else {
         0
     }
+}
+
+/// How long a track waits before it tries its device again after `failures` failed opens in a
+/// row: a second, except for a macOS process tap, which doubles that up to `TAP_RETRY_MAX`.
+pub fn retry_after(tap: bool, failures: u32) -> Duration {
+    if !tap {
+        return RETRY;
+    }
+    RETRY
+        .saturating_mul(1 << failures.saturating_sub(1).min(5))
+        .min(TAP_RETRY_MAX)
 }
 
 /// Where the next segment of a continuing stream starts: right after the previous one, unless
@@ -272,6 +286,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             taps: Vec::new(),
             silence: SilenceCheck::new(opts.silence_ms),
             playing: None,
+            failures: 0,
         })
         .collect();
     let mut recorder = Recorder {
@@ -297,6 +312,11 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     }
     recorder.run(rx);
     Ok(())
+}
+
+/// A macOS process tap: opening one creates objects in the audio server.
+fn is_tap(spec: &SourceSpec) -> bool {
+    cfg!(target_os = "macos") && matches!(spec, SourceSpec::DefaultOutput | SourceSpec::Output(_))
 }
 
 fn log(message: impl Display) {
@@ -345,6 +365,8 @@ struct Track {
     silence: SilenceCheck,
     /// Whether another app played sound at the last poll, for the silence check.
     playing: Option<bool>,
+    /// Failed opens in a row, for `retry_after`.
+    failures: u32,
 }
 
 enum State {
@@ -786,9 +808,11 @@ impl Recorder {
             return;
         };
         if opening.after_loss || opening.waiting.is_some() {
-            self.tracks[i].state = State::Lost {
+            let track = &mut self.tracks[i];
+            track.failures += 1;
+            track.state = State::Lost {
                 error,
-                next_try: Instant::now() + RETRY,
+                next_try: Instant::now() + retry_after(is_tap(&track.spec), track.failures),
             };
         } else {
             let at = opening.at;
@@ -837,6 +861,7 @@ impl Recorder {
         track.device_id = Some(opened.device.id.clone());
         track.cover_from = (!self.paused).then_some(t);
         track.covered_until = track.covered_until.max(t);
+        track.failures = 0;
         track.state = State::Open(Box::new(Live {
             _capture: opened.capture,
             device: opened.device,
@@ -897,9 +922,10 @@ impl Recorder {
     fn mark_lost(&mut self, i: usize, error: String, at: u64) {
         let track = &mut self.tracks[i];
         let t = at.max(track.covered_until);
+        track.failures += 1;
         track.state = State::Lost {
             error: error.clone(),
-            next_try: Instant::now() + RETRY,
+            next_try: Instant::now() + retry_after(is_tap(&track.spec), track.failures),
         };
         track.cover_from = None;
         self.journal.write(Line::DeviceLost {
@@ -1331,6 +1357,17 @@ mod tests {
         assert_eq!(next_segment_start(30_000, 29_950), 30_000);
         assert_eq!(next_segment_start(30_000, 30_150), 30_150);
         assert_eq!(next_segment_start(30_000, 29_850), 29_850);
+    }
+
+    #[test]
+    fn a_failing_tap_backs_off_and_a_microphone_does_not() {
+        let secs = |f| retry_after(true, f).as_secs();
+        assert_eq!(
+            (1..=7).map(secs).collect::<Vec<_>>(),
+            [1, 2, 4, 8, 16, 30, 30]
+        );
+        assert_eq!(retry_after(true, 100), TAP_RETRY_MAX);
+        assert_eq!(retry_after(false, 100), RETRY);
     }
 
     #[test]
