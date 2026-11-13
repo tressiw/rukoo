@@ -1,0 +1,4 @@
+/* Dutch texts for the questions macOS asks on Rukoo Voice's behalf. The English texts are in
+   en.lproj/InfoPlist.strings; change both together, as Rukoo Mail does in build/mac/nl.lproj. */
+"NSMicrophoneUsageDescription" = "Rukoo Voice gebruikt de microfoon om te dicteren en voor jouw kant van een vergadering.";
+"NSAudioCaptureUsageDescription" = "Rukoo Voice neemt de andere kant van een vergadering op uit het geluid dat je Mac afspeelt.";

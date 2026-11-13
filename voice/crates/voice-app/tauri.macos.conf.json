@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "15.0",
+      "entitlements": "macos/entitlements-audio.plist",
+      "infoPlist": "macos/Info.plist",
+      "hardenedRuntime": true,
+      "signingIdentity": "-",
+      "files": {
+        "Resources/en.lproj/InfoPlist.strings": "macos/en.lproj/InfoPlist.strings",
+        "Resources/nl.lproj/InfoPlist.strings": "macos/nl.lproj/InfoPlist.strings"
+      }
+    }
+  }
+}
