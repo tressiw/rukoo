@@ -35,6 +35,7 @@ const NOTICES = new Set([
   'pill.framesDropped.disk',
   'pill.screenFailed',
   'pill.screenPermission',
+  'pill.screenStopped',
   'pill.screenChangeFailed',
   'pill.screenMoved'
 ]);
@@ -47,6 +48,7 @@ const SCREEN_NOTICES = {
   'pill.framesDropped.disk': 'orange',
   'pill.screenFailed': 'orange',
   'pill.screenPermission': 'orange',
+  'pill.screenStopped': 'orange',
   'pill.screenChangeFailed': 'orange',
   'pill.screenMoved': 'text2'
 };

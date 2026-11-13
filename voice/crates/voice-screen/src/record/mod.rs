@@ -299,6 +299,9 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
         encoder: None,
         rebuild_at: None,
         capture_retry_at: None,
+        capture_failures: 0,
+        capture_retry: capture_retry(),
+        capture_since: None,
         no_monitor: false,
         paused: timeline.paused,
         timeline_paused: timeline.paused,
@@ -355,6 +358,20 @@ fn orphan_after() -> Duration {
         }
     }
     ORPHAN
+}
+
+/// The first wait before a failed capture starts again; a development copy's tests shorten it
+/// with `VOICE_SCREEN_TEST_CAPTURE_RETRY_MS`.
+fn capture_retry() -> Duration {
+    if crate::dev_mode() {
+        if let Some(ms) = std::env::var("VOICE_SCREEN_TEST_CAPTURE_RETRY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            return Duration::from_millis(ms.max(1));
+        }
+    }
+    screen::CAPTURE_RETRY
 }
 
 /// The monitor that shows the call (spec 2.7): the topmost real window's, else the cursor's,

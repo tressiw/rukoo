@@ -31,7 +31,7 @@ impl Thumbnailer {
         let (width, height) = (self.width as usize, self.height as usize);
         let (thumb_width, thumb_height) = ((width / 8).max(1), (height / 8).max(1));
         let locked = picture
-            .lock()
+            .lock_read()
             .ok_or_else(|| PlatformError::new("can't read the frame for a thumbnail"))?;
         let row = locked.bytes_per_row();
         let base = locked.base();
@@ -135,6 +135,30 @@ mod tests {
         assert_eq!(luma_of(255, 255, 255), 255);
         assert!(luma_of(0, 255, 0) > luma_of(0, 0, 255));
         assert!(luma_of(0, 0, 255) > luma_of(255, 0, 0));
+    }
+
+    /// A `420f` frame thumbnails from its luma plane, within a few levels of the BGRA frame it
+    /// was made from (BT.709 luma against the BT.601 mix), at an odd size whose rows are padded.
+    #[test]
+    fn a_420f_frame_thumbnails_like_its_bgra() {
+        for (w, h) in [(1280u32, 720u32), (1281, 721)] {
+            let slide = crate::capture::synthetic_mac::slide("Slide 7", 7, w, h).unwrap();
+            let bgra = PixelBuffer::from_pixels(&slide).unwrap();
+            let biplanar = PixelBuffer::from_pixels_420f(&slide).unwrap();
+            assert!(biplanar.is_biplanar());
+            let mut thumbs = Thumbnailer::new(w, h);
+            let a = thumbs.thumb(&bgra).unwrap();
+            let b = thumbs.thumb(&biplanar).unwrap();
+            assert_eq!((a.width, a.height), (b.width, b.height));
+            let worst = a
+                .luma
+                .iter()
+                .zip(&b.luma)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(worst <= 5, "{w}x{h}: off by {worst}");
+        }
     }
 
     /// A white frame with a black band thumbnails to light cells and some dark ones.

@@ -159,8 +159,12 @@ impl Platform for MacPlatform {
             .ok_or_else(|| PlatformError::new("can't read the frame's pixels"))
     }
 
-    fn video_maker(&self, _device: &MacDevice) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
-        Some(Box::new(MacVideoMaker::new()))
+    fn video_maker(
+        &self,
+        _device: &MacDevice,
+        first: &PixelBuffer,
+    ) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
+        Some(Box::new(MacVideoMaker::for_picture(first)))
     }
 }
 
@@ -208,12 +212,13 @@ impl Displays for MacDisplays {
 
     fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo> {
         // The windows the recording leaves out are the ones the stream's filter leaves out: this
-        // process and Voice's, the pids named, and Rukoo by its bundle id when it's running.
-        let mut pids = ScreenSource::excluded_pids(exclude_pids);
-        if (self.granted)() {
-            pids.extend(sck::bundle_pids());
-        }
-        monitors_mac::z_order(&pids)
+        // process and Voice's, the pids named, and Rukoo and Voice by their bundle ids. The
+        // bundles come from the owners' executables, so the display choice never waits on
+        // ScreenCaptureKit before the control port answers.
+        monitors_mac::z_order_without(
+            &ScreenSource::excluded_pids(exclude_pids),
+            &sck::EXCLUDED_BUNDLES,
+        )
     }
 
     fn cursor_monitor(&self) -> Option<String> {
