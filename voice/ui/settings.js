@@ -89,6 +89,7 @@ const SYNC_ERRORS = {
   clock: 'settings.sync.error.clock',
   permission: 'settings.sync.error.permission',
   no_secret: 'settings.sync.error.noSecret',
+  key_denied: 'settings.sync.error.keyDenied',
   failed: 'settings.sync.error.failed'
 };
 const KEY_ERRORS = {
@@ -991,7 +992,21 @@ function syncStatus() {
         parts.push(waiting(), note(esc(t('settings.sync.keptLocal'))));
         break;
       }
+      case 'unlocking':
+        parts.push(status('busy', t('settings.sync.unlocking')), waiting());
+        break;
       case 'key':
+        // macOS refused the keychain item: the key is fine, so the way out is to allow Voice, not to enter the key.
+        if (s.lastError?.code === 'key_denied') {
+          parts.push(
+            status('bad', t('settings.sync.keyDenied')),
+            `<button class="btn sm secondary" data-a="sync-key-retry">${esc(t('common.tryAgain'))}</button>`,
+            note(details('last').trim()),
+            waiting(),
+            note(esc(t('settings.sync.keptLocal')))
+          );
+          break;
+        }
         parts.push(status('bad', t('settings.sync.keyUnreadable')), `<button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button>`);
         break;
       case 'paused':
@@ -1063,7 +1078,7 @@ function syncKeyCard() {
   const other = s.otherKeys > 0 ? `<div class="desc">${esc(t('settings.sync.otherKeys'))}</div>` : '';
   return card(
     row({ title: t('settings.sync.recovery'), desc: t('settings.sync.recoveryHelp'), below: saved + other }) +
-      `<div class="card-actions"><button class="btn sm ${key.exported ? 'secondary' : 'primary'}" data-a="sync-key-show" ${s.state === 'key' ? 'disabled' : ''}>${esc(
+      `<div class="card-actions"><button class="btn sm ${key.exported ? 'secondary' : 'primary'}" data-a="sync-key-show" ${s.state === 'key' || s.state === 'unlocking' ? 'disabled' : ''}>${esc(
         t('settings.sync.keyShow')
       )}</button><button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button></div>`
   );
@@ -1694,6 +1709,16 @@ async function act(action, button) {
       return keyFlow('show');
     case 'sync-key-use':
       return keyFlow('use');
+    case 'sync-key-retry':
+      // The app reads the key again on its own thread; sync.state says unlocking until macOS answers.
+      button.disabled = true;
+      try {
+        await invoke('settings_sync_key', { action: 'retry' });
+      } catch (error) {
+        button.disabled = false;
+        await showError(t('settings.errors.failed'), error?.message);
+      }
+      return;
     case 'sync-restore':
       // Progress arrives in sync.restore; the button goes with the next state.
       button.disabled = true;
@@ -1847,6 +1872,7 @@ async function showKeyDialog() {
     ({ code } = await invoke('settings_sync_key', { action: 'show' }));
   } catch (error) {
     if (error?.code === 'recording_screen') return 'screen';
+    if (error?.code === 'key_denied') return { error, message: t('settings.sync.keyDenied') };
     // Without a key, show makes one, so its failure isn't an unreadable key; "use your saved key" would mislead.
     return { error, message: t(state.sync?.key?.exists ? 'settings.sync.keyUnreadable' : 'settings.errors.failed') };
   }

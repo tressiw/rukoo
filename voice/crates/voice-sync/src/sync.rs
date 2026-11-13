@@ -108,7 +108,12 @@ pub enum SyncState {
     Live,
     Retrying,
     Failing,
+    /// Voice can't open its key or the bucket secret: `lastError` says why, `key` for a key
+    /// that is missing or damaged, `key_denied` for one the system wouldn't open now.
     Key,
+    /// The worker waits for the protector to open the key or the secret: on macOS, for the
+    /// answer to the keychain dialog. Nothing else waits for it.
+    Unlocking,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -120,6 +125,7 @@ pub struct LastError {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct KeyInfo {
+    /// Voice has a key and, the last time it read it, could open it.
     pub exists: bool,
     pub id: Option<String>,
     pub exported: bool,
@@ -373,10 +379,13 @@ impl BucketSync {
                 }
                 Ok(None) => {}
                 // The old key can't be opened any more: nothing it uploaded can be read here anyway.
+                // A key the system only refused now (`KeyDenied`) still opens once allowed, so
+                // that error comes back instead: replacing the key would skip the check above.
                 Err(e) if e.kind == SyncErrorKind::Key => {}
                 Err(e) => return Err(e),
             }
             shared.keys.replace(&key, shared.now())?;
+            shared.note_key_read(None);
             shared.queue.adopt_kid(&kid)?;
             let mut st = shared.lock();
             st.restore = RestoreState::default();
@@ -388,9 +397,18 @@ impl BucketSync {
         Ok(shown(&kid))
     }
 
+    /// Reads the key and the secret again now, and tries the bucket again: Settings' Try again
+    /// after the user refused Voice in the keychain dialog, or after anything else stopped
+    /// uploads. A refused keychain is asked only then, at a restart, or when the settings, the
+    /// secret or the key change.
+    pub fn retry(&self) {
+        self.shared.bump();
+        self.shared.changed();
+    }
+
     pub fn status(&self) -> SyncStatus {
         let shared = &self.shared;
-        let (on, blocked, failures, last_error, restore) = {
+        let (on, blocked, failures, last_error, restore, unlocking, key_unreadable) = {
             let st = shared.lock();
             (
                 st.cfg.is_some(),
@@ -398,6 +416,8 @@ impl BucketSync {
                 st.failures,
                 st.last_error.clone(),
                 st.restore.clone(),
+                st.unlocking,
+                st.key_unreadable,
             )
         };
         let queue = &shared.queue;
@@ -405,8 +425,11 @@ impl BucketSync {
         let live = queue.any_live().unwrap_or(false);
         let state = if !on {
             SyncState::Off
+        } else if unlocking {
+            // A new read is under way; whatever stopped uploads before may be over with it.
+            SyncState::Unlocking
         } else if let Some(blocked) = &blocked {
-            if blocked.error.kind == SyncErrorKind::Key {
+            if blocked.error.kind.is_key() {
                 SyncState::Key
             } else {
                 SyncState::Failing
@@ -439,7 +462,7 @@ impl BucketSync {
             failing_since,
             lost: queue.lost().unwrap_or(0),
             key: KeyInfo {
-                exists: info.is_some(),
+                exists: info.is_some() && !key_unreadable,
                 id: info.as_ref().map(|k| shown(&k.kid)),
                 exported: info.is_some_and(|k| k.exported_at.is_some()),
             },
@@ -498,10 +521,7 @@ impl BucketSync {
             let st = shared.lock();
             st.cfg.is_some()
                 && !st.moving()
-                && !st
-                    .blocked
-                    .as_ref()
-                    .is_some_and(|b| b.error.kind == SyncErrorKind::Key)
+                && !st.blocked.as_ref().is_some_and(|b| b.error.kind.is_key())
         };
         ok && shared.keys.info().is_some() && self.secret_saved()
     }

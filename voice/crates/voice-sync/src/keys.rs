@@ -102,7 +102,8 @@ impl KeyStore {
         }
     }
 
-    /// Ok(None) without a key; Err(Key) when DPAPI refuses the file.
+    /// Ok(None) without a key; Err(Key) when the protector can't open the file, and
+    /// Err(KeyDenied) when the system refused Voice the keychain item that opens it.
     ///
     /// The key is written before `key.json`, so a crash between the two leaves a key whose
     /// `key.json` is missing or names the key before it. Loading writes it again then, dated
@@ -195,7 +196,8 @@ impl KeyStore {
     }
 
     /// Ok(None) without a saved secret. A secret Windows can't open any more (another user, a
-    /// password reset) or a damaged file is `NoSecret`: the user saves it again.
+    /// password reset) or a damaged file is `NoSecret`: the user saves it again. A keychain that
+    /// refused Voice now stays `KeyDenied`: the secret is fine, and allowing Voice opens it.
     pub fn secret(&self) -> Result<Option<Zeroizing<String>>, SyncError> {
         let mut plain = match protect::read_protected(
             &self.dir.join(SECRET_FILE),
