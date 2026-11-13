@@ -110,6 +110,15 @@ impl PushToTalk {
         self.recording = None;
     }
 
+    /// Treats the held hotkey as released: its key-up may never arrive, for
+    /// example when the Mac's session resigns, the screen locks or the Mac
+    /// sleeps. A key-up that does arrive later is ignored. Returns whether a
+    /// recording was running, which the caller then stops.
+    pub fn release_all(&mut self) -> bool {
+        self.down = false;
+        self.recording.take().is_some()
+    }
+
     /// Settings changed the hotkeys. The poller keeps running, because it
     /// polls every offered key and the new config applies from the next event.
     pub fn set_config(&mut self, config: HotkeyConfig) {
@@ -244,6 +253,51 @@ mod tests {
         });
         assert!(!ptt.is_down());
         assert_eq!(ptt.handle(Released(Key::RightCtrl)), None);
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate))
+        );
+    }
+
+    /// The four session events that can swallow a key-up: the session resigns
+    /// (fast user switch), the screen locks, the Mac sleeps, the screens sleep.
+    /// Each one releases the held key and leaves nothing for the real release
+    /// to stop a second time.
+    #[test]
+    fn every_session_event_releases_a_held_key_once() {
+        for event in [
+            "the session resigned",
+            "the screen locked",
+            "the Mac slept",
+            "the screens slept",
+        ] {
+            let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
+            assert_eq!(
+                ptt.handle(Pressed(Key::RightAlt)),
+                Some(Action::Start(Mode::Dictate)),
+                "{event}: the key started a recording"
+            );
+            assert!(ptt.release_all(), "{event}: the recording is stopped");
+            assert!(!ptt.is_down() && !ptt.is_recording(), "{event}");
+            // The key-up arrives after the session came back: nothing runs twice.
+            assert_eq!(ptt.handle(Released(Key::RightAlt)), None, "{event}");
+            assert!(!ptt.release_all(), "{event}: no second stop");
+            assert_eq!(
+                ptt.handle(Pressed(Key::RightAlt)),
+                Some(Action::Start(Mode::Dictate)),
+                "{event}: the next hold works"
+            );
+        }
+    }
+
+    #[test]
+    fn releasing_without_a_hold_does_nothing() {
+        let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
+        assert!(!ptt.release_all());
+        ptt.handle(Pressed(Key::RightAlt));
+        ptt.recording_ended();
+        assert!(!ptt.release_all(), "a failed start left nothing to stop");
+        assert!(!ptt.is_down());
         assert_eq!(
             ptt.handle(Pressed(Key::RightAlt)),
             Some(Action::Start(Mode::Dictate))

@@ -1,12 +1,12 @@
 //! The macOS backend: the pasteboard, Secure Event Input, posted keys, the
-//! Accessibility API and the foreground app.
+//! Accessibility API, the foreground app and the physical keyboard.
 //!
 //! Posting keys into another app and reading its accessibility objects need
 //! the Accessibility grant (Privacy & Security › Accessibility). Voice checks
 //! it with `AXIsProcessTrusted`, which never prompts, and returns
 //! [`InputError::Accessibility`], whose message says what to switch on, rather
-//! than failing silently. Reading the physical keyboard (`key_state`,
-//! `is_key_down`) isn't implemented yet.
+//! than failing silently. Reading the physical keyboard needs no grant at all:
+//! [`keys`] polls Core Graphics' HID system state.
 
 use std::thread;
 use std::time::Duration;
@@ -20,6 +20,7 @@ use crate::{InputError, Key};
 
 mod ax;
 mod events;
+mod keys;
 mod pasteboard;
 mod secure;
 
@@ -38,14 +39,15 @@ fn check() -> Result<(), InputError> {
     ax::check()
 }
 
-/// Not implemented yet: reads the physical keyboard.
+/// The physical keyboard, through Core Graphics' HID system state.
 pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
-    crate::unsupported::key_state()
+    keys::key_state()
 }
 
-/// Not implemented yet: reads the physical keyboard.
+/// Whether `key` is physically held. A key a Mac keyboard doesn't have is
+/// never down.
 pub(crate) fn is_key_down(key: Key) -> bool {
-    crate::unsupported::is_key_down(key)
+    keys::is_key_down(key)
 }
 
 /// Types the text with Cmd+V, keeping the clipboard as `win.rs` does: the

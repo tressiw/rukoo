@@ -459,6 +459,37 @@ fn the_copy_after_the_release_waits_for_the_next_key_too() {
     engine.shutdown();
 }
 
+/// The session resigned, the screen locked or the Mac slept while the key was held. The app hears
+/// that from the system and releases the hotkey, so the recording stops although the key-up never
+/// arrived. When the real release does arrive, it stops nothing a second time.
+#[test]
+fn a_lost_key_up_stops_the_recording_once() {
+    let h = Harness::new("session-release");
+    h.config(json!({}));
+    let engine = h.start();
+    engine.release_hotkeys(); // nothing held: nothing happens
+    h.speech.say("spoken");
+    h.keys.down(Key::F13);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    engine.release_hotkeys();
+    h.sink.wait_phase(PillPhase::Transcribing);
+    // The key-up reaches the poller after the session comes back.
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["spoken"]);
+    assert_eq!(
+        h.speech.heard().len(),
+        1,
+        "one recording, one transcription"
+    );
+    // The debounce was cleared, so the next hold dictates again.
+    h.speech.say("again");
+    h.hold(Key::F13);
+    wait_for("the second insertion", || {
+        h.input.texts() == ["spoken", "again"]
+    });
+    engine.shutdown();
+}
+
 #[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");
