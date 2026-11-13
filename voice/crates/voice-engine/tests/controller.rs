@@ -846,7 +846,13 @@ fn a_meeting_through_the_engine() {
         !h.sink.last_pill().unwrap().meeting.unwrap().stop_enabled,
         "no stop button while dictating"
     );
-    std::thread::sleep(Duration::from_millis(700));
+    // The tap delivers in real time: this Mac hears exactly 11,520 samples (720 ms) for a 700 ms
+    // hold, every run. Nothing counts the samples before the key comes up (the dictation's capture
+    // is private, and `heard` is filled when it is transcribed), so the hold can't wait on them.
+    // It is long enough for a runner that stalls the recorder or the tap's reader: a hosted
+    // Windows runner delivered 6,560, 3,520 and 5,600 samples (410, 220 and 350 ms) of a 700 ms
+    // hold in three runs, and the 8,000 below is 500 ms.
+    std::thread::sleep(Duration::from_millis(2_000));
     h.keys.up(Key::F13);
     wait_for("the insertion", || h.input.texts() == ["noted"]);
     assert_eq!(
