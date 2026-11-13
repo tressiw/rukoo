@@ -2,7 +2,7 @@
 //! scale, taskbar edge and monitor layout (pill-settings-design.md 3.3).
 
 use serde::Deserialize;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use voice_engine::Edge;
 
 /// The pill window in logical pixels (voice/ui/API.md). The pill draws itself inside it with room for its
@@ -108,6 +108,197 @@ pub fn css_to_physical(origin: (i32, i32), scale: f64, r: &CssRect) -> Option<Re
         right: origin.0 + right,
         bottom: origin.1 + bottom,
     })
+}
+
+// ---------- macOS: AppKit points, origin at the primary display's bottom left, y up ----------
+//
+// The macOS pill places itself with the helpers below. They take the screens as plain numbers, so the
+// tests cover one display, two, a notch, a side Dock and a display that went away on every platform.
+
+/// A rectangle in AppKit's screen space: points, `y` growing upwards, `(x, y)` its bottom left.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Frame {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Frame {
+    pub const fn new(x: f64, y: f64, w: f64, h: f64) -> Frame {
+        Frame { x, y, w, h }
+    }
+
+    pub fn top(&self) -> f64 {
+        self.y + self.h
+    }
+
+    pub fn right(&self) -> f64 {
+        self.x + self.w
+    }
+
+    pub fn centre(&self) -> (f64, f64) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+
+    /// Half-open, as AppKit hit-tests: the left and bottom edges are inside, the others aren't.
+    pub fn contains(&self, (x, y): (f64, f64)) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.top()
+    }
+
+    fn overlap(&self, other: &Frame) -> f64 {
+        let w = self.right().min(other.right()) - self.x.max(other.x);
+        let h = self.top().min(other.top()) - self.y.max(other.y);
+        if w > 0.0 && h > 0.0 {
+            w * h
+        } else {
+            0.0
+        }
+    }
+
+    /// The square of the distance from `point` to the nearest point of this rectangle.
+    fn distance2(&self, (x, y): (f64, f64)) -> f64 {
+        let dx = (self.x - x).max(0.0).max(x - self.right());
+        let dy = (self.y - y).max(0.0).max(y - self.top());
+        dx * dx + dy * dy
+    }
+}
+
+/// One display as `NSScreen` describes it.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    /// The display's `CGDirectDisplayID` (`NSScreenNumber`), which stays the same while displays are
+    /// rearranged.
+    pub id: u32,
+    pub frame: Frame,
+    /// The frame without the menu bar and the Dock.
+    pub visible: Frame,
+    /// `safeAreaInsets.top` and `.bottom`: a notch, on a built-in display whose menu bar is hidden.
+    pub safe_top: f64,
+    pub safe_bottom: f64,
+}
+
+/// The pill window on `screen`: centred on the visible frame, so a Dock on the left or right is left
+/// out, with its bottom on the visible frame's bottom (above the Dock) or its top under the menu bar
+/// and the notch, whichever reaches lower. The page draws the pill 24 pt from the window's top and
+/// 40 pt from its bottom, as on Windows.
+#[cfg(any(target_os = "macos", test))]
+pub fn mac_pill_frame(screen: &Screen, edge: Edge) -> Frame {
+    let (w, h) = (WINDOW_W, WINDOW_H);
+    let x = screen.visible.x + (screen.visible.w - w) / 2.0;
+    // The menu bar's and the notch's bottom: whichever is lower. A hidden menu bar leaves the visible
+    // frame's top at the screen's, and the notch is then the safe area alone.
+    let ceiling = screen
+        .visible
+        .top()
+        .min(screen.frame.top() - screen.safe_top.max(0.0));
+    let floor = screen
+        .visible
+        .y
+        .max(screen.frame.y + screen.safe_bottom.max(0.0));
+    let y = match edge {
+        Edge::Bottom => floor,
+        Edge::Top => ceiling - h,
+    };
+    // A screen too short for both: under the menu bar wins, so the pill is never behind it.
+    let y = y.min(ceiling - h);
+    Frame::new(x.round(), y.round(), w, h)
+}
+
+/// The screen that holds `point`.
+#[cfg(any(target_os = "macos", test))]
+pub fn screen_at(screens: &[Screen], point: (f64, f64)) -> Option<usize> {
+    screens.iter().position(|s| s.frame.contains(point))
+}
+
+/// The display the user works on: the one the front window overlaps most (or the nearest, for a
+/// window off every display), else the pointer's, else the primary display (the first `NSScreen`, the
+/// one with the menu bar).
+#[cfg(any(target_os = "macos", test))]
+pub fn choose_screen(
+    screens: &[Screen],
+    front: Option<Frame>,
+    mouse: Option<(f64, f64)>,
+) -> Option<usize> {
+    if screens.is_empty() {
+        return None;
+    }
+    front
+        .and_then(|f| screen_for_frame(screens, &f))
+        .or_else(|| mouse.and_then(|p| screen_at(screens, p)))
+        .or(Some(0))
+}
+
+/// The smallest window the front-window lookup takes for the one the user works in, in points:
+/// smaller ones are an app's helper windows (a drag image, a tracking overlay).
+#[cfg(any(target_os = "macos", test))]
+pub const MIN_FRONT_WINDOW: f64 = 40.0;
+
+/// Whether a window-list entry can be the window the user works in: not fully transparent
+/// (`kCGWindowAlpha` 0, missing counts as opaque) and not tiny.
+#[cfg(any(target_os = "macos", test))]
+pub fn is_user_window(alpha: Option<f64>, frame: &Frame) -> bool {
+    alpha.is_none_or(|a| a > 0.0) && frame.w >= MIN_FRONT_WINDOW && frame.h >= MIN_FRONT_WINDOW
+}
+
+/// The screen a window is on: the one it overlaps most, else (its display is gone, or it sits in a
+/// gap after a rearrangement) the one nearest its centre.
+#[cfg(any(target_os = "macos", test))]
+pub fn screen_for_frame(screens: &[Screen], frame: &Frame) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, s) in screens.iter().enumerate() {
+        let area = s.frame.overlap(frame);
+        if area > 0.0 && best.is_none_or(|(_, a)| area > a) {
+            best = Some((i, area));
+        }
+    }
+    if let Some((i, _)) = best {
+        return Some(i);
+    }
+    let centre = frame.centre();
+    screens
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            a.frame
+                .distance2(centre)
+                .total_cmp(&b.frame.distance2(centre))
+        })
+        .map(|(i, _)| i)
+}
+
+/// The display a show goes to after a display change: the one the pill was placed on while it is
+/// still there, else the one nearest the window.
+#[cfg(any(target_os = "macos", test))]
+pub fn screen_after_change(screens: &[Screen], last: Option<u32>, window: &Frame) -> Option<usize> {
+    last.and_then(|id| screens.iter().position(|s| s.id == id))
+        .or_else(|| screen_for_frame(screens, window))
+}
+
+/// A window's bounds from `CGWindowListCopyWindowInfo` (top left origin, `y` down from the primary
+/// display's top) in AppKit's space.
+#[cfg(any(target_os = "macos", test))]
+pub fn cg_to_appkit(primary_height: f64, x: f64, y: f64, w: f64, h: f64) -> Frame {
+    Frame::new(x, primary_height - y - h, w, h)
+}
+
+/// Where a rectangle of the pill's page is on screen. The page measures in CSS pixels from the
+/// window's top left, and a CSS pixel is a point on macOS, so only `y` turns around. Rounded outwards
+/// so the click area never falls short of the drawn button. `None` for an empty or broken rectangle.
+#[cfg(any(target_os = "macos", test))]
+pub fn css_to_points(window: &Frame, r: &CssRect) -> Option<Frame> {
+    let values = [r.x, r.y, r.width, r.height, window.x, window.y, window.h];
+    if values.iter().any(|v| !v.is_finite()) || r.width <= 0.0 || r.height <= 0.0 {
+        return None;
+    }
+    let left = (window.x + r.x).floor();
+    let right = (window.x + r.x + r.width).ceil();
+    let top = (window.top() - r.y).ceil();
+    let bottom = (window.top() - r.y - r.height).floor();
+    Some(Frame::new(left, bottom, right - left, top - bottom))
 }
 
 /// Windows that are the desktop or the taskbar, not an app the user dictates into.
@@ -290,6 +481,250 @@ mod tests {
         }
         for class in ["Chrome_WidgetWin_1", "Notepad", "OpusApp", ""] {
             assert!(!is_shell_class(class), "{class}");
+        }
+    }
+
+    // ---------- macOS ----------
+
+    /// A 1920x1080 display at the origin with a 30 pt menu bar and a 60 pt Dock at the bottom.
+    fn mac_display(id: u32, x: f64, y: f64) -> Screen {
+        Screen {
+            id,
+            frame: Frame::new(x, y, 1920.0, 1080.0),
+            visible: Frame::new(x, y + 60.0, 1920.0, 1080.0 - 60.0 - 30.0),
+            safe_top: 0.0,
+            safe_bottom: 0.0,
+        }
+    }
+
+    /// A 14" MacBook Pro: 1512x982 points, a 38 pt menu bar the notch's height, the Dock hidden.
+    fn notched(id: u32) -> Screen {
+        Screen {
+            id,
+            frame: Frame::new(0.0, 0.0, 1512.0, 982.0),
+            visible: Frame::new(0.0, 0.0, 1512.0, 982.0 - 38.0),
+            safe_top: 32.0,
+            safe_bottom: 0.0,
+        }
+    }
+
+    #[test]
+    fn mac_one_display_centres_the_pill_above_the_dock_and_under_the_menu_bar() {
+        let screen = mac_display(1, 0.0, 0.0);
+        let bottom = mac_pill_frame(&screen, Edge::Bottom);
+        assert_eq!(bottom, Frame::new(768.0, 60.0, 384.0, 100.0));
+        let top = mac_pill_frame(&screen, Edge::Top);
+        assert_eq!(top, Frame::new(768.0, 1080.0 - 30.0 - 100.0, 384.0, 100.0));
+        assert!(top.top() <= screen.visible.top());
+    }
+
+    #[test]
+    fn mac_the_spike_display_lands_where_the_spike_measured() {
+        // S4: visible frame (0, 90) 1920x960 with a 30 pt menu bar put the window at (768, 90).
+        let screen = Screen {
+            id: 1,
+            frame: Frame::new(0.0, 0.0, 1920.0, 1080.0),
+            visible: Frame::new(0.0, 90.0, 1920.0, 960.0),
+            safe_top: 0.0,
+            safe_bottom: 0.0,
+        };
+        assert_eq!(
+            mac_pill_frame(&screen, Edge::Bottom),
+            Frame::new(768.0, 90.0, 384.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn mac_a_notch_keeps_a_top_pill_under_it_even_with_the_menu_bar_hidden() {
+        let screen = notched(1);
+        let top = mac_pill_frame(&screen, Edge::Top);
+        assert_eq!(top.top(), 982.0 - 38.0);
+        // The menu bar hidden: the visible frame reaches the top, the safe area still holds the notch.
+        let hidden = Screen {
+            visible: Frame::new(0.0, 0.0, 1512.0, 982.0),
+            ..screen
+        };
+        let top = mac_pill_frame(&hidden, Edge::Top);
+        assert_eq!(top.top(), 982.0 - 32.0);
+        assert_eq!(top.x, (1512.0_f64 - 384.0) / 2.0);
+        // At the bottom the notch changes nothing.
+        assert_eq!(mac_pill_frame(&hidden, Edge::Bottom).y, 0.0);
+    }
+
+    #[test]
+    fn mac_a_side_dock_is_left_out_of_the_centring() {
+        let screen = Screen {
+            visible: Frame::new(80.0, 0.0, 1840.0, 1050.0),
+            ..mac_display(1, 0.0, 0.0)
+        };
+        let frame = mac_pill_frame(&screen, Edge::Bottom);
+        assert_eq!(frame.x, 80.0 + (1840.0 - 384.0) / 2.0);
+        assert_eq!(frame.y, 0.0);
+    }
+
+    #[test]
+    fn mac_a_bottom_safe_area_lifts_the_pill() {
+        let screen = Screen {
+            visible: Frame::new(0.0, 0.0, 1920.0, 1050.0),
+            safe_bottom: 20.0,
+            ..mac_display(1, 0.0, 0.0)
+        };
+        assert_eq!(mac_pill_frame(&screen, Edge::Bottom).y, 20.0);
+    }
+
+    #[test]
+    fn mac_a_screen_too_short_keeps_the_pill_under_the_menu_bar() {
+        let screen = Screen {
+            id: 1,
+            frame: Frame::new(0.0, 0.0, 800.0, 120.0),
+            visible: Frame::new(0.0, 60.0, 800.0, 30.0),
+            safe_top: 0.0,
+            safe_bottom: 0.0,
+        };
+        let frame = mac_pill_frame(&screen, Edge::Bottom);
+        assert_eq!(frame.top(), 90.0);
+    }
+
+    #[test]
+    fn mac_two_displays_the_front_window_decides_then_the_pointer_then_the_primary() {
+        // A second display to the left and lower: negative x, its own Dock-less visible frame.
+        let left = Screen {
+            id: 2,
+            frame: Frame::new(-2560.0, -300.0, 2560.0, 1440.0),
+            visible: Frame::new(-2560.0, -300.0, 2560.0, 1440.0),
+            safe_top: 0.0,
+            safe_bottom: 0.0,
+        };
+        let screens = [mac_display(1, 0.0, 0.0), left];
+        let on_left = Frame::new(-1400.0, 0.0, 800.0, 600.0);
+        assert_eq!(
+            choose_screen(&screens, Some(on_left), Some((10.0, 10.0))),
+            Some(1)
+        );
+        // Straddling both: the display with most of it, wherever its centre is.
+        let straddling = Frame::new(-300.0, 100.0, 1000.0, 600.0);
+        assert_eq!(
+            choose_screen(&screens, Some(straddling), Some((-5.0, 0.0))),
+            Some(0)
+        );
+        assert_eq!(choose_screen(&screens, None, Some((-5.0, 0.0))), Some(1));
+        // A front window off every display goes to the nearest one, not the pointer's.
+        let above_left = Frame::new(-2000.0, 1300.0, 400.0, 300.0);
+        assert_eq!(
+            choose_screen(&screens, Some(above_left), Some((100.0, 100.0))),
+            Some(1)
+        );
+        assert_eq!(choose_screen(&screens, None, None), Some(0));
+        assert_eq!(choose_screen(&[], None, None), None);
+        let frame = mac_pill_frame(&screens[1], Edge::Bottom);
+        assert_eq!(frame, Frame::new(-2560.0 + 1088.0, -300.0, 384.0, 100.0));
+    }
+
+    #[test]
+    fn mac_a_display_going_away_moves_the_pill_to_the_nearest_one() {
+        let main = mac_display(1, 0.0, 0.0);
+        let right = mac_display(2, 1920.0, 0.0);
+        let on_right = mac_pill_frame(&right, Edge::Bottom);
+        // Both there: the display it was placed on.
+        assert_eq!(
+            screen_after_change(&[main, right], Some(2), &on_right),
+            Some(1)
+        );
+        // The right display unplugged: the pill's frame overlaps nothing; the nearest is the main one.
+        assert_eq!(screen_after_change(&[main], Some(2), &on_right), Some(0));
+        // Rearranged: the right display now sits above the main one. Its id still finds it, whatever
+        // the old frame overlaps now.
+        let above = mac_display(2, 0.0, 1080.0);
+        assert_eq!(
+            screen_after_change(&[main, above], Some(2), &on_right),
+            Some(1)
+        );
+        // No record of the last display: the one the window overlaps most.
+        let straddling = Frame::new(1800.0, 60.0, 384.0, 100.0);
+        assert_eq!(
+            screen_after_change(&[main, right], None, &straddling),
+            Some(1)
+        );
+        assert_eq!(screen_for_frame(&[], &straddling), None);
+    }
+
+    #[test]
+    fn mac_transparent_and_tiny_windows_are_not_the_front_window() {
+        let window = Frame::new(0.0, 0.0, 800.0, 600.0);
+        assert!(is_user_window(Some(1.0), &window));
+        assert!(is_user_window(None, &window));
+        assert!(is_user_window(Some(0.5), &window));
+        assert!(!is_user_window(Some(0.0), &window));
+        assert!(!is_user_window(
+            Some(1.0),
+            &Frame::new(0.0, 0.0, 20.0, 600.0)
+        ));
+        assert!(!is_user_window(
+            Some(1.0),
+            &Frame::new(0.0, 0.0, 800.0, 1.0)
+        ));
+        assert!(is_user_window(Some(1.0), &Frame::new(0.0, 0.0, 40.0, 40.0)));
+    }
+
+    #[test]
+    fn mac_window_list_bounds_turn_into_appkit_space() {
+        // A 800x600 window 100 pt from the top of a 1080 pt primary display.
+        let frame = cg_to_appkit(1080.0, 50.0, 100.0, 800.0, 600.0);
+        assert_eq!(frame, Frame::new(50.0, 380.0, 800.0, 600.0));
+        // On a display above the primary, CG's y is negative.
+        let frame = cg_to_appkit(1080.0, 0.0, -900.0, 400.0, 300.0);
+        assert_eq!(frame.y, 1680.0);
+    }
+
+    #[test]
+    fn mac_the_buttons_turn_into_screen_points_rounded_outwards() {
+        let window = Frame::new(768.0, 60.0, 384.0, 100.0);
+        let stop = CssRect {
+            x: 257.0,
+            y: 28.0,
+            width: 28.0,
+            height: 28.0,
+        };
+        // Top of the window is 160; the button spans y 28..56 from the top, so 104..132 on screen.
+        assert_eq!(
+            css_to_points(&window, &stop),
+            Some(Frame::new(1025.0, 104.0, 28.0, 28.0))
+        );
+        // The widened "Stop?" button, at fractional CSS pixels.
+        let wide = CssRect {
+            x: 233.5,
+            y: 28.25,
+            width: 52.5,
+            height: 28.0,
+        };
+        assert_eq!(
+            css_to_points(&window, &wide),
+            Some(Frame::new(1001.0, 103.0, 53.0, 29.0))
+        );
+        // The screen button left of it, on a display left of the primary.
+        let screen = CssRect {
+            x: 225.0,
+            y: 28.0,
+            width: 28.0,
+            height: 28.0,
+        };
+        let left = Frame::new(-1792.0, -300.0, 384.0, 100.0);
+        assert_eq!(
+            css_to_points(&left, &screen),
+            Some(Frame::new(-1567.0, -256.0, 28.0, 28.0))
+        );
+        for broken in [
+            CssRect { width: 0.0, ..stop },
+            CssRect {
+                x: f64::NAN,
+                ..stop
+            },
+            CssRect {
+                height: -1.0,
+                ..stop
+            },
+        ] {
+            assert_eq!(css_to_points(&window, &broken), None);
         }
     }
 }
