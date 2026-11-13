@@ -109,6 +109,10 @@ pub enum Line {
     /// off or was revoked. Written just before the `dropped` lines that end the screen part, so a
     /// reader can tell them from a lost graphics device. The audio is not affected.
     NoPermission { t: u64 },
+    /// The user stopped the capture from the system's own control, such as macOS' menu bar
+    /// button for screen sharing. Written just before the `dropped` lines that end the screen
+    /// part, in place of `no_permission`. The audio is not affected.
+    StoppedByUser { t: u64 },
     /// The session locked or disconnected.
     Lock { t: u64 },
     /// The session came back.
@@ -146,6 +150,7 @@ impl Line {
             | Line::DeviceLost { t }
             | Line::NoMonitor { t }
             | Line::NoPermission { t }
+            | Line::StoppedByUser { t }
             | Line::Lock { t }
             | Line::Unlock { t }
             | Line::Heartbeat { t, .. }
@@ -530,6 +535,11 @@ mod tests {
         assert_eq!(json, r#"{"kind":"no_permission","t":4200}"#);
         assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), no_permission);
         assert_eq!(no_permission.t(), Some(4200));
+        let by_user = Line::StoppedByUser { t: 4300 };
+        let json = serde_json::to_string(&by_user).unwrap();
+        assert_eq!(json, r#"{"kind":"stopped_by_user","t":4300}"#);
+        assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), by_user);
+        assert_eq!(by_user.t(), Some(4300));
         // A frame line without a language reads as `None`; new fields are ignored.
         let older: Line = serde_json::from_str(
             r#"{"kind":"frame","t":1,"id":"f-000000001","file":"screen/frames/f-000000001.jpg","width":2,"height":2,"text":"","ocr":"none","colour":"blue"}"#,

@@ -15,7 +15,8 @@
 //! Reading the window list needs no Screen Recording grant: window titles do, and none are read.
 
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect,
+    CFArray, CFBoolean, CFBundle, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect,
+    CFURL,
 };
 use objc2_core_graphics::{
     kCGWindowAlpha, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
@@ -219,11 +220,59 @@ fn overlap(frame: &CGRect, bounds: CGRect) -> f64 {
 
 /// Top-level windows from the front window down the Z-order, as the window server lists them.
 pub fn z_order(exclude_pids: &[u32]) -> Vec<WindowInfo> {
+    z_order_without(exclude_pids, &[])
+}
+
+/// `z_order`, with the windows of the apps whose bundle ids are `bundles` excluded too: the
+/// windows the stream's filter leaves out. The bundle of a window's owner comes from its
+/// executable's path, so this asks neither ScreenCaptureKit nor the Screen Recording grant, and
+/// never waits on either.
+pub fn z_order_without(exclude_pids: &[u32], bundles: &[&str]) -> Vec<WindowInfo> {
     let entries = entries();
     if entries.is_empty() {
         return Vec::new();
     }
-    windows(&entries, &frames(), exclude_pids)
+    let mut pids = exclude_pids.to_vec();
+    if !bundles.is_empty() {
+        let mut owners: Vec<i32> = entries.iter().map(|e| e.pid).collect();
+        owners.sort_unstable();
+        owners.dedup();
+        for owner in owners.into_iter().filter(|&pid| pid > 0) {
+            let ids = executable(owner)
+                .map(|path| bundle_ids_at(&path))
+                .unwrap_or_default();
+            if ids.iter().any(|id| bundles.contains(&id.as_str())) {
+                pids.push(owner as u32);
+            }
+        }
+    }
+    windows(&entries, &frames(), &pids)
+}
+
+/// A process's executable, from `proc_pidpath`.
+fn executable(pid: i32) -> Option<std::path::PathBuf> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer has the size the call is told.
+    let len = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if len <= 0 {
+        return None;
+    }
+    buffer.truncate(len as usize);
+    use std::os::unix::ffi::OsStringExt;
+    Some(std::ffi::OsString::from_vec(buffer).into())
+}
+
+/// The bundle ids of the app bundles that hold `path`, innermost first: an Electron renderer
+/// helper lies inside its app's own bundle, so it counts as that app too.
+fn bundle_ids_at(path: &std::path::Path) -> Vec<String> {
+    path.ancestors()
+        .filter(|dir| dir.extension().is_some_and(|ext| ext == "app"))
+        .filter_map(|app| {
+            let url = CFURL::from_directory_path(app)?;
+            let bundle = CFBundle::new(None, Some(&url))?;
+            Some(bundle.identifier()?.to_string())
+        })
+        .collect()
 }
 
 /// The windows the window server shows, front to back.
@@ -242,13 +291,19 @@ fn entries() -> Vec<Entry> {
 /// One window's numbers, read from its dictionary. A window without a bounds rectangle or an
 /// owner is skipped: it can't be placed or attributed.
 fn entry(window: &CFDictionary<CFString, CFType>) -> Option<Entry> {
-    let number = |key: &CFString| -> Option<f64> {
-        let value = window.get(key)?;
-        // SAFETY: the keys this reads are numbers, as Core Graphics documents them.
-        let value = unsafe { &*(&*value as *const CFType as *const CFNumber) };
-        value.as_f64()
+    let number =
+        |key: &CFString| -> Option<f64> { window.get(key)?.downcast_ref::<CFNumber>()?.as_f64() };
+    // `kCGWindowIsOnscreen` is a `CFBoolean`. A number is taken too, in case a system says it
+    // that way.
+    let flag = |key: &CFString| -> bool {
+        let Some(value) = window.get(key) else {
+            return false;
+        };
+        match value.downcast_ref::<CFBoolean>() {
+            Some(flag) => flag.value(),
+            None => number(key).is_some_and(|v| v != 0.0),
+        }
     };
-    let flag = |key: &CFString| -> bool { number(key).is_some_and(|v| v != 0.0) };
     let pid = number(unsafe { kCGWindowOwnerPID })? as i32;
     let layer = number(unsafe { kCGWindowLayer })?.round() as i32;
     let alpha = number(unsafe { kCGWindowAlpha }).unwrap_or(1.0);
@@ -305,6 +360,95 @@ mod tests {
             origin: objc2_core_foundation::CGPoint { x, y },
             size: objc2_core_foundation::CGSize { width, height },
         }
+    }
+
+    /// A window's dictionary as the window server writes it: numbers, a bounds dictionary and
+    /// the on-screen flag as a `CFBoolean`.
+    #[test]
+    fn a_window_entry_reads_its_typed_values() {
+        use objc2_core_foundation::kCFBooleanTrue;
+        let number = |n: f64| CFNumber::new_f64(n);
+        let key = |name: &'static str| CFString::from_static_str(name);
+        let bounds = CFDictionary::<CFString, CFNumber>::from_slices(
+            &[&*key("X"), &*key("Y"), &*key("Width"), &*key("Height")],
+            &[
+                &*number(10.0),
+                &*number(20.0),
+                &*number(300.0),
+                &*number(200.0),
+            ],
+        );
+        let on: &CFBoolean = unsafe { kCFBooleanTrue }.unwrap();
+        let pid = number(4821.0);
+        let layer = number(0.0);
+        let mut keys = vec![
+            unsafe { kCGWindowOwnerPID },
+            unsafe { kCGWindowLayer },
+            unsafe { kCGWindowBounds },
+        ];
+        let mut values: Vec<CFRetained<CFType>> = vec![
+            CFRetained::from(&*pid),
+            CFRetained::from(&*layer),
+            CFRetained::from(&*bounds),
+        ];
+        let without_flag = CFDictionary::<CFString, CFType>::from_slices(
+            &keys,
+            &values.iter().map(|v| &**v).collect::<Vec<_>>(),
+        );
+        let entry = entry_of(&without_flag);
+        assert_eq!((entry.pid, entry.layer, entry.alpha), (4821, 0, 1.0));
+        assert_eq!(entry.bounds, rect_of(10.0, 20.0, 300.0, 200.0));
+        assert!(!entry.on_screen, "no flag is off screen");
+
+        keys.push(unsafe { kCGWindowIsOnscreen });
+        values.push(CFRetained::from(on));
+        let with_flag = CFDictionary::<CFString, CFType>::from_slices(
+            &keys,
+            &values.iter().map(|v| &**v).collect::<Vec<_>>(),
+        );
+        assert!(entry_of(&with_flag).on_screen);
+        // A number for the flag reads too.
+        values.pop();
+        values.push(CFRetained::from(&*number(1.0)));
+        let as_number = CFDictionary::<CFString, CFType>::from_slices(
+            &keys,
+            &values.iter().map(|v| &**v).collect::<Vec<_>>(),
+        );
+        assert!(entry_of(&as_number).on_screen);
+        // A pid that isn't a number leaves the window out instead of reading garbage.
+        values[0] = CFRetained::from(on);
+        let bad_pid = CFDictionary::<CFString, CFType>::from_slices(
+            &keys,
+            &values.iter().map(|v| &**v).collect::<Vec<_>>(),
+        );
+        assert!(super::entry(&bad_pid).is_none());
+    }
+
+    fn entry_of(window: &CFDictionary<CFString, CFType>) -> Entry {
+        super::entry(window).expect("an entry")
+    }
+
+    /// A window's owner is told by the app bundle its executable lies in, without
+    /// ScreenCaptureKit: the bundles that hold a path, innermost first, and none for a binary
+    /// outside a bundle, such as this test.
+    #[test]
+    fn a_process_is_known_by_its_bundle() {
+        let calculator = std::path::Path::new("/System/Applications/Calculator.app");
+        if calculator.is_dir() {
+            assert_eq!(
+                bundle_ids_at(&calculator.join("Contents/MacOS/Calculator")),
+                ["com.apple.calculator"]
+            );
+        }
+        let me = executable(std::process::id() as i32).expect("this process's executable");
+        assert_eq!(
+            me.canonicalize().unwrap(),
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
+        assert!(bundle_ids_at(&me).is_empty(), "{me:?}");
+        assert!(executable(-1).is_none());
+        // Nothing in the list belongs to a bundle that isn't there.
+        let _ = z_order_without(&[], &["nl.bvdm.rukoo.no-such-app"]);
     }
 
     /// A GUI session has at least one display; a CI runner's may have none, which is allowed.

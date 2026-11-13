@@ -20,6 +20,8 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod notify_mac;
 mod pill;
+#[cfg(target_os = "macos")]
+mod screen_permission_mac;
 mod selftest;
 #[cfg(target_os = "macos")]
 mod session_mac;

@@ -137,6 +137,14 @@ pub enum ScreenChange {
     /// off, or was switched off during the meeting. The screen isn't recorded; the audio goes on.
     NoPermission {
         id: String,
+        /// The screen process refused to start for the grant, as opposed to a grant that went
+        /// while it recorded.
+        refused: bool,
+    },
+    /// The user stopped the screen capture from the system's own control, such as macOS' menu
+    /// bar button for screen sharing. The screen isn't recorded any more; the audio goes on.
+    StoppedByUser {
+        id: String,
     },
     /// The screen process died five times in a row; the screen isn't recorded any more.
     GaveUp {
@@ -179,10 +187,14 @@ struct ScreenLive {
     /// The `stop` line's reason, once the journal has one.
     stopped: Option<String>,
     gave_up: bool,
-    /// The journal says the Screen Recording grant is gone, or the process refused to start for
-    /// lack of it. Retrying can't help, and the drops that follow aren't a graphics device.
+    /// The journal says the Screen Recording grant is gone or the user stopped the capture, or
+    /// the process refused to start for lack of the grant. Retrying can't help, and the drops
+    /// that follow aren't a graphics device: their reason has a notice of its own.
     no_permission: bool,
     monitors: Option<usize>,
+    /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
+    /// its command line. Another process, or other pids, and the watchdog tells it again.
+    excluded: Option<(u32, Vec<u32>)>,
 }
 
 impl ScreenLive {
@@ -205,6 +217,7 @@ impl ScreenLive {
             gave_up: false,
             no_permission: false,
             monitors: None,
+            excluded: None,
         }
     }
 
@@ -254,12 +267,23 @@ impl ScreenLive {
                         });
                     }
                 }
+                Line::StoppedByUser { .. } => {
+                    if !self.no_permission {
+                        self.no_permission = true;
+                        if report {
+                            changes.push(ScreenChange::StoppedByUser {
+                                id: self.id.clone(),
+                            });
+                        }
+                    }
+                }
                 Line::NoPermission { .. } => {
                     if !self.no_permission {
                         self.no_permission = true;
                         if report {
                             changes.push(ScreenChange::NoPermission {
                                 id: self.id.clone(),
+                                refused: false,
                             });
                         }
                     }
@@ -414,9 +438,9 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
-    /// The pids the screen process leaves out of its capture. A launch reads them; a screen
-    /// process that already records learns nothing new (a Rukoo that reconnects mid-meeting with
-    /// another pid isn't followed yet).
+    /// The pids the screen process leaves out of its capture. A launch passes them on its
+    /// command line, and the watchdog sends the running process `exclude` when they change, as
+    /// when a Rukoo connects, reconnects with another pid or quits mid-meeting.
     pub fn set_exclude_pids(&self, pids: ExcludePids) {
         *lock(&self.exclude_pids) = Some(pids);
     }
@@ -428,9 +452,39 @@ impl ScreenSupervisor {
     }
 
     fn exclude_pids(&self) -> Vec<u32> {
-        lock(&self.exclude_pids)
+        let mut pids = lock(&self.exclude_pids)
             .as_ref()
-            .map_or_else(Vec::new, |pids| pids())
+            .map_or_else(Vec::new, |pids| pids());
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+
+    /// Tells the running screen process which pids to leave out. A process that doesn't know
+    /// the command, from an older Voice, keeps what its command line said; only a request that
+    /// didn't arrive is tried again on the next round.
+    fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
+        let reply = match request(
+            file,
+            json!({ "cmd": "exclude", "pids": pids }),
+            REQUEST_WAIT,
+        ) {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::warn!("screen: {id}: couldn't send the pids to leave out: {e}");
+                return;
+            }
+        };
+        if reply["ok"] != true {
+            log::warn!("screen: {id}: the screen process refused the pids to leave out: {reply}");
+        }
+        let mut slot = self.lock();
+        if let Some(live) = slot
+            .as_mut()
+            .filter(|l| l.id == id && l.file.as_ref() == Some(file))
+        {
+            live.excluded = Some((file.pid, pids));
+        }
     }
 
     pub fn ack_mode(&self, id: &str, request: &str, connection: u64) {
@@ -894,7 +948,10 @@ impl ScreenSupervisor {
                 log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
             }
         }
-        self.emit(ScreenChange::NoPermission { id: id.to_string() });
+        self.emit(ScreenChange::NoPermission {
+            id: id.to_string(),
+            refused: true,
+        });
     }
 
     /// The start handshake: `meeting.starting`, then a wait for every connected Rukoo's
@@ -1507,6 +1564,8 @@ impl ScreenSupervisor {
     /// One watchdog round. The status request runs without the slot's lock, so a screen process
     /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
     fn check(&self) {
+        // Read before the slot's lock: the bridge answers it under a lock of its own.
+        let wanted = self.exclude_pids();
         let (id, file, exited, mut changes) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
@@ -1551,7 +1610,13 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
+            let exclude = file
+                .clone()
+                .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
             drop(slot);
+            if let Some(file) = exclude {
+                self.send_exclude(&id, &file, wanted);
+            }
             self.emit_all(changes);
             return;
         }
@@ -1972,7 +2037,7 @@ mod tests {
             .unwrap();
         let changes = live.read_journal(true);
         assert!(
-            matches!(changes.as_slice(), [ScreenChange::NoPermission { id }] if id == "m-1"),
+            matches!(changes.as_slice(), [ScreenChange::NoPermission { id, refused: false }] if id == "m-1"),
             "{changes:?}"
         );
         assert!(live.no_permission);
@@ -1981,6 +2046,40 @@ mod tests {
         assert_eq!(live.shown_mode(), ScreenMode::Off);
         // A line read later says nothing more.
         assert!(live.read_journal(true).is_empty());
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capture the user stopped from the system's control has its own change, and the drops
+    /// after it none, so Voice doesn't say Screen Recording is off when it is on.
+    #[test]
+    fn a_capture_the_user_stopped_is_reported_as_such() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-user-stopped-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-2", &dir, ScreenMode::Frames, Phase::Running);
+        use voice_screen_files::journal::Line;
+        journal.write(&Line::StoppedByUser { t: 900 }).unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 900,
+                what: "frames".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(changes.as_slice(), [ScreenChange::StoppedByUser { id }] if id == "m-2"),
+            "{changes:?}"
+        );
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
         drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
     }

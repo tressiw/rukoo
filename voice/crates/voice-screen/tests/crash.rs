@@ -1155,6 +1155,44 @@ mod tests {
         assert!(log.contains("frame f-"), "{log}");
     }
 
+    /// macOS' synthetic screen in `420f`, the format every real frame comes in: the thumbnails
+    /// read the luma plane, the frames convert to BGRA for the JPEG and Vision, and VideoToolbox
+    /// encodes the bi-planar buffers as they are.
+    #[cfg(target_os = "macos")]
+    pub fn biplanar_frames_record_like_bgra_ones() {
+        let m = TempMeeting::new("biplanar", "video");
+        let (mut recorder, mut screen) =
+            start(&m, "video", &spec("text=RUKOO DEMO,format=420f"), &[]);
+        let lines = m.wait_journal("two frames and a video file", |l| {
+            of_kind(l, "frame").len() >= 2 && first(l, "video").is_some()
+        });
+        let video = first(&lines, "video").unwrap().clone();
+        let capture = first(&lines, "capture").unwrap();
+        assert_eq!(
+            (capture["width"].as_u64(), capture["height"].as_u64()),
+            (Some(1280), Some(720)),
+            "{}",
+            show(&lines)
+        );
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_frames_open(&m, &lines);
+        if !voice_screen::frames::languages().is_empty() {
+            let frame = first(&lines, "frame").unwrap();
+            assert_eq!(frame["ocr"], "ok", "{}", show(&lines));
+            let text = frame["text"].as_str().unwrap();
+            assert!(text.contains("RUKOO DEMO"), "read {text:?}");
+        }
+        assert!(
+            of_kind(&lines, "video_end")
+                .iter()
+                .any(|end| end["seq"] == video["seq"]),
+            "{}",
+            show(&lines)
+        );
+        let report = assert_video_reads(&video_path(&m, &video));
+        assert!(report["samples"].as_u64().unwrap_or(0) > 0, "{report}");
+    }
+
     /// Typing on one slide: every keystroke's dirty regions cover 0.03% of the screen, far under
     /// the 0.25% that makes the screen process read a thumbnail, but together they change more
     /// than the 1% that saves a frame. Their dirty regions add up, so the change against the last
@@ -1525,6 +1563,12 @@ fn main() {
             run: tests::a_still_screen_records_few_frames,
         },
     ];
+    #[cfg(target_os = "macos")]
+    tests.push(Test {
+        name: "biplanar_frames_record_like_bgra_ones",
+        ignored: false,
+        run: tests::biplanar_frames_record_like_bgra_ones,
+    });
     // The Windows sink writer's scaling and the real screen capture are Windows spikes.
     #[cfg(windows)]
     {

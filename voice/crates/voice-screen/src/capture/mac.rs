@@ -2,20 +2,26 @@
 //! ScreenCaptureKit hands over and VideoToolbox takes. The synthetic screen makes BGRA ones;
 //! ScreenCaptureKit sends `420f`, bi-planar full-range YCbCr, which the encoder takes as it is and
 //! the JPEG and OCR paths convert to BGRA from. It travels from the capture's thread to the main
-//! thread and on to the encoder's, so it is declared sendable: a pixel buffer is only read after
-//! it was handed over, and Core Video's locks serialize the accesses anyway.
+//! thread and on to the encoder's, so it is declared sendable: a pixel buffer is only written
+//! before it is handed over and only read after. Core Video's lock pins the memory for the CPU;
+//! it isn't a mutex. Readers take it read-only, which leaves the surface's caches valid while the
+//! encoder reads the same IOSurface.
 
 use std::ptr::NonNull;
 
-use objc2_core_foundation::{CFDictionary, CFRetained, CFString};
+use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType};
 use objc2_core_video::{
+    kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2,
+    kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2,
+    kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
     kCVPixelBufferIOSurfacePropertiesKey, kCVPixelFormatType_32BGRA,
     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, CVImageBuffer, CVPixelBuffer,
-    CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
-    CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight,
-    CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
-    CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, CVAttachmentMode, CVImageBuffer,
+    CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress,
+    CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRow,
+    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
 
 use crate::platform::Pixels;
@@ -39,6 +45,11 @@ impl PixelBuffer {
     /// A BGRA pixel buffer of `width` x `height`, IOSurface-backed, as VideoToolbox wants the
     /// frames it encodes. `None` when Core Video can't allocate it.
     pub fn new(width: u32, height: u32) -> Option<PixelBuffer> {
+        PixelBuffer::create(width, height, kCVPixelFormatType_32BGRA)
+    }
+
+    /// A pixel buffer of `width` x `height` in `format`, IOSurface-backed.
+    fn create(width: u32, height: u32, format: u32) -> Option<PixelBuffer> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -54,7 +65,7 @@ impl PixelBuffer {
                 None,
                 width as usize,
                 height as usize,
-                kCVPixelFormatType_32BGRA,
+                format,
                 Some(opaque(&attributes)),
                 NonNull::new(&mut out).expect("a pointer to the out parameter"),
             )
@@ -85,6 +96,110 @@ impl PixelBuffer {
             }
         }
         Some(buffer)
+    }
+
+    /// A `420f` pixel buffer holding `pixels`, BGRA of any size, as ScreenCaptureKit delivers a
+    /// frame: bi-planar full-range YCbCr with the BT.709 matrix, primaries and transfer function
+    /// attached. Each chroma sample is the mean of its two by two luma pixels, fewer at an odd
+    /// edge. The synthetic screen's `format=420f` and the tests make the real capture's frames
+    /// with it; the video writer primes its encoder with a black one.
+    pub fn from_pixels_420f(pixels: &Pixels) -> Option<PixelBuffer> {
+        let (width, height) = (pixels.width as usize, pixels.height as usize);
+        let buffer = PixelBuffer::create(
+            pixels.width,
+            pixels.height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        )?;
+        {
+            let locked = buffer.lock()?;
+            let (luma, luma_row) = locked.plane_mut(0)?;
+            let (chroma, chroma_row) = locked.plane_mut(1)?;
+            let rgb = |x: usize, y: usize| -> (f32, f32, f32) {
+                let at = (y * width + x) * 4;
+                let px = &pixels.bgra[at..at + 4];
+                (f32::from(px[2]), f32::from(px[1]), f32::from(px[0]))
+            };
+            for y in 0..height {
+                for x in 0..width {
+                    let (r, g, b) = rgb(x, y);
+                    // SAFETY: plane 0 has `height` rows of `luma_row` bytes, at least `width`.
+                    unsafe { *luma.add(y * luma_row + x) = to_byte(luma_709(r, g, b)) };
+                }
+            }
+            for cy in 0..height.div_ceil(2) {
+                for cx in 0..width.div_ceil(2) {
+                    let (mut cb, mut cr, mut n) = (0f32, 0f32, 0f32);
+                    for y in cy * 2..(cy * 2 + 2).min(height) {
+                        for x in cx * 2..(cx * 2 + 2).min(width) {
+                            let (r, g, b) = rgb(x, y);
+                            let luma = luma_709(r, g, b);
+                            cb += (b - luma) / 1.8556;
+                            cr += (r - luma) / 1.5748;
+                            n += 1.0;
+                        }
+                    }
+                    // SAFETY: plane 1 has `height` / 2 rounded up rows of `chroma_row` bytes, at
+                    // least two a pair of luma columns.
+                    unsafe {
+                        let at = chroma.add(cy * chroma_row + cx * 2);
+                        *at = to_byte(cb / n + 128.0);
+                        *at.add(1) = to_byte(cr / n + 128.0);
+                    }
+                }
+            }
+        }
+        buffer.attach_709();
+        Some(buffer)
+    }
+
+    /// A black `420f` buffer of `width` x `height`, attached as `from_pixels_420f`'s are: luma 0
+    /// and chroma 128.
+    pub fn black_420f(width: u32, height: u32) -> Option<PixelBuffer> {
+        let buffer = PixelBuffer::create(
+            width,
+            height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        )?;
+        {
+            let locked = buffer.lock()?;
+            for (plane, value, rows) in [
+                (0, 0u8, height as usize),
+                (1, 128, (height as usize).div_ceil(2)),
+            ] {
+                let (base, row) = locked.plane_mut(plane)?;
+                // SAFETY: the plane has `rows` rows of `row` bytes.
+                unsafe { std::ptr::write_bytes(base, value, rows * row) };
+            }
+        }
+        buffer.attach_709();
+        Some(buffer)
+    }
+
+    /// Says on the buffer that it is BT.709 YCbCr, as ScreenCaptureKit's buffers say with the
+    /// matrix the capture asks for, so VideoToolbox signals it in the stream.
+    fn attach_709(&self) {
+        // SAFETY: the keys and values are Core Video's static strings, and the buffer retains
+        // them.
+        unsafe {
+            for (key, value) in [
+                (
+                    kCVImageBufferYCbCrMatrixKey,
+                    kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferColorPrimariesKey,
+                    kCVImageBufferColorPrimaries_ITU_R_709_2,
+                ),
+                (
+                    kCVImageBufferTransferFunctionKey,
+                    kCVImageBufferTransferFunction_ITU_R_709_2,
+                ),
+            ] {
+                let value: &CFType = value.as_ref();
+                self.buffer
+                    .set_attachment(key, value, CVAttachmentMode::ShouldPropagate);
+            }
+        }
     }
 
     /// The Core Video buffer itself, for VideoToolbox and Vision.
@@ -121,23 +236,36 @@ impl PixelBuffer {
         CVPixelBufferGetPixelFormatType(&self.buffer)
     }
 
-    /// Locks the buffer's memory for reading and writing until the guard drops.
+    /// Locks the buffer's memory for reading and writing until the guard drops. Only a buffer
+    /// that hasn't been handed over yet is written.
     pub fn lock(&self) -> Option<Locked<'_>> {
-        // SAFETY: the lock is balanced by the guard's `Drop`.
-        if unsafe { CVPixelBufferLockBaseAddress(&self.buffer, CVPixelBufferLockFlags(0)) } != 0 {
+        self.lock_with(CVPixelBufferLockFlags(0))
+    }
+
+    /// Locks the buffer's memory for reading only until the guard drops. `CVPixelBuffer.h`: a
+    /// reader should say so, "to avoid potentially invalidating any existing caches of the buffer
+    /// contents".
+    pub fn lock_read(&self) -> Option<Locked<'_>> {
+        self.lock_with(CVPixelBufferLockFlags::ReadOnly)
+    }
+
+    fn lock_with(&self, flags: CVPixelBufferLockFlags) -> Option<Locked<'_>> {
+        // SAFETY: the lock is balanced by the guard's `Drop`, with the same flags.
+        if unsafe { CVPixelBufferLockBaseAddress(&self.buffer, flags) } != 0 {
             return None;
         }
         // A bi-planar buffer has no single base address: its planes are read one by one.
         let base = CVPixelBufferGetBaseAddress(&self.buffer) as *mut u8;
         if base.is_null() && CVPixelBufferGetPlaneCount(&self.buffer) == 0 {
-            // SAFETY: the buffer is locked above.
-            unsafe { CVPixelBufferUnlockBaseAddress(&self.buffer, CVPixelBufferLockFlags(0)) };
+            // SAFETY: the buffer is locked above, with these flags.
+            unsafe { CVPixelBufferUnlockBaseAddress(&self.buffer, flags) };
             return None;
         }
         Some(Locked {
             buffer: &self.buffer,
             base,
             bytes_per_row: CVPixelBufferGetBytesPerRow(&self.buffer),
+            flags,
         })
     }
 
@@ -156,7 +284,7 @@ impl PixelBuffer {
     /// The picture's pixels, BGRA and rows top-down without padding. A bi-planar picture is
     /// converted, with the BT.709 matrix the capture asks the stream to use.
     pub fn pixels(&self) -> Option<Pixels> {
-        let locked = self.lock()?;
+        let locked = self.lock_read()?;
         let (width, height) = (self.width(), self.height());
         let row = width as usize * 4;
         let mut bgra = vec![0u8; row * height as usize];
@@ -203,6 +331,15 @@ impl PixelBuffer {
     }
 }
 
+/// BT.709 luma of red, green and blue.
+fn luma_709(r: f32, g: f32, b: f32) -> f32 {
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+fn to_byte(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
 /// One picture element of the BT.709 conversion: luma, blue-difference and red-difference, to
 /// BGRA. `full` says whether the luma is full range (`420f`) or video range (`420v`).
 fn ycbcr_to_bgra(y: u8, cb: u8, cr: u8, full: bool) -> [u8; 4] {
@@ -235,6 +372,8 @@ pub struct Locked<'a> {
     buffer: &'a CVPixelBuffer,
     base: *mut u8,
     bytes_per_row: usize,
+    /// The lock's flags, which the unlock must repeat.
+    flags: CVPixelBufferLockFlags,
 }
 
 impl Locked<'_> {
@@ -242,12 +381,26 @@ impl Locked<'_> {
         self.base
     }
 
+    /// The memory to write, under a lock taken with `lock`.
     pub fn base_mut(&mut self) -> *mut u8 {
+        debug_assert!(
+            !self.flags.contains(CVPixelBufferLockFlags::ReadOnly),
+            "a write under a read-only lock"
+        );
         self.base
     }
 
     pub fn bytes_per_row(&self) -> usize {
         self.bytes_per_row
+    }
+
+    /// A plane's first byte to write and its row length, under a lock taken with `lock`.
+    pub fn plane_mut(&self, index: usize) -> Option<(*mut u8, usize)> {
+        debug_assert!(
+            !self.flags.contains(CVPixelBufferLockFlags::ReadOnly),
+            "a write under a read-only lock"
+        );
+        self.plane(index).map(|(base, row)| (base.cast_mut(), row))
     }
 
     /// A plane's first byte and its row length, for a bi-planar picture. `None` when the plane
@@ -269,8 +422,8 @@ impl Locked<'_> {
 
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
-        // SAFETY: the buffer is locked until this drop, and the flags match the lock's.
-        unsafe { CVPixelBufferUnlockBaseAddress(self.buffer, CVPixelBufferLockFlags(0)) };
+        // SAFETY: the buffer is locked until this drop, and the flags are the lock's.
+        unsafe { CVPixelBufferUnlockBaseAddress(self.buffer, self.flags) };
     }
 }
 
@@ -306,6 +459,93 @@ mod tests {
         // Clones share the buffer.
         let clone = picture.clone();
         assert_eq!(clone.width(), 64);
+    }
+
+    /// A picture of coloured blocks, two by two pixels each so chroma subsampling keeps them:
+    /// the primaries, grey levels and a few mixes.
+    fn blocks(width: u32, height: u32) -> Pixels {
+        const COLOURS: [[u8; 3]; 8] = [
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 255],
+            [0, 0, 0],
+            [128, 128, 128],
+            [200, 120, 40],
+            [30, 90, 210],
+        ];
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let [r, g, b] = COLOURS[((x / 2 + y / 2 * 3) % 8) as usize];
+                bgra.extend_from_slice(&[b, g, r, 0xff]);
+            }
+        }
+        Pixels {
+            bgra,
+            width,
+            height,
+        }
+    }
+
+    fn max_difference(a: &Pixels, b: &Pixels) -> u8 {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        a.bgra
+            .chunks_exact(4)
+            .zip(b.bgra.chunks_exact(4))
+            .flat_map(|(a, b)| (0..3).map(move |i| a[i].abs_diff(b[i])))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The bi-planar path, which every real frame takes: a `420f` picture reads back as the BGRA
+    /// it was made from, up to rounding. Red stays red and blue stays blue, so a swapped Cb and Cr
+    /// fails here, and the odd size has padded rows and a half chroma pair at the edge.
+    #[test]
+    fn a_420f_picture_reads_back_its_pixels() {
+        for (width, height) in [(64, 48), (1281, 721)] {
+            let pixels = blocks(width, height);
+            let picture = PixelBuffer::from_pixels_420f(&pixels).unwrap();
+            assert_eq!(
+                picture.pixel_format(),
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            );
+            assert!(picture.is_biplanar() && picture.is_full_range());
+            {
+                let locked = picture.lock_read().unwrap();
+                let (_, luma_row) = locked.plane(0).unwrap();
+                assert!(luma_row >= width as usize);
+            }
+            let read = picture.pixels().unwrap();
+            let worst = max_difference(&read, &pixels);
+            assert!(worst <= 3, "{width}x{height}: off by {worst}");
+            // The first block is pure red: B, G, R.
+            assert!(
+                read.bgra[2] >= 250 && read.bgra[0] <= 3,
+                "{:?}",
+                &read.bgra[..4]
+            );
+        }
+        // An odd edge mixes nothing it doesn't have: a 3 x 3 blue picture stays blue.
+        let blue = Pixels {
+            bgra: [255u8, 0, 0, 255].repeat(9),
+            width: 3,
+            height: 3,
+        };
+        let read = PixelBuffer::from_pixels_420f(&blue)
+            .unwrap()
+            .pixels()
+            .unwrap();
+        assert!(max_difference(&read, &blue) <= 3);
+    }
+
+    /// The video writer's priming frame: black in full range, luma 0 and chroma 128.
+    #[test]
+    fn a_black_420f_picture_is_black() {
+        let picture = PixelBuffer::black_420f(64, 36).unwrap();
+        assert!(picture.is_biplanar());
+        let read = picture.pixels().unwrap();
+        assert!(read.bgra.chunks_exact(4).all(|px| px[..3] == [0, 0, 0]));
     }
 
     #[test]

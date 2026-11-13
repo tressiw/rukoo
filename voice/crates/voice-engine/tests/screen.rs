@@ -85,6 +85,10 @@ fn main() {
             screen_off_sends_no_meeting_starting,
         ),
         (
+            "a_rukoo_that_connects_later_is_left_out",
+            a_rukoo_that_connects_later_is_left_out,
+        ),
+        (
             "the_watchdog_restarts_a_killed_screen_process",
             the_watchdog_restarts_a_killed_screen_process,
         ),
@@ -652,6 +656,33 @@ fn rukoo_started_meeting_skips_the_handshake() {
         "the screen process launched {} ms after the start",
         launched.saturating_sub(started)
     );
+    rig.stop(&id);
+}
+
+/// A Rukoo that connects after the screen process started: the watchdog sends the running
+/// process its pid, which then leaves its windows out, and a Rukoo that quits is let go again.
+fn a_rukoo_that_connects_later_is_left_out() {
+    let rig = Rig::new("exclude-later", SCREEN);
+    let pids = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let read = Arc::clone(&pids);
+    rig.screen()
+        .set_exclude_pids(Box::new(move || lock(&read).clone()));
+    let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
+    rig.wait_line(&id, "the capture", |l| matches!(l, Line::Capture { .. }));
+    let log = rig.data.join("logs").join(format!("screen-{id}.log"));
+    let logged = |what: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(what)
+    };
+    *lock(&pids) = vec![4821, 77];
+    wait_for("the screen process to hear of Rukoo", || {
+        logged("leaving out the windows of pids [77, 4821]")
+    });
+    lock(&pids).clear();
+    wait_for("the screen process to let Rukoo go", || {
+        logged("leaving out the windows of pids []")
+    });
     rig.stop(&id);
 }
 
@@ -1616,6 +1647,13 @@ fn a_screen_without_permission_says_so_and_is_not_retried() {
     );
     assert!(note.body.contains("Screen Recording"), "{}", note.body);
     assert!(note.body.contains("Privacy & Security"), "{}", note.body);
+    // The app asks macOS once, which lists Voice under Screen Recording.
+    assert_eq!(
+        h.sink
+            .screen_permission_asks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 
     // The supervisor's own five tries are over in under a second at these timings, and a retry
     // would have written the runs file again.

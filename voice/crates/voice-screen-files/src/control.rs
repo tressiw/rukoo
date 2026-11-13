@@ -1,7 +1,8 @@
 //! The screen process's control port: the recorder's line protocol (`voice/RECORDING.md`, "The
 //! control port") on `127.0.0.1`, one JSON object per line, each request carrying the token.
 //!
-//! Commands: `status`, `monitors`, `monitor { id }`, `pause`, `resume`, `stop`.
+//! Commands: `status`, `monitors`, `monitor { id }`, `pause`, `resume`, `stop`, `mode`,
+//! `exclude { pids }`.
 //!
 //! Connection threads only read, check and answer what is wrong with a request; the process's
 //! main loop answers the rest, so the journal keeps a single writer.
@@ -22,9 +23,31 @@ pub const FIRST_REQUEST: Duration = Duration::from_secs(5);
 /// The longest request line, in bytes.
 pub const MAX_LINE: usize = 64 * 1024;
 /// The commands the port knows; anything else is `unknown_command`.
-pub const COMMANDS: [&str; 7] = [
-    "status", "monitors", "monitor", "pause", "resume", "stop", "mode",
+pub const COMMANDS: [&str; 8] = [
+    "status", "monitors", "monitor", "pause", "resume", "stop", "mode", "exclude",
 ];
+/// The most pids `exclude` takes.
+pub const MAX_EXCLUDED: usize = 64;
+
+/// The pids of an `exclude` request: an array of at most `MAX_EXCLUDED` pids from 1 up, sorted
+/// and without repeats. `None` when `pids` isn't that.
+pub fn excluded_pids(request: &Value) -> Option<Vec<u32>> {
+    let list = request["pids"].as_array()?;
+    if list.len() > MAX_EXCLUDED {
+        return None;
+    }
+    let mut pids = list
+        .iter()
+        .map(|pid| {
+            pid.as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .filter(|&pid| pid > 0)
+        })
+        .collect::<Option<Vec<u32>>>()?;
+    pids.sort_unstable();
+    pids.dedup();
+    Some(pids)
+}
 /// The longest monitor id `monitor` takes, as `screen.select` in the bridge.
 pub const MAX_MONITOR_ID: usize = 64;
 
@@ -157,6 +180,9 @@ fn check(request: &Value) -> Result<(), &'static str> {
         if id.is_empty() || id.chars().count() > MAX_MONITOR_ID {
             return Err("bad_request");
         }
+    }
+    if cmd == "exclude" && excluded_pids(request).is_none() {
+        return Err("bad_request");
     }
     if cmd == "mode" && !matches!(request["mode"].as_str(), Some("off" | "frames" | "video")) {
         return Err("bad_request");
@@ -467,6 +493,23 @@ mod tests {
                 with(json!({ "cmd": "monitor", "id": "x".repeat(MAX_MONITOR_ID + 1) })),
                 "bad_request",
             ),
+            (with(json!({ "cmd": "exclude" })), "bad_request"),
+            (
+                with(json!({ "cmd": "exclude", "pids": [0] })),
+                "bad_request",
+            ),
+            (
+                with(json!({ "cmd": "exclude", "pids": ["4821"] })),
+                "bad_request",
+            ),
+            (
+                with(json!({ "cmd": "exclude", "pids": [-1] })),
+                "bad_request",
+            ),
+            (
+                with(json!({ "cmd": "exclude", "pids": vec![7; MAX_EXCLUDED + 1] })),
+                "bad_request",
+            ),
         ] {
             assert_eq!(exchange(&mut stream, &line), Some(error(code)), "{line}");
         }
@@ -478,6 +521,25 @@ mod tests {
         // A line that isn't a JSON object is answered and closes it.
         assert_eq!(exchange(&mut stream, "[1, 2]"), Some(error("bad_request")));
         assert!(closed(&mut stream));
+    }
+
+    #[test]
+    fn exclude_takes_a_short_list_of_pids() {
+        assert_eq!(
+            excluded_pids(&json!({ "pids": [4821, 77, 4821] })),
+            Some(vec![77, 4821])
+        );
+        assert_eq!(excluded_pids(&json!({ "pids": [] })), Some(vec![]));
+        assert_eq!(
+            excluded_pids(&json!({ "pids": [u64::from(u32::MAX) + 1] })),
+            None
+        );
+        assert_eq!(excluded_pids(&json!({ "pids": 4821 })), None);
+        assert_eq!(excluded_pids(&json!({ "pids": [1.5] })), None);
+        assert_eq!(
+            excluded_pids(&json!({ "pids": vec![9; MAX_EXCLUDED] })),
+            Some(vec![9])
+        );
     }
 
     #[test]

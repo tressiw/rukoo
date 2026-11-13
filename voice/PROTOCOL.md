@@ -217,14 +217,14 @@ Something that happened at a moment in the meeting.
 | `dictation` | The user dictated into another app | end of the dictation | `null` |
 | `gap` | The track has no audio | end of the gap | `crash`, `device` or `suspend` |
 | `device` | The track moved to another device; `label` is its name | `null` | `default`, `reconnected` or `lost` |
-| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk`, `encoder`, `device` or `crash` |
+| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk`, `encoder`, `device`, `capture` or `crash` |
 | `video_dropped` | Voice stopped the screen video, to keep recording audio; the frames go on | `null` | `disk`, `encoder` or `device` |
 | `screen_gap` | The screen has no frames | end of the gap | `locked`, `crash`, `device` or `monitor` |
 | `monitor` | Voice moved the screen recording to another monitor; `label` is its name | `null` | `user` or `lost` |
 
 - `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting. `dropped`, `video_dropped`, `screen_gap` and `monitor` come with `screen`; `gap` never does.
 - `label` is the text the user gave a `user` mark, the device name of a `device` mark or the monitor name of a `monitor` mark.
-- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, `device` that the graphics device was reset, and `monitor` that no monitor was left to record. On `dropped`, `device` means the graphics device couldn't be started again, and `crash` that Voice's screen recorder stopped five times in a row, so Voice gave up on it for this meeting. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
+- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, `device` that the graphics device was reset, and `monitor` that no monitor was left to record. On `dropped`, `device` means the graphics device couldn't be started again, `capture` that the screen capture failed to start or stopped by itself ten times in a row, and `crash` that Voice's screen recorder stopped five times in a row, so Voice gave up on it for this meeting. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
 - Voice sends a mark once it is complete. A gap is sent when the audio or the screen comes back, or the meeting ends.
 - Rukoo shows a mark of a `kind` it doesn't know as a plain mark.
 

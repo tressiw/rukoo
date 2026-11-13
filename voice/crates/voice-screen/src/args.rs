@@ -43,7 +43,8 @@ impl Mode {
 /// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,type-every=<ms>]
 /// [,idle-every=<ms>][,dirty][,software-encoder][,no-hardware][,free-bytes-file=<path>]
 /// [,encoder-fail-at=<ms>][,write-fail=<video|frames>@<ms>][,device-lost-at=<ms>[x<n>]]
-/// [,no-video-device=<n>][,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the real
+/// [,no-video-device=<n>][,monitor-gone-at=<ms>][,warp][,format=<bgra|420f>]`: a synthetic screen
+/// instead of the real
 /// monitors, and the faults the tests need. Times are meeting time in ms, except `type-every` and
 /// `idle-every`, which count from the start of capture. `type-every` types a small mark every so
 /// often, as a keystroke does. `idle-every` sends the unchanged picture again that often, as
@@ -55,6 +56,8 @@ impl Mode {
 /// driver has while the real one restarts.
 /// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
 /// capture's `Closed` notice, as when that notice is lost.
+/// `format=420f` makes macOS' synthetic frames bi-planar full-range YCbCr, as ScreenCaptureKit
+/// sends them, instead of BGRA; Windows' synthetic screen ignores it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestSpec {
     pub width: u32,
@@ -75,6 +78,8 @@ pub struct TestSpec {
     pub no_video_devices: u32,
     pub monitor_gone_at_ms: Option<u64>,
     pub warp: bool,
+    /// `format=420f`: bi-planar frames on macOS.
+    pub biplanar: bool,
 }
 
 impl TestSpec {
@@ -131,6 +136,8 @@ impl TestSpec {
                 ("software-encoder", None) => test.software_encoder = true,
                 ("no-hardware", None) => test.no_hardware = true,
                 ("warp", None) => test.warp = true,
+                ("format", Some("420f")) => test.biplanar = true,
+                ("format", Some("bgra")) => test.biplanar = false,
                 ("free-bytes-file", Some(v)) if !v.is_empty() => {
                     test.free_bytes_file = Some(PathBuf::from(v))
                 }
@@ -418,7 +425,7 @@ mod tests {
             "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,type-every=150,\
              idle-every=66,dirty,software-encoder,no-hardware,free-bytes-file=C:\\tmp\\free.txt,\
              encoder-fail-at=3000,write-fail=frames@4000,\
-             device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp",
+             device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp,format=420f",
         )
         .unwrap();
         assert_eq!(
@@ -442,8 +449,10 @@ mod tests {
                 no_video_devices: 3,
                 monitor_gone_at_ms: Some(5000),
                 warp: true,
+                biplanar: true,
             }
         );
+        assert!(TestSpec::parse("synthetic:640x480,format=yuv").is_err());
         let once =
             TestSpec::parse("synthetic:640x480,device-lost-at=1500,write-fail=video@20").unwrap();
         assert_eq!(

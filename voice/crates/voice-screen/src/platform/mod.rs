@@ -45,6 +45,10 @@ pub struct PlatformError {
     /// The platform's own code, ready for the log (`0x887a0005`).
     pub code: String,
     pub message: String,
+    /// The platform said that this process may not capture the screen, as ScreenCaptureKit does
+    /// with a refused or revoked grant. Its own answer counts, whatever the preflight says: a
+    /// grant revoked a moment ago can still read as given there.
+    pub permission: bool,
 }
 
 impl PlatformError {
@@ -53,6 +57,7 @@ impl PlatformError {
             device_lost: false,
             code: String::new(),
             message: message.into(),
+            permission: false,
         }
     }
 }
@@ -72,6 +77,15 @@ pub trait Source: Send {
     fn start(&mut self, monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError>;
     /// Stops capturing. Frames already sent may still arrive; their generation is old.
     fn stop(&mut self);
+    /// Read on every tick while capturing: a stop the capture noticed that the event queue may
+    /// have lost, or a capture that went quiet for longer than it should. A source that sends
+    /// every stop through the queue says nothing.
+    fn health(&mut self) -> Option<crate::record::CaptureStop> {
+        None
+    }
+    /// The processes whose windows stay out of the recording from now on, as when a Rukoo
+    /// connects to Voice mid-meeting. A platform that can't filter by process ignores it.
+    fn exclude(&mut self, _pids: &[u32]) {}
 }
 
 /// What a source needs besides the device it captures on.
@@ -348,6 +362,10 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
         frame: &Frame<Self::Picture>,
     ) -> Result<Pixels, PlatformError>;
     /// A maker for video files on this device; `None` when this computer has no encoder at all.
-    fn video_maker(&self, device: &Self::Device)
-        -> Option<Box<dyn VideoMaker<File = Self::Video>>>;
+    /// `first` is the file's first picture, whose format a platform may prepare the encoder for.
+    fn video_maker(
+        &self,
+        device: &Self::Device,
+        first: &Self::Picture,
+    ) -> Option<Box<dyn VideoMaker<File = Self::Video>>>;
 }

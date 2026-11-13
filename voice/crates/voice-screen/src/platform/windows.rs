@@ -30,6 +30,7 @@ impl From<windows::core::Error> for PlatformError {
             device_lost: is_device_lost(&e),
             code: format!("{:#010x}", e.code().0),
             message: e.message(),
+            permission: false,
         }
     }
 }
@@ -149,7 +150,11 @@ impl Platform for WindowsPlatform {
         Ok(jpeg::pixels(device, frame)?)
     }
 
-    fn video_maker(&self, device: &D3D) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
+    fn video_maker(
+        &self,
+        device: &D3D,
+        _first: &Self::Picture,
+    ) -> Option<Box<dyn VideoMaker<File = Self::Video>>> {
         let mf = crate::video::mf::shared()?;
         Some(Box::new(WinVideoMaker::new(mf, device.clone())))
     }
