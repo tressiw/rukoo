@@ -17,15 +17,35 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_rukoo-voice-recorder");
 pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
+/// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
+/// back. Without the variable nothing is written.
+pub fn log_skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {
+        return;
+    };
+    // One write of the whole line, so tests running in parallel threads don't interleave.
+    let line = format!("{} {test}: {reason}\n", env!("CARGO_PKG_NAME"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 /// True, after printing why, when CI's host probe found the host too stalled for timing windows
 /// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
 /// tight window on a late tick returns early on it. Windows and Linux CI never set it.
 pub fn skip_on_slow_host(test: &str) -> bool {
     let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
     if slow {
-        eprintln!(
-            "skipped {test}: RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow"
-        );
+        let reason =
+            "RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow";
+        eprintln!("skipped {test}: {reason}");
+        log_skip(test, reason);
     }
     slow
 }

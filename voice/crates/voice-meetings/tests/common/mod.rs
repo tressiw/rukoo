@@ -38,15 +38,36 @@ pub fn min_realtime_factor() -> f64 {
         .unwrap_or(2.0)
 }
 
+/// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
+/// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
+/// back. Without the variable nothing is written.
+pub fn log_skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {
+        return;
+    };
+    // One write of the whole line, so tests running in parallel threads don't interleave.
+    let line = format!("{} {test}: {reason}\n", env!("CARGO_PKG_NAME"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 /// True, after printing why, when the speaker worker measured `factor` and that is below
 /// [`min_realtime_factor`].
 pub fn too_slow_for_live_labels(test: &str, factor: f64) -> bool {
     let min = min_realtime_factor();
     let slow = factor < min;
     if slow {
-        eprintln!(
-            "skipped {test}: the speaker worker runs at {factor} times real time on this host, below the {min} that live labels need"
+        let reason = format!(
+            "the speaker worker runs at {factor} times real time on this host, below the {min} that live labels need"
         );
+        eprintln!("skipped {test}: {reason}");
+        log_skip(test, &reason);
     }
     slow
 }

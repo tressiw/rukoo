@@ -34,11 +34,24 @@ mod tests {
 
     #[test]
     fn reads_secure_event_input_without_a_grant() {
-        // Nothing on this desktop has a password field or Secure Keyboard
-        // Entry open while the tests run.
-        assert!(!is_secure_event_input_enabled());
-        assert_eq!(check(), Ok(()));
-        // The answer must agree with itself, not be a stale constant.
-        assert_eq!(check().is_err(), is_secure_event_input_enabled());
+        // Whether a password field or Secure Keyboard Entry is open depends on whoever sits at this
+        // Mac, so the test doesn't assert either state. It asserts that the reading works without a
+        // grant and that `check()` agrees with it, on a reading that didn't change around the call.
+        for _ in 0..50 {
+            let before = is_secure_event_input_enabled();
+            let checked = check();
+            if before != is_secure_event_input_enabled() {
+                // Somebody focused or left a password field between the two reads: read again.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            if before {
+                assert_eq!(checked, Err(InputError::Blocked));
+            } else {
+                assert_eq!(checked, Ok(()));
+            }
+            return;
+        }
+        panic!("Secure Event Input changed on each of 50 reads");
     }
 }
