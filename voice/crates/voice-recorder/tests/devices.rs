@@ -282,3 +282,36 @@ fn records_the_real_devices() {
         assert!(lost.iter().any(|l| l["track"] == "mic"), "{lines:?}");
     }
 }
+
+/// A real tap delivers nothing while nothing plays, and a denied one may never deliver: the
+/// padding that fills the call track is what the silence check hears.
+#[test]
+fn a_tap_that_delivers_nothing_is_reported_from_its_padding() {
+    if skip_on_slow_host("a_tap_that_delivers_nothing_is_reported_from_its_padding") {
+        return;
+    }
+    let m = TempMeeting::new("tap-no-blocks");
+    let mut child = m.record(&["call=synthetic:tap,playing"], &["--silence-ms", "1500"]);
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(3_500);
+    let status = track_status(&mut client, &token, "call");
+    assert_eq!(status["silent"], true, "{status}");
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+    let lines = m.lines();
+    let silent = of_kind(&lines, "silent");
+    assert_eq!(silent.len(), 1, "{silent:?}");
+    assert!(
+        silent[0]["since"].as_u64().unwrap() <= SLACK_MS,
+        "{}",
+        silent[0]
+    );
+    // Padding comes in steps of at least 0.5 s, so the check answers up to a step late.
+    assert!(
+        (1_500..=1_500 + 1_000).contains(&t(silent[0])),
+        "{}",
+        silent[0]
+    );
+    let call = segments(&m, &lines, "call");
+    assert!(call.iter().all(|s| s.pcm.iter().all(|&v| v == 0)));
+}

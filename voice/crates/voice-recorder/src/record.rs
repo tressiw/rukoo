@@ -568,27 +568,7 @@ impl Recorder {
         if live.silent_when_denied {
             let frames = data.len() as u64 / live.channels.max(1) as u64;
             let ms = frames * 1000 / live.rate.max(1) as u64;
-            let verdict = track
-                .silence
-                .feed(silence::all_zero(data), ms, arrived, track.playing);
-            let name = track.name.clone();
-            match verdict {
-                Some(Verdict::Silent { since }) => {
-                    log(format_args!(
-                        "{name}: only exact zeros since {since} ms while another app plays sound"
-                    ));
-                    self.journal.write(Line::Silent {
-                        t: arrived,
-                        track: name,
-                        since,
-                    });
-                }
-                Some(Verdict::Sound) => self.journal.write(Line::Sound {
-                    t: arrived,
-                    track: name,
-                }),
-                None => {}
-            }
+            self.check_silence(i, silence::all_zero(data), ms, arrived);
         }
         let track = &mut self.tracks[i];
         let State::Open(live) = &mut track.state else {
@@ -1060,6 +1040,28 @@ impl Recorder {
         self.pad_until(i, now, threshold_ms);
     }
 
+    /// Feeds the silence check `ms` of the track's audio up to meeting time `at`, and writes what
+    /// it found out.
+    fn check_silence(&mut self, i: usize, zero: bool, ms: u64, at: u64) {
+        let track = &mut self.tracks[i];
+        let verdict = track.silence.feed(zero, ms, at, track.playing);
+        let name = track.name.clone();
+        match verdict {
+            Some(Verdict::Silent { since }) => {
+                log(format_args!(
+                    "{name}: only exact zeros since {since} ms while another app plays sound"
+                ));
+                self.journal.write(Line::Silent {
+                    t: at,
+                    track: name,
+                    since,
+                });
+            }
+            Some(Verdict::Sound) => self.journal.write(Line::Sound { t: at, track: name }),
+            None => {}
+        }
+    }
+
     fn pad_until(&mut self, i: usize, now: u64, threshold_ms: u64) {
         let track = &self.tracks[i];
         let Some(covered) = track.covered_end() else {
@@ -1085,6 +1087,11 @@ impl Recorder {
         }
         // At most one segment's worth per call; the next tick continues.
         let needed = needed.min(self.segment_samples) as usize;
+        // A process tap delivers nothing while nothing plays, and a denied one may never deliver:
+        // the padding is the silence the check has to hear about (`silence.rs`).
+        if matches!(&self.tracks[i].state, State::Open(live) if live.silent_when_denied) {
+            self.check_silence(i, true, samples_to_ms(needed as u64), now);
+        }
         let track = &mut self.tracks[i];
         track.pending.resize(track.pending.len() + needed, 0);
         track.pending_end = now;
