@@ -1,12 +1,12 @@
 # Third-party notices for Rukoo Voice
 
-Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its installer and portable zip hold five programs: `rukoo-voice.exe` (the app), `rukoo-voice-recorder.exe` (the meeting recorder), `rukoo-voice-local.exe` (the local speech worker), `rukoo-voice-speakers.exe` (the speaker worker) and `rukoo-voice-screen.exe` (the screen recorder), plus the speaker label runtime in `nemo_speech\`. This file lists the work of others that is built into them, and ships next to them.
+Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its Windows installer and portable zip, and its macOS app (`Rukoo Voice.app`, in the DMG and the zip), hold five programs: `rukoo-voice` (the app), `rukoo-voice-recorder` (the meeting recorder), `rukoo-voice-local` (the local speech worker), `rukoo-voice-speakers` (the speaker worker) and `rukoo-voice-screen` (the screen recorder), plus the speaker label runtime in `nemo_speech`. On Windows the programs have an `.exe` extension and the runtime folder is `nemo_speech\`; on macOS the programs are in `Contents/MacOS` and the runtime is in `Contents/Resources/nemo_speech/`. This file lists the work of others that is built into them, and ships next to them on Windows and in `Contents/Resources` on macOS.
 
-`THIRD_PARTY_LICENSES.txt`, which ships alongside, holds the license files of every Rust crate listed below as they appear in each crate's source package, and the license files in `nemo_speech\licenses\`. `voice/scripts/package.ps1` writes it when it builds the installer.
+`THIRD_PARTY_LICENSES.txt`, which ships alongside, holds the license files of every Rust crate that platform's build contains, as they appear in each crate's source package, and the license files in `nemo_speech\licenses\` (`nemo_speech/licenses/` on macOS). `voice/scripts/package.ps1` writes it for the Windows installer and `voice/scripts/package-macos.mjs` for the macOS app, both through `voice/scripts/notices.mjs`.
 
-## Speech recognition in rukoo-voice-local.exe
+## Speech recognition in rukoo-voice-local
 
-The local speech worker links the prebuilt static Windows library of [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v2.0.1 (`sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib`), through the `sherpa-onnx` and `sherpa-onnx-sys` crates. That library contains:
+The local speech worker links the prebuilt static library of [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v2.0.1, through the `sherpa-onnx` and `sherpa-onnx-sys` crates: `sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib` on Windows and `sherpa-onnx-v2.0.1-osx-arm64-static-lib` on macOS. Both link the same eleven libraries, and both contain:
 
 - sherpa-onnx, by the Next-gen Kaldi team (k2-fsa): Apache License 2.0.
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime): MIT license, Copyright (c) Microsoft Corporation. The license text is below. ONNX Runtime's own notices for the code it includes are in its [ThirdPartyNotices.txt](https://github.com/microsoft/onnxruntime/blob/main/ThirdPartyNotices.txt).
@@ -46,24 +46,30 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Speaker labels: nemo_speech\ and rukoo-voice-speakers.exe
+## Speaker labels: nemo_speech and rukoo-voice-speakers
 
-The speaker worker, `rukoo-voice-speakers.exe`, is a Rust program like the other four; its crates are in the list below. It loads the speaker label runtime from the `nemo_speech\` folder next to it. Voice builds that folder from [NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) at commit `97a15afa5caa9bce5baaa86c1184103877af4101`, with the CPU backend and no changes to the source (`voice/nemo-runtime/`). `nemo_speech\runtime.json` names the build and the SHA-256 of every file. The folder holds:
+The speaker worker, `rukoo-voice-speakers`, is a Rust program like the other four; its crates are in the list below. On Windows it loads the speaker label runtime from the `nemo_speech\` folder next to it, on macOS from `Contents/Resources/nemo_speech/`. Voice builds that folder for each platform from [NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) at commit `97a15afa5caa9bce5baaa86c1184103877af4101`, with the CPU backend and no changes to the source (`voice/nemo-runtime/`). `runtime.json` in the folder names the build and the SHA-256 of every file. The Windows folder (`voice/nemo-runtime/build.ps1`) holds:
 
 - NeMo-Speech.cpp, in `nemo_speech_asr_c.dll` and `nemo_speech_asr.dll`: Apache License 2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Parts of its runtime derive from [parakeet.cpp](https://github.com/jason-ni/parakeet.cpp), Copyright (c) 2025 Jason Ni, under the MIT license. Its `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md` are in `nemo_speech\licenses\`.
 - [ggml](https://github.com/ggml-org/ggml), in `ggml.dll`, `ggml-base.dll` and `ggml-cpu.dll`: MIT license, Copyright (c) 2023-2026 The ggml authors. The license text is in NeMo-Speech.cpp's `THIRD_PARTY_NOTICES.md`.
 - [SentencePiece](https://github.com/google/sentencepiece), linked into `nemo_speech_asr.dll` by vcpkg together with the libraries it uses: SentencePiece and [Abseil](https://github.com/abseil/abseil-cpp) under the Apache License 2.0, [Protocol Buffers](https://github.com/protocolbuffers/protobuf) under the BSD 3-Clause license and utf8-range, which comes with Protocol Buffers, under the MIT license. Their license files, as vcpkg installs them, are in `nemo_speech\licenses\vcpkg\`. SentencePiece compiles in [Darts-clone](https://github.com/s-yata/darts-clone): BSD 2-Clause license, Copyright (c) 2008-2011, Susumu Yata, in `nemo_speech\licenses\darts-clone.txt`.
 - `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll`: the Microsoft Visual C++ runtime, which the NeMo DLLs need. They are unmodified copies from the Visual Studio build tools that compiled the runtime, redistributed with the program as the Visual Studio license terms allow. `runtime.json` records their versions.
 
-`THIRD_PARTY_LICENSES.txt` repeats every file in `nemo_speech\licenses\`. NeMo-Speech.cpp's own command-line program isn't included, so neither is the miniaudio code from llama.cpp that only that program compiles in.
+The macOS folder, for Apple Silicon (`voice/nemo-runtime/build-macos.sh`), is the same commit with the same CPU backend and three small build-file edits (`voice/nemo-runtime/macos.patch`). It holds:
+
+- NeMo-Speech.cpp, in `libnemo_speech_asr_c.dylib` and `libnemo_speech_asr.dylib`: Apache License 2.0 and the MIT-licensed parakeet.cpp parts, as above. Its `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md` are in `nemo_speech/licenses/`.
+- ggml, in `libggml.dylib`, `libggml-base.dylib`, `libggml-cpu.dylib` and `libggml-blas.dylib`: MIT license, as above. `libggml-blas.dylib` and `libggml-cpu.dylib` call Accelerate, which comes with macOS.
+- SentencePiece, which NeMo's own script builds from source as a static library and links into `libnemo_speech_asr.dylib`, together with the code it compiles in: SentencePiece and Abseil under the Apache License 2.0, the protobuf-lite runtime under the BSD 3-Clause license and Darts-clone under the BSD 2-Clause license. Their license files are in `nemo_speech/licenses/sentencepiece/` (`LICENSE`, `absl-LICENSE`, `protobuf-lite-LICENSE` and `darts-clone-LICENSE`). There is no vcpkg on macOS, so there is no utf8-range, and the C++ runtime comes with macOS, so no Visual C++ runtime is shipped.
+
+`THIRD_PARTY_LICENSES.txt` repeats every file in `nemo_speech\licenses\` (`nemo_speech/licenses/` on macOS). NeMo-Speech.cpp's own command-line program isn't included, so neither is the miniaudio code from llama.cpp that only that program compiles in.
 
 ## Speech models are not included
 
-Neither the installer nor the zip contains a speech model. The Orukeet model ([oruk/orukeet](https://huggingface.co/oruk/orukeet)) is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Voice downloads it into its own data folder when you ask for it, or uses the copy Ownkey already downloaded to `%LOCALAPPDATA%\Ownkey\models`, which it only reads. Every model Voice downloads comes with the license on its model page.
+None of the installer, the zips and the DMG contains a speech model. The Orukeet model ([oruk/orukeet](https://huggingface.co/oruk/orukeet)) is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Voice downloads it into its own data folder when you ask for it, or, on Windows, uses the copy Ownkey already downloaded to `%LOCALAPPDATA%\Ownkey\models`, which it only reads. Every model Voice downloads comes with the license on its model page.
 
-Speaker labels use NVIDIA's Nemotron 3 Diarization weights ([nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization)), licensed under the OpenMDW License 1.1. Voice uses the copy Ownkey already downloaded, which it only reads, or downloads the 107 MB file into its own data folder when you ask for it.
+Speaker labels use NVIDIA's Nemotron 3 Diarization weights ([nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization)), licensed under the OpenMDW License 1.1. On Windows Voice uses the copy Ownkey already downloaded, which it only reads, or downloads the 107 MB file into its own data folder when you ask for it; on macOS it always downloads it.
 
-## The app: rukoo-voice.exe
+## The app: rukoo-voice
 
 - [Tauri](https://tauri.app) and the crates it brings: MIT OR Apache-2.0. They are in the crate list below.
 - The Microsoft WebView2 loader (`WebView2LoaderStatic.lib` from the WebView2 SDK), linked through the `webview2-com-sys` crate. Its license:
@@ -102,17 +108,17 @@ Speaker labels use NVIDIA's Nemotron 3 Diarization weights ([nvidia/Nemotron-3-D
 - [Inter](https://github.com/rsms/inter), the typeface of the pill and Settings: SIL Open Font License 1.1, Copyright 2016 The Inter Project Authors. The app carries the font together with its license (`voice/ui/fonts/Inter-LICENSE.txt`), and `THIRD_PARTY_LICENSES.txt` repeats that license.
 - The Rukoo Voice icon is drawn from Rukoo's own pigeon, which is part of this repository.
 
-## The screen recorder: rukoo-voice-screen.exe
+## The screen recorder: rukoo-voice-screen
 
-The screen recorder uses Windows' own Windows.Graphics.Capture, Media Foundation (for the H.264 encoder and the MP4 files) and Windows.Media.Ocr, which come with Windows. It ships none of their code.
+The screen recorder uses Windows' own Windows.Graphics.Capture, Media Foundation (for the H.264 encoder and the MP4 files) and Windows.Media.Ocr, which come with Windows. On macOS it uses ScreenCaptureKit, VideoToolbox and Vision, which come with macOS. It ships none of their code.
 
 ## Rust crates
 
-The Rust crates built into the five programs, by license. The list covers the normal dependencies for Windows x64 and leaves out the procedural macros, which run only while compiling, and Voice's own crates.
+The Rust crates built into the five programs, by license. The list covers the normal dependencies for Windows x64 (`x86_64-pc-windows-msvc`) and for macOS on Apple Silicon (`aarch64-apple-darwin`), and leaves out the procedural macros, which run only while compiling, and Voice's own crates. A crate only one build contains says so; every other crate is in both. `voice/scripts/notices.mjs` writes the list.
 
-<!-- rust-crates:start: written by voice/scripts/package.ps1 -UpdateNotices; package.ps1 stops when this list is out of date -->
+<!-- rust-crates:start: written by voice/scripts/notices.mjs --update (or package.ps1 -UpdateNotices); package.ps1 and package-macos.mjs stop when this list is out of date -->
 
-211 crates.
+255 crates: 189 in both builds, 22 only in the Windows build and 44 only in the macOS build.
 
 ### 0BSD OR Apache-2.0 OR MIT
 
@@ -132,6 +138,10 @@ The Rust crates built into the five programs, by license. The list covers the no
 ### Apache-2.0 AND MIT
 
 - dpi 0.1.2
+
+### Apache-2.0 OR BSD-2-Clause OR MIT
+
+- mach2 0.6.0 (macOS only)
 
 ### Apache-2.0 OR CC0-1.0 OR MIT-0
 
@@ -158,6 +168,11 @@ The Rust crates built into the five programs, by license. The list covers the no
 - cmov 0.5.4
 - const-oid 0.10.2
 - cookie 0.18.2
+- core-foundation 0.10.1 (macOS only)
+- core-foundation-sys 0.8.7 (macOS only)
+- core-graphics 0.25.0 (macOS only)
+- core-graphics-types 0.2.0 (macOS only)
+- coreaudio-rs 0.14.2 (macOS only)
 - cpufeatures 0.2.17
 - cpufeatures 0.3.1
 - crc32fast 1.5.3
@@ -173,13 +188,17 @@ The Rust crates built into the five programs, by license. The list covers the no
 - digest 0.11.3
 - dirs 7.0.0
 - dirs-sys 0.5.0
+- embed_plist 1.2.2 (macOS only)
 - equivalent 1.0.3
 - erased-serde 0.4.11
 - fallible-iterator 0.3.0
 - fallible-streaming-iterator 0.1.9
+- fdeflate 0.3.7 (macOS only)
 - filetime 0.2.29
 - flate2 1.1.10
 - fnv 1.0.7
+- foreign-types 0.5.0 (macOS only)
+- foreign-types-shared 0.3.1 (macOS only)
 - form_urlencoded 1.2.2
 - futures-core 0.3.34
 - futures-sink 0.3.34
@@ -206,17 +225,18 @@ The Rust crates built into the five programs, by license. The list covers the no
 - jsonptr 0.7.1
 - keyboard-types 0.8.3
 - libc 0.2.191
-- lock_api 0.4.14
+- lock_api 0.4.14 (Windows only)
 - log 0.4.34
 - md-5 0.11.0
 - mime 0.3.17
 - muda 0.20.0
 - num-conv 0.2.2
 - once_cell 1.21.4
-- parking_lot 0.12.5
-- parking_lot_core 0.9.12
+- parking_lot 0.12.5 (Windows only)
+- parking_lot_core 0.9.12 (Windows only)
 - percent-encoding 2.3.2
 - pin-project-lite 0.2.17
+- png 0.18.1 (macOS only)
 - poly1305 0.9.1
 - powerfmt 0.2.1
 - rand 0.10.3
@@ -225,7 +245,9 @@ The Rust crates built into the five programs, by license. The list covers the no
 - regex-automata 0.4.18
 - regex-syntax 0.8.11
 - rustls-pki-types 1.15.1
-- scopeguard 1.2.0
+- scopeguard 1.2.0 (Windows only)
+- security-framework 3.7.0 (macOS only)
+- security-framework-sys 2.17.0 (macOS only)
 - semver 1.0.28
 - serde 1.0.229
 - serde-untagged 0.1.9
@@ -240,7 +262,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 - siphasher 1.0.4
 - smallvec 1.16.4
 - socket2 0.6.5
-- softbuffer 0.4.8
+- softbuffer 0.4.8 (Windows only)
 - stable_deref_trait 1.2.1
 - tar 0.4.46
 - tauri 2.12.5
@@ -259,7 +281,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 - typeid 1.0.3
 - typenum 1.20.1
 - unicase 2.10.0
-- unicode-segmentation 1.13.3
+- unicode-segmentation 1.13.3 (Windows only)
 - universal-hash 0.6.1
 - ureq 3.5.0
 - ureq-proto 0.6.5
@@ -270,24 +292,51 @@ The Rust crates built into the five programs, by license. The list covers the no
 - uuid 1.29.0
 - web-time 1.1.0
 - window-vibrancy 0.8.1
-- windows 0.62.2
-- windows-collections 0.3.2
-- windows-core 0.62.2
-- windows-future 0.3.2
-- windows-link 0.2.1
-- windows-numerics 0.3.1
-- windows-result 0.4.1
-- windows-strings 0.5.1
-- windows-sys 0.61.2
-- windows-threading 0.2.1
-- windows-version 0.1.7
+- windows 0.62.2 (Windows only)
+- windows-collections 0.3.2 (Windows only)
+- windows-core 0.62.2 (Windows only)
+- windows-future 0.3.2 (Windows only)
+- windows-link 0.2.1 (Windows only)
+- windows-numerics 0.3.1 (Windows only)
+- windows-result 0.4.1 (Windows only)
+- windows-strings 0.5.1 (Windows only)
+- windows-sys 0.61.2 (Windows only)
+- windows-threading 0.2.1 (Windows only)
+- windows-version 0.1.7 (Windows only)
 - wry 0.57.1
 - xmlparser 0.13.6
 - zeroize 1.9.1
 
 ### Apache-2.0 OR MIT OR Zlib
 
+- dispatch2 0.3.1 (macOS only)
+- miniz_oxide 0.8.9 (macOS only)
 - miniz_oxide 0.9.1
+- objc2-app-kit 0.3.2 (macOS only)
+- objc2-application-services 0.3.2 (macOS only)
+- objc2-audio-toolbox 0.3.2 (macOS only)
+- objc2-av-foundation 0.3.2 (macOS only)
+- objc2-core-audio 0.3.2 (macOS only)
+- objc2-core-audio-types 0.3.2 (macOS only)
+- objc2-core-foundation 0.3.2 (macOS only)
+- objc2-core-graphics 0.3.2 (macOS only)
+- objc2-core-image 0.3.2 (macOS only)
+- objc2-core-media 0.3.2 (macOS only)
+- objc2-core-ml 0.3.2 (macOS only)
+- objc2-core-text 0.3.2 (macOS only)
+- objc2-core-video 0.3.2 (macOS only)
+- objc2-exception-helper 0.1.1 (macOS only)
+- objc2-image-io 0.3.2 (macOS only)
+- objc2-io-kit 0.3.2 (macOS only)
+- objc2-metal 0.3.2 (macOS only)
+- objc2-quartz-core 0.3.2 (macOS only)
+- objc2-screen-capture-kit 0.3.2 (macOS only)
+- objc2-security 0.3.2 (macOS only)
+- objc2-service-management 0.3.2 (macOS only)
+- objc2-user-notifications 0.3.2 (macOS only)
+- objc2-video-toolbox 0.3.2 (macOS only)
+- objc2-vision 0.3.2 (macOS only)
+- objc2-web-kit 0.3.2 (macOS only)
 - raw-window-handle 0.6.2
 
 ### BSD-2-Clause
@@ -320,6 +369,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 
 ### MIT
 
+- block2 0.6.2 (macOS only)
 - bytes 1.12.1
 - cfb 0.14.0
 - data-encoding 2.11.1
@@ -328,6 +378,9 @@ The Rust crates built into the five programs, by license. The list covers the no
 - libsqlite3-sys 0.39.1
 - mime_guess 2.0.5
 - mio 1.2.4
+- objc2 0.6.5 (macOS only)
+- objc2-encode 4.1.0 (macOS only)
+- objc2-foundation 0.3.2 (macOS only)
 - phf 0.13.1
 - phf_shared 0.13.1
 - plist 1.10.3
@@ -337,11 +390,11 @@ The Rust crates built into the five programs, by license. The list covers the no
 - slab 0.4.12
 - tokio 1.54.1
 - tokio-tungstenite 0.30.0
-- tracing 0.1.44
-- tracing-core 0.1.36
+- tracing 0.1.44 (Windows only)
+- tracing-core 0.1.36 (Windows only)
 - urlpattern 0.6.0
-- webview2-com 0.39.1
-- webview2-com-sys 0.39.1
+- webview2-com 0.39.1 (Windows only)
+- webview2-com-sys 0.39.1 (Windows only)
 - winnow 1.0.4
 - zmij 1.0.23
 
@@ -353,7 +406,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 - memchr 2.8.3
 - same-file 1.0.6
 - walkdir 2.5.0
-- winapi-util 0.1.11
+- winapi-util 0.1.11 (Windows only)
 
 ### MPL-2.0
 
