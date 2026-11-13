@@ -17,12 +17,16 @@
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSEventType, NSPanel,
-    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowStyleMask,
+use objc2::runtime::Bool;
+use objc2::{
+    define_class, msg_send, AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityButtonRole, NSBackingStoreType, NSColor, NSEvent,
+    NSEventModifierFlags, NSEventType, NSPanel, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSWindowStyleMask,
+};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use voice_engine::UiOptions;
 
 pub use super::pointer::HitEvent;
@@ -108,12 +112,28 @@ define_class!(
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
             true
         }
+
+        /// VoiceOver's press is a click on the button.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> Bool {
+            let Some(window) = self.window() else {
+                return Bool::NO;
+            };
+            if !window.isKindOfClass(ButtonPanel::class()) {
+                return Bool::NO;
+            }
+            // SAFETY: checked just above that the window is a `ButtonPanel`.
+            let panel: Retained<ButtonPanel> = unsafe { Retained::cast_unchecked(window) };
+            panel.report(vec![HitEvent::Click]);
+            Bool::YES
+        }
     }
 );
 
 /// Owned by the main thread, like every window.
 pub struct HitPanel {
     panel: Retained<ButtonPanel>,
+    view: Retained<ButtonView>,
 }
 
 impl HitPanel {
@@ -155,6 +175,11 @@ impl HitPanel {
             )
         };
         view.addTrackingArea(&tracking);
+        // VoiceOver announces a button with the stop or screen label, and can press it.
+        view.setAccessibilityElement(true);
+        // SAFETY: AppKit's role constants are immutable strings that last as long as the process.
+        view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        view.setAccessibilityLabel(Some(&NSString::from_str(title)));
         panel.setContentView(Some(&view));
 
         // Not `setFloatingPanel(true)`: that moves the panel to the floating level, below the pill.
@@ -174,11 +199,13 @@ impl HitPanel {
         // SAFETY: nobody else holds a claim on this window's release; Rust owns it.
         unsafe { panel.setReleasedWhenClosed(false) };
         panel.orderOut(None);
-        Ok(HitPanel { panel })
+        Ok(HitPanel { panel, view })
     }
 
     pub fn set_title(&self, title: &str) {
-        self.panel.setTitle(&NSString::from_str(title));
+        let title = NSString::from_str(title);
+        self.panel.setTitle(&title);
+        self.view.setAccessibilityLabel(Some(&title));
     }
 
     /// Over the button and above the pill: called right after every raise of the pill, so it sits
