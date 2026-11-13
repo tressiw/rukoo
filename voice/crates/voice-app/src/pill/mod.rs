@@ -104,7 +104,8 @@ enum Repair {
 
 /// The paint watchdog's timing: a nudge `NUDGE_AFTER` and a rebuild `REBUILD_AFTER` after the page
 /// could paint and didn't. Time while it couldn't (a covered pill or a locked screen on macOS) doesn't
-/// count, and once it can again it gets the whole grace period afresh.
+/// count, and once it can again it gets the whole grace period afresh. One nudge per snapshot, as
+/// `claim_repair` allows.
 struct PaintClock {
     since: Instant,
     nudged: bool,
@@ -122,7 +123,6 @@ impl PaintClock {
     fn step(&mut self, now: Instant, expected: bool) -> Option<Repair> {
         if !expected {
             self.since = now;
-            self.nudged = false;
             return None;
         }
         let waited = now.saturating_duration_since(self.since);
@@ -1164,11 +1164,13 @@ mod tests {
         assert_eq!(clock.step(t0 + ms(61_999), true), None);
         assert_eq!(clock.step(t0 + ms(62_000), true), Some(Repair::Rebuild));
 
-        // Nudged, then covered: after it is seen again it may nudge once more before the rebuild.
+        // Nudged, then covered: one nudge per snapshot, as `claim_repair` allows, so after it is seen
+        // again only the rebuild is left, a full period later.
         let mut clock = PaintClock::new(t0);
         assert_eq!(clock.step(t0 + ms(500), true), Some(Repair::Nudge));
         assert_eq!(clock.step(t0 + ms(1_900), false), None);
-        assert_eq!(clock.step(t0 + ms(2_400), true), Some(Repair::Nudge));
+        assert_eq!(clock.step(t0 + ms(2_400), true), None);
+        assert_eq!(clock.step(t0 + ms(3_899), true), None);
         assert_eq!(clock.step(t0 + ms(3_900), true), Some(Repair::Rebuild));
     }
 
