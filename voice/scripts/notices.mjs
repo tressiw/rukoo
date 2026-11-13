@@ -34,7 +34,9 @@ const START = /<!-- rust-crates:start[^\n]*-->\n/;
 const END = '<!-- rust-crates:end -->';
 
 function cargo(args) {
-  const result = spawnSync('cargo', args, { cwd: VOICE, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  // The output is parsed, so it must not carry the caller's colours: CI sets CARGO_TERM_COLOR=always, and cargo tree
+  // then colours its repeat marker (`(*)`) even when the output is piped. --color never wins over that variable.
+  const result = spawnSync('cargo', ['--color', 'never', ...args], { cwd: VOICE, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   if (result.error) {
     throw new Error(`couldn't run cargo: ${result.error.message}. Rust is in ~/.cargo/bin, which is not always on PATH.`);
   }
