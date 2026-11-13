@@ -357,8 +357,11 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     yield_front(app)?;
     let before = foreground();
 
-    // 1. A meeting: the pill shows with its stop button.
-    engine.start_meeting().map_err(|e| e.to_string())?;
+    // 1. A meeting: the pill shows with its stop button. `--fake-engine=meeting` starts with one
+    // already recording; the self-test then takes that one.
+    if engine.tray_state().meeting.is_none() {
+        engine.start_meeting().map_err(|e| e.to_string())?;
+    }
     let seq = engine.pill_snapshot().seq;
     await_paint(
         "the meeting pill to paint",
