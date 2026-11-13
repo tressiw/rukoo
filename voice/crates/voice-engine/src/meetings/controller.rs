@@ -516,6 +516,16 @@ impl Controller {
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
             }
+            // It answered `stop` after syncing its last line, so nothing is lost: a recorder
+            // still running holds only a device open that never finished.
+            if matches!(child.try_wait(), Ok(None)) {
+                log::warn!(
+                    "meeting {}: the recorder didn't exit after its stop; ending it",
+                    live.id
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
         let id = live.id.clone();
         *inner = None;

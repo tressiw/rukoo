@@ -315,3 +315,26 @@ fn a_tap_that_delivers_nothing_is_reported_from_its_padding() {
     let call = segments(&m, &lines, "call");
     assert!(call.iter().all(|s| s.pcm.iter().all(|&v| v == 0)));
 }
+
+/// Stopping while a device still opens, as when the user stops a meeting while macOS shows its
+/// System Audio Recording prompt: the recording ends and the process exits at once.
+#[test]
+fn a_stop_while_a_device_opens_ends_the_process() {
+    let m = TempMeeting::new("stop-while-opening");
+    let mut child = m.record(
+        &["mic=synthetic:tone:440", "call=synthetic:tap,open-ms=30000"],
+        &[],
+    );
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(1_000);
+    let asked = Instant::now();
+    let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(wait_exit(&mut child).success());
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "exited {:?} after the stop",
+        asked.elapsed()
+    );
+    assert_eq!(m.lines().last().unwrap()["kind"], "stop");
+}
