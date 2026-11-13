@@ -1383,7 +1383,7 @@ async function keyChoice(role) {
     disabled: Boolean(taken[key]),
     hint: taken[key] ? t(taken[key]) : ownkeyKeys.includes(key) ? t('settings.keys.ownkey') : ''
   }));
-  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode ? t('settings.keys.dev') : '' });
+  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode && !macos() ? t('settings.keys.dev') : '' });
   if (value != null && value !== getPath(c, role)) setValue(role, value);
 }
 
