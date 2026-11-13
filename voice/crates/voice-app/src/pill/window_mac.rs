@@ -34,13 +34,14 @@ use objc2_app_kit::{
     NSApplicationDidChangeScreenParametersNotification, NSEvent, NSRunningApplication, NSScreen,
     NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowOcclusionState,
     NSWindowSharingType, NSWorkspace, NSWorkspaceApplicationKey,
-    NSWorkspaceDidActivateApplicationNotification,
+    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidWakeNotification,
+    NSWorkspaceScreensDidWakeNotification, NSWorkspaceSessionDidBecomeActiveNotification,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGWindowListCopyWindowInfo, CGWindowListOption};
 use objc2_foundation::{
-    NSArray, NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSRect, NSSize,
-    NSString,
+    NSArray, NSDictionary, NSDistributedNotificationCenter, NSNotification, NSNotificationCenter,
+    NSNumber, NSPoint, NSRect, NSSize, NSString,
 };
 
 use super::*;
@@ -54,6 +55,9 @@ thread_local! {
     /// is still connected, wherever the rearrangement moved it.
     static LAST_DISPLAY: Cell<Option<u32>> = const { Cell::new(None) };
 }
+
+/// Posted on the distributed notification center when the screen unlocks.
+const SCREEN_UNLOCKED: &str = "com.apple.screenIsUnlocked";
 
 /// Whether another app coming forward raises the pill: on while it shows (`foreground_hook`).
 static FOREGROUND: AtomicBool = AtomicBool::new(false);
@@ -224,6 +228,41 @@ fn observe() {
             None,
             None,
             &screens,
+        )
+    };
+    std::mem::forget(observer);
+
+    // The session coming back: the Mac or its screens woke, a switched-out session returned, the
+    // screen unlocked. Windows repairs on the same moments (#13); the repair places, raises and puts
+    // the panels back, and does nothing to a pill that isn't shown.
+    let back = RcBlock::new(|_: NonNull<NSNotification>| {
+        if let Some(callbacks) = CALLBACKS.get() {
+            (callbacks.display_changed)();
+        }
+    });
+    let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: AppKit's notification names are immutable strings that last as long as the process.
+    let names = unsafe {
+        [
+            NSWorkspaceDidWakeNotification,
+            NSWorkspaceScreensDidWakeNotification,
+            NSWorkspaceSessionDidBecomeActiveNotification,
+        ]
+    };
+    for name in names {
+        // SAFETY: as above.
+        let observer = unsafe {
+            workspace.addObserverForName_object_queue_usingBlock(Some(name), None, None, &back)
+        };
+        std::mem::forget(observer);
+    }
+    // SAFETY: as above; the distributed center delivers on the main run loop too.
+    let observer = unsafe {
+        NSDistributedNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(&NSString::from_str(SCREEN_UNLOCKED)),
+            None,
+            None,
+            &back,
         )
     };
     std::mem::forget(observer);

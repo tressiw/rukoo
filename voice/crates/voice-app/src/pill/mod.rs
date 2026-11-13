@@ -817,7 +817,7 @@ impl Pill {
             (i.shown, i.snapshot.as_ref().map_or(0, |s| s.seq))
         };
         log::info!(
-            "pill: display changed; repairing the {} pill",
+            "pill: display or session changed; repairing the {} pill",
             if shown { "visible" } else { "hidden" }
         );
         if shown {
