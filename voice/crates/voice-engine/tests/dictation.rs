@@ -332,9 +332,11 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
     let engine = h.start();
     h.hold(Key::F13);
     assert_eq!(last_error(&h), "pill.error.blocked");
+    // The notice says why in the platform's terms: UIPI on Windows, Secure
+    // Event Input on macOS.
     assert_eq!(
         h.sink.wait_note("app.notify.dictationFailed").body,
-        "Windows blocked typing into an app that runs as administrator."
+        InputError::Blocked.to_string()
     );
     *lock(&h.input.fail) = None;
     lock(&h.sink.pills).clear();
