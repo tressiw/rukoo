@@ -56,6 +56,11 @@ impl UiSink for AppSink {
         self.tray.notify(&notification);
     }
 
+    fn screen_permission_needed(&self) {
+        #[cfg(target_os = "macos")]
+        crate::screen_permission_mac::request();
+    }
+
     fn ui_changed(&self) {
         self.refresh_ui();
     }

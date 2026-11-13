@@ -139,6 +139,8 @@ pub struct FakeSink {
     pub trays: Mutex<Vec<TrayState>>,
     pub ui_changes: AtomicUsize,
     pub screen_menus: Mutex<Vec<Value>>,
+    /// How often the engine asked the app to request Screen Recording.
+    pub screen_permission_asks: AtomicUsize,
 }
 
 impl UiSink for FakeSink {
@@ -168,6 +170,10 @@ impl UiSink for FakeSink {
 
     fn screen_menu(&self, info: Value) {
         lock(&self.screen_menus).push(info);
+    }
+
+    fn screen_permission_needed(&self) {
+        self.screen_permission_asks.fetch_add(1, Ordering::SeqCst);
     }
 }
 

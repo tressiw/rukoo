@@ -74,17 +74,20 @@ struct FakeDisplays {
     allowed: Arc<AtomicBool>,
     /// How many exclusions `z_order` was given, so a test can tell they reach it.
     windows: Arc<AtomicU32>,
+    /// The monitor's size; a test changes it as a display's mode changes.
+    size: Arc<Mutex<(u32, u32)>>,
 }
 
 impl Displays for FakeDisplays {
     fn list(&self, _test: Option<&voice_screen::args::TestSpec>) -> Vec<MonitorInfo> {
+        let (width, height) = *self.size.lock().unwrap();
         vec![MonitorInfo {
             id: MONITOR.into(),
             name: "Fake".into(),
             x: 0,
             y: 0,
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
             primary: true,
         }]
     }
@@ -311,11 +314,31 @@ struct FakeSource {
     stop_after: Option<u32>,
     revoke_on_stop: bool,
     says_permission: bool,
+    /// Every start fails, saying the permission is gone, while the preflight still says yes.
+    refuses_for_permission: bool,
+    /// After this many frames the permission goes, and the frames keep coming, as macOS does.
+    revoke_after: Option<u32>,
+    /// The stop is the user's, from the system's control.
+    by_user: bool,
+    starts: Arc<AtomicU32>,
+    /// The stop never reaches the queue, as when it is full; `health` has it.
+    loses_notice: bool,
+    kept: Arc<Mutex<Option<CaptureStop>>>,
+    /// The pids `exclude` gave the source.
+    excluded: Arc<Mutex<Option<Vec<u32>>>>,
     worker: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
 impl Source for FakeSource {
     fn start(&mut self, _monitor: &MonitorInfo, generation: u64) -> Result<(), PlatformError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        if self.refuses_for_permission {
+            return Err(PlatformError {
+                code: "SCError -3801".into(),
+                permission: true,
+                ..PlatformError::new("the user declined the capture")
+            });
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let (clock, to_main, flag) = (self.clock.clone(), self.to_main.clone(), stop.clone());
         let (allowed, stop_after, revoke, says) = (
@@ -324,6 +347,9 @@ impl Source for FakeSource {
             self.revoke_on_stop,
             self.says_permission,
         );
+        let (loses, kept) = (self.loses_notice, self.kept.clone());
+        let revoke_after = self.revoke_after;
+        let by_user = self.by_user;
         let handle = std::thread::Builder::new()
             .name("fake-screen".into())
             .spawn(move || {
@@ -334,14 +360,20 @@ impl Source for FakeSource {
                         if revoke {
                             allowed.store(false, Ordering::SeqCst);
                         }
-                        let _ = to_main.try_send(Ev::CaptureStopped(
-                            generation,
-                            CaptureStop {
-                                why: "the capture stopped".into(),
-                                permission_lost: says,
-                            },
-                        ));
+                        let stop = CaptureStop {
+                            why: "the capture stopped".into(),
+                            permission_lost: says,
+                            by_user,
+                        };
+                        if loses {
+                            *kept.lock().unwrap() = Some(stop);
+                        } else {
+                            let _ = to_main.try_send(Ev::CaptureStopped(generation, stop));
+                        }
                         return;
+                    }
+                    if revoke_after == Some(sent) {
+                        allowed.store(false, Ordering::SeqCst);
                     }
                     let frame = Frame {
                         picture: (),
@@ -367,6 +399,15 @@ impl Source for FakeSource {
             stop.store(true, Ordering::SeqCst);
             let _ = handle.join();
         }
+        *self.kept.lock().unwrap() = None;
+    }
+
+    fn health(&mut self) -> Option<CaptureStop> {
+        self.kept.lock().unwrap().take()
+    }
+
+    fn exclude(&mut self, pids: &[u32]) {
+        *self.excluded.lock().unwrap() = Some(pids.to_vec());
     }
 }
 
@@ -392,6 +433,18 @@ struct FakePlatform {
     revoke_on_stop: bool,
     /// Whether the stop itself says that the permission is gone.
     says_permission: bool,
+    /// Every start is refused for the permission.
+    refuses_for_permission: bool,
+    /// The capture's stop notice is lost; only `health` has it.
+    loses_notice: bool,
+    /// The permission goes after this many frames, and the capture goes on.
+    revoke_after: Option<u32>,
+    /// The capture's stop says the user stopped it.
+    by_user: bool,
+    /// How many times a capture was started.
+    starts: Arc<AtomicU32>,
+    /// What the source's `exclude` was last given.
+    excluded: Arc<Mutex<Option<Vec<u32>>>>,
 }
 
 impl FakePlatform {
@@ -404,12 +457,45 @@ impl FakePlatform {
             displays: FakeDisplays {
                 allowed: allowed.clone(),
                 windows: Arc::new(AtomicU32::new(0)),
+                size: Arc::new(Mutex::new((WIDTH, HEIGHT))),
             },
             allowed,
             stop_after: None,
             revoke_on_stop: false,
             says_permission: false,
+            refuses_for_permission: false,
+            starts: Arc::new(AtomicU32::new(0)),
+            loses_notice: false,
+            revoke_after: None,
+            by_user: false,
+            excluded: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// A capture the user stops from the system's control after `frames` frames.
+    fn stopped_by_the_user(mut self, frames: u32) -> FakePlatform {
+        self.stop_after = Some(frames);
+        self.says_permission = true;
+        self.by_user = true;
+        self
+    }
+
+    /// The permission goes after `frames` frames while the capture keeps delivering.
+    fn revoking_silently(mut self, frames: u32) -> FakePlatform {
+        self.revoke_after = Some(frames);
+        self
+    }
+
+    /// The capture's stop notice never reaches the queue.
+    fn losing_the_notice(mut self) -> FakePlatform {
+        self.loses_notice = true;
+        self
+    }
+
+    /// A capture whose every start is refused for the permission while the preflight says yes.
+    fn refusing_for_permission(mut self) -> FakePlatform {
+        self.refuses_for_permission = true;
+        self
     }
 
     /// A capture that stops itself after `frames` frames, as when the user revokes Screen
@@ -520,6 +606,13 @@ impl Platform for FakePlatform {
             stop_after: self.stop_after,
             revoke_on_stop: self.revoke_on_stop,
             says_permission: self.says_permission,
+            refuses_for_permission: self.refuses_for_permission,
+            revoke_after: self.revoke_after,
+            by_user: self.by_user,
+            starts: self.starts.clone(),
+            loses_notice: self.loses_notice,
+            kept: Arc::new(Mutex::new(None)),
+            excluded: self.excluded.clone(),
             worker: None,
         })
     }
@@ -545,7 +638,11 @@ impl Platform for FakePlatform {
         })
     }
 
-    fn video_maker(&self, _device: &FakeDevice) -> Option<Box<dyn VideoMaker<File = FakeWriter>>> {
+    fn video_maker(
+        &self,
+        _device: &FakeDevice,
+        _first: &(),
+    ) -> Option<Box<dyn VideoMaker<File = FakeWriter>>> {
         Some(Box::new(FakeMaker {
             calls: self.calls.clone(),
         }))
@@ -879,6 +976,88 @@ fn a_stop_that_names_the_permission_drops_the_screen() {
     assert_eq!(lines.last().unwrap()["reason"], "dropped");
 }
 
+/// A start the platform refuses for the permission ends the screen part at once, even while the
+/// preflight still says yes: it isn't tried again every second for the rest of the meeting.
+#[test]
+fn a_start_refused_for_permission_drops_the_screen() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("start-refused");
+    let platform = FakePlatform::new(true).refusing_for_permission();
+    let starts = platform.starts.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never stopped: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    assert!(
+        at("no_permission").unwrap() < at("dropped").unwrap(),
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"capture".to_string()), "{kinds:?}");
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        1,
+        "started again after the refusal"
+    );
+}
+
+/// A capture that stops every time it starts, with its display and permission in place, is tried
+/// again after a growing wait, and after ten failures in a row the screen part ends with a reason
+/// of its own: it doesn't open a video file a second for the rest of the meeting.
+#[test]
+fn a_capture_that_keeps_stopping_ends_the_screen() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("keeps-stopping");
+    std::env::set_var("RUKOO_VOICE_DATA_DIR", &meeting.root);
+    std::env::set_var("VOICE_SCREEN_TEST_CAPTURE_RETRY_MS", "5");
+    let platform = FakePlatform::new(true).stopping(0, false);
+    let starts = platform.starts.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never stopped: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let result = handle.join().unwrap();
+    std::env::remove_var("RUKOO_VOICE_DATA_DIR");
+    std::env::remove_var("VOICE_SCREEN_TEST_CAPTURE_RETRY_MS");
+    result.expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let dropped: Vec<(Option<&str>, Option<&str>)> = lines
+        .iter()
+        .filter(|line| line["kind"] == "dropped")
+        .map(|line| (line["what"].as_str(), line["reason"].as_str()))
+        .collect();
+    assert_eq!(
+        dropped,
+        [
+            (Some("video"), Some("capture")),
+            (Some("frames"), Some("capture"))
+        ],
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"no_permission".to_string()), "{kinds:?}");
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+    assert_eq!(starts.load(Ordering::SeqCst), 10);
+}
+
 /// A capture that stopped with the permission still in place is a display that went and came
 /// back: the session records again instead of giving up the screen.
 #[test]
@@ -903,6 +1082,139 @@ fn a_capture_that_stops_with_its_permission_starts_again() {
     assert_eq!(lines.last().unwrap()["reason"], "meeting");
 }
 
+/// A display that changes its mode mid-meeting is captured again at its new size: a `monitor`
+/// line with reason `resize`, the video file ended for it, and a new capture.
+#[test]
+fn a_monitor_that_changes_its_size_is_captured_again() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("resized");
+    let platform = FakePlatform::new(true);
+    let size = platform.displays.size.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("a video file", |lines| {
+        lines.iter().any(|line| line["kind"] == "video")
+    });
+    *size.lock().unwrap() = (WIDTH * 2, HEIGHT * 2);
+    let lines = meeting.wait_for("a second capture", |lines| {
+        kinds(lines).iter().filter(|k| *k == "capture").count() >= 2
+    });
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
+    let resize = lines
+        .iter()
+        .find(|line| line["kind"] == "monitor" && line["reason"] == "resize")
+        .expect("no monitor line for the new size");
+    assert_eq!(
+        (resize["width"].as_u64(), resize["height"].as_u64()),
+        (Some(u64::from(WIDTH * 2)), Some(u64::from(HEIGHT * 2)))
+    );
+    let ended = lines
+        .iter()
+        .find(|line| line["kind"] == "video_end")
+        .expect("the video file didn't end");
+    assert_eq!(ended["reason"], "resize");
+    let kinds = kinds(&lines);
+    let at = |kind: &str, from: usize| {
+        kinds[from..]
+            .iter()
+            .position(|k| k == kind)
+            .map(|n| n + from)
+    };
+    let resized = lines
+        .iter()
+        .position(|line| line["reason"] == "resize" && line["kind"] == "monitor")
+        .unwrap();
+    assert!(at("capture", resized).is_some(), "{kinds:?}");
+}
+
+/// Screen Recording switched off mid-meeting while the stream goes on delivering, as macOS lets
+/// it: the session notices the grant is gone by itself, stops capturing and ends the screen part
+/// with `no_permission`, and no frame after that is saved.
+#[test]
+fn a_grant_revoked_under_a_running_capture_ends_it() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("silent-revoke");
+    let platform = FakePlatform::new(true).revoking_silently(5);
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never noticed the revoke: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    let revoked = at("no_permission").expect("no no_permission line");
+    assert!(revoked < at("dropped").unwrap(), "{kinds:?}");
+    assert!(
+        !kinds[revoked..]
+            .iter()
+            .any(|k| k == "frame" || k == "capture"),
+        "{kinds:?}"
+    );
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+}
+
+/// The user stops the capture from the system's control: the screen part ends as for a lost
+/// permission, and the journal says what happened instead of `no_permission`.
+#[test]
+fn a_capture_the_user_stopped_ends_with_its_own_line() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("user-stopped");
+    let platform = FakePlatform::new(true).stopped_by_the_user(3);
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(Instant::now() < deadline, "{:?}", meeting.journal());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    let kinds = kinds(&lines);
+    let at = |kind: &str| kinds.iter().position(|k| k == kind);
+    assert!(
+        at("stopped_by_user").unwrap() < at("dropped").unwrap(),
+        "{kinds:?}"
+    );
+    assert!(at("no_permission").is_none(), "{kinds:?}");
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+}
+
+/// A stop whose notice the queue lost is still noticed: the tick reads the source's health, so
+/// a capture that ended doesn't leave a recording that looks live. Here the permission went with
+/// it, and the screen part ends as it does when the notice arrives.
+#[test]
+fn a_stop_whose_notice_was_lost_is_noticed() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("lost-notice");
+    let platform = FakePlatform::new(true)
+        .stopping_for_permission(3)
+        .losing_the_notice();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !handle.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never noticed the stop: {:?}",
+            meeting.journal()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    handle.join().unwrap().expect("record failed");
+    let lines = meeting.journal();
+    assert!(lines.iter().any(|line| line["kind"] == "no_permission"));
+    assert_eq!(lines.last().unwrap()["reason"], "dropped");
+}
+
 /// The exclusions the command line names reach the display choice, so a meeting started from
 /// Rukoo picks the display behind Rukoo's window.
 #[test]
@@ -920,6 +1232,34 @@ fn the_exclusions_reach_the_display_choice() {
     meeting.line(r#"{"kind":"stop","t":4000,"wall":1790000001000,"reason":"user"}"#);
     handle.join().unwrap().expect("record failed");
     assert_eq!(seen.load(Ordering::SeqCst), 2);
+}
+
+/// A Rukoo that connects to Voice mid-meeting: Voice sends its pid over the control port, and
+/// the capture leaves its windows out from then on. A bad list is refused by the port.
+#[test]
+fn exclusions_arrive_over_the_control_port() {
+    let _turn = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let meeting = Meeting::new("exclude-command");
+    let platform = FakePlatform::new(true);
+    let excluded = platform.excluded.clone();
+    let opts = meeting.opts();
+    let handle = std::thread::spawn(move || record(platform, opts));
+    meeting.wait_for("capture", |lines| {
+        kinds(lines).iter().any(|k| k == "capture")
+    });
+    let file = voice_screen_files::screenfile::read(&meeting.dir).expect("screen.json");
+    let ask = |body: serde_json::Value| {
+        voice_screen_files::control::request(file.port, &file.token, body, Duration::from_secs(5))
+            .unwrap()
+    };
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [4821, 77] }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    let reply = ask(serde_json::json!({ "cmd": "exclude", "pids": [0] }));
+    assert_eq!(reply["error"], "bad_request", "{reply}");
+    assert_eq!(*excluded.lock().unwrap(), Some(vec![77, 4821]));
+    meeting.line(r#"{"kind":"stop","t":60000,"wall":1790000060000,"reason":"user"}"#);
+    handle.join().unwrap().expect("record failed");
 }
 
 /// Without the Screen Recording permission the session refuses before it journal anything, with

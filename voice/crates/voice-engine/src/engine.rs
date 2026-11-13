@@ -26,7 +26,7 @@ use crate::media::MediaService;
 use crate::meetings::controller::{Change, NOTIFY_MEETING};
 use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
-use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
+use crate::pill::{notices, Looks, MeetingPhase, PillDriver, ACTION_HOLD, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::{Services, Speech};
 use crate::settings::SettingsRuntime;
@@ -484,16 +484,33 @@ impl Core {
                 self.pill_screen(&id);
                 self.settings_changed();
             }
-            ScreenChange::NoPermission { id } => {
+            ScreenChange::NoPermission { id, refused } => {
                 // At the start of a meeting or in the middle of one: either way the screen is
                 // gone and the audio goes on. The notice names the setting, because retrying
-                // can't help.
-                self.screen_notice(&id, Some(notices::SCREEN_PERMISSION), Map::new(), DROP_HOLD);
+                // can't help, and stays longer than a drop's: with notifications off it is the
+                // only trace on screen.
+                self.screen_notice(
+                    &id,
+                    Some(notices::SCREEN_PERMISSION),
+                    Map::new(),
+                    ACTION_HOLD,
+                );
+                // A screen process that refused to start: the app asks macOS once, which puts
+                // Voice in the Screen Recording list for the user to switch on.
+                if refused {
+                    self.sink.screen_permission_needed();
+                }
                 self.notify_keyed(
                     NOTIFY_MEETING,
                     NOTIFY_SCREEN_PERMISSION,
                     SCREEN_PERMISSION_TEXT,
                 );
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
+            ScreenChange::StoppedByUser { id } => {
+                self.screen_notice(&id, Some(notices::SCREEN_STOPPED), Map::new(), ACTION_HOLD);
+                self.notify_keyed(NOTIFY_MEETING, NOTIFY_SCREEN_STOPPED, SCREEN_STOPPED_TEXT);
                 self.pill_screen(&id);
                 self.settings_changed();
             }
@@ -756,12 +773,19 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
 pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
 const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
 
+/// The body of the notification when the user stopped the screen capture from macOS' own
+/// control (voice/ui/i18n `app.notify.screenStopped`), and its English text.
+pub const NOTIFY_SCREEN_STOPPED: &str = "app.notify.screenStopped";
+const SCREEN_STOPPED_TEXT: &str = "The screen recording was stopped from macOS' screen sharing control, so Voice records no screen for the rest of this meeting. The audio goes on.";
+
 /// The pill notice for a part of the screen recording that stopped.
 fn drop_notice(what: Part, reason: Reason) -> &'static str {
     match (what, reason) {
         (Part::Video, Reason::Disk) => notices::VIDEO_DROPPED_DISK,
         (Part::Video, Reason::Encoder) => notices::VIDEO_DROPPED_ENCODER,
         (Part::Video, Reason::Device) => notices::VIDEO_DROPPED_DEVICE,
+        // The frames go in the same moment, and their notice is the one shown.
+        (Part::Video, Reason::Capture) => notices::SCREEN_FAILED,
         (Part::Frames, Reason::Disk) => notices::FRAMES_DROPPED_DISK,
         (Part::Frames, _) => notices::SCREEN_FAILED,
     }
@@ -777,7 +801,8 @@ fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
         (Part::Video, Reason::Device) => "Voice stopped the screen video: the graphics device didn't come back with video support.",
         (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
         (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
-        (Part::Frames, Reason::Encoder) => return None,
+        (Part::Frames, Reason::Capture) => "Voice stopped recording the screen: the screen capture kept stopping. The audio goes on.",
+        (Part::Frames, Reason::Encoder) | (Part::Video, Reason::Capture) => return None,
     })
 }
 
@@ -1212,6 +1237,15 @@ mod drop_tests {
             .unwrap()
             .contains("Frames go on"));
         assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        // A capture that kept stopping takes both parts at once; the frames speak for both.
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Capture),
+            "pill.screenFailed"
+        );
+        assert!(drop_text(Part::Frames, Reason::Capture)
+            .unwrap()
+            .contains("kept stopping"));
+        assert_eq!(drop_text(Part::Video, Reason::Capture), None);
         assert!(drop_text(Part::Frames, Reason::Disk).is_some());
     }
 }

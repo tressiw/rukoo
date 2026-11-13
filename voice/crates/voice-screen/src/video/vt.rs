@@ -235,7 +235,8 @@ impl Encoder {
     }
 
     /// Encodes `picture` at meeting time `at_ms`, forcing a keyframe when `keyframe` is set, and
-    /// returns its samples. The samples are AVCC, as `voice_screen_files::fmp4` writes them.
+    /// returns its samples, none when the encoder dropped the frame. The samples are AVCC, as
+    /// `voice_screen_files::fmp4` writes them.
     pub fn encode(
         &mut self,
         picture: &PixelBuffer,
@@ -394,18 +395,27 @@ unsafe extern "C-unwind" fn output_callback(
     refcon: *mut c_void,
     _source: *mut c_void,
     status: i32,
-    _flags: VTEncodeInfoFlags,
+    flags: VTEncodeInfoFlags,
     sample_buffer: *mut CMSampleBuffer,
 ) {
     let Some(sink) = NonNull::new(refcon.cast::<Sink>()).map(|p| unsafe { p.as_ref() }) else {
         return;
     };
-    if status != 0 || sample_buffer.is_null() {
-        let mut state = sink.state();
-        state.completed += 1;
-        state.failure.get_or_insert(status);
-        sink.ready.notify_all();
-        return;
+    match outcome(status, flags, !sample_buffer.is_null()) {
+        Outcome::Encoded => {}
+        Outcome::Dropped => {
+            // Done, without a sample: `encode` returns none for this frame.
+            sink.state().completed += 1;
+            sink.ready.notify_all();
+            return;
+        }
+        Outcome::Failed(status) => {
+            let mut state = sink.state();
+            state.completed += 1;
+            state.failure.get_or_insert(status);
+            sink.ready.notify_all();
+            return;
+        }
     }
     // SAFETY: the callback's sample buffer is valid for the call.
     let sample = unsafe { &*sample_buffer };
@@ -434,6 +444,27 @@ unsafe extern "C-unwind" fn output_callback(
         state.completed += 1;
     }
     sink.ready.notify_all();
+}
+
+/// What one callback says about its frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Encoded,
+    /// The encoder dropped the frame, as a real-time session may: no sample and no failure.
+    /// `VTCompressionSession.h` says the sample buffer is NULL "if compression was not
+    /// successful or the frame was dropped", with `kVTEncodeInfo_FrameDropped` in the flags.
+    Dropped,
+    Failed(i32),
+}
+
+fn outcome(status: i32, flags: VTEncodeInfoFlags, has_sample: bool) -> Outcome {
+    if status != 0 {
+        Outcome::Failed(status)
+    } else if !has_sample || flags.contains(VTEncodeInfoFlags::FrameDropped) {
+        Outcome::Dropped
+    } else {
+        Outcome::Encoded
+    }
 }
 
 /// A sample buffer's bytes, copied out of the block buffer.
@@ -663,6 +694,27 @@ fn profile_key() -> &'static CFString {
 mod tests {
     use super::*;
 
+    /// A frame the real-time encoder drops is no failure: only a status says that.
+    #[test]
+    fn a_dropped_frame_is_not_a_failure() {
+        let none = VTEncodeInfoFlags(0);
+        assert_eq!(outcome(0, none, true), Outcome::Encoded);
+        assert_eq!(outcome(0, none, false), Outcome::Dropped);
+        assert_eq!(
+            outcome(0, VTEncodeInfoFlags::FrameDropped, true),
+            Outcome::Dropped
+        );
+        assert_eq!(
+            outcome(0, VTEncodeInfoFlags::FrameDropped, false),
+            Outcome::Dropped
+        );
+        assert_eq!(outcome(-12902, none, false), Outcome::Failed(-12902));
+        assert_eq!(
+            outcome(-12902, VTEncodeInfoFlags::FrameDropped, false),
+            Outcome::Failed(-12902)
+        );
+    }
+
     #[test]
     fn the_list_has_an_h264_encoder() {
         let encoders = encoder_list();
@@ -720,6 +772,21 @@ mod tests {
         assert!(units >= 1);
     }
 
+    /// A `420f` frame, as ScreenCaptureKit sends it, goes to the encoder as it is.
+    #[test]
+    fn the_software_encoder_takes_a_420f_frame() {
+        let (width, height) = (320u32, 180u32);
+        let mut encoder = Encoder::create(width, height, Kind::Software).unwrap();
+        let slide = crate::capture::synthetic_mac::slide("Slide 1", 1, width, height).unwrap();
+        let picture = PixelBuffer::from_pixels_420f(&slide).unwrap();
+        let first = encoder.encode(&picture, 0, true).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].sync);
+        assert!(encoder.parameter_sets().is_some());
+        let second = encoder.encode(&picture, 66, false).unwrap();
+        assert_eq!(second.len(), 1);
+    }
+
     /// The hardware encoder on this Mac, when it has one: a 1080p session that reports itself as
     /// hardware. Machines without one skip it.
     #[test]
@@ -736,5 +803,13 @@ mod tests {
         let samples = encoder.encode(&picture, 0, true).unwrap();
         assert_eq!(samples.len(), 1);
         assert!(samples[0].sync);
+        // Primed with `420f`, as a file of ScreenCaptureKit's frames is, it takes them too.
+        let mut encoder = Encoder::create(1920, 1080, Kind::Hardware).unwrap();
+        let black = PixelBuffer::black_420f(1920, 1080).unwrap();
+        assert_eq!(encoder.encode(&black, 0, true).unwrap().len(), 1);
+        assert!(encoder.parameter_sets().is_some());
+        let slide = crate::capture::synthetic_mac::slide("Slide 2", 2, 1920, 1080).unwrap();
+        let frame = PixelBuffer::from_pixels_420f(&slide).unwrap();
+        assert_eq!(encoder.encode(&frame, 66, false).unwrap().len(), 1);
     }
 }

@@ -101,9 +101,13 @@ pub mod ops {
     }
 
     pub fn open_permission(shell: &dyn Shell, permission: &str) -> Result<(), ApiError> {
-        shell
-            .open_url(permission_url(permission)?)
-            .map_err(|e| ApiError::new("failed", e))
+        let url = permission_url(permission)?;
+        // macOS lists an app under Screen Recording only once it asked: asking puts Voice there,
+        // switched off, for the user to switch on in the pane that opens.
+        if permission == "screenRecording" {
+            shell.request_screen_recording();
+        }
+        shell.open_url(url).map_err(|e| ApiError::new("failed", e))
     }
 
     pub fn folder(name: &str) -> Result<Folder, ApiError> {
@@ -442,6 +446,8 @@ mod tests {
     #[derive(Default)]
     struct FakeShell {
         opened: Mutex<Vec<String>>,
+        /// How often Screen Recording was asked for.
+        requested: std::sync::atomic::AtomicUsize,
         pick: Mutex<Option<PathBuf>>,
         picked_with: Mutex<Option<PickedWith>>,
     }
@@ -464,6 +470,10 @@ mod tests {
             *self.picked_with.lock().unwrap() =
                 Some((title.to_string(), start.map(Path::to_path_buf), owner));
             Ok(self.pick.lock().unwrap().clone())
+        }
+        fn request_screen_recording(&self) {
+            self.requested
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -523,6 +533,8 @@ mod tests {
             shell.opened.lock().unwrap().len() == 5,
             "nothing else opened"
         );
+        // Only Screen Recording asks the system, so Voice appears in its list.
+        assert_eq!(shell.requested.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -14,6 +14,9 @@ pub trait Shell: Send + Sync {
         start: Option<&Path>,
         owner: Option<isize>,
     ) -> Result<Option<PathBuf>, String>;
+    /// Asks the system for the Screen Recording permission where it has one to ask for, so the
+    /// app appears in the system's list: macOS only.
+    fn request_screen_recording(&self) {}
 }
 
 pub struct SystemShell {
@@ -159,6 +162,10 @@ fn pick_folder_sta(title: &str, owner: Option<isize>) -> Result<Option<PathBuf>,
 impl Shell for SystemShell {
     fn open_path(&self, path: &Path) -> Result<(), String> {
         open_with_system(&path.to_string_lossy())
+    }
+
+    fn request_screen_recording(&self) {
+        crate::screen_permission_mac::request();
     }
 
     fn open_url(&self, url: &str) -> Result<(), String> {

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
-use voice_screen_files::control::Request;
+use voice_screen_files::control::{self, Request};
 use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{JournalWriter, Line};
@@ -63,6 +63,9 @@ pub struct CaptureStop {
     /// The stop says that this process may not capture the screen any more, as when the user
     /// switches Screen Recording off, rather than that the display went away.
     pub permission_lost: bool,
+    /// The user stopped the capture from the system's own control, such as the menu bar's
+    /// sharing button. The screen part ends as for a lost permission, with a line of its own.
+    pub by_user: bool,
 }
 
 const TICK: Duration = Duration::from_millis(250);
@@ -82,7 +85,15 @@ const DRAIN_EXTRA: Duration = Duration::from_secs(2);
 /// the process alive.
 const WORKER_JOIN: Duration = Duration::from_secs(5);
 pub(crate) const MEMORY_LOG: Duration = Duration::from_secs(60);
-const CAPTURE_RETRY: Duration = Duration::from_secs(1);
+/// The first wait before a capture that failed to start, or stopped by itself, is started again.
+/// Each failure in a row doubles it, up to `CAPTURE_RETRY_MAX`.
+pub(crate) const CAPTURE_RETRY: Duration = Duration::from_secs(1);
+/// The longest wait between two starts, as a multiple of `CAPTURE_RETRY`: 30 s.
+const CAPTURE_RETRY_MAX: u32 = 30;
+/// After this many failed captures in a row the screen part ends, with reason `capture`.
+const CAPTURE_FAILURES: u32 = 10;
+/// A capture that has delivered frames this long counts as working: the failures start over.
+const CAPTURE_STABLE: Duration = Duration::from_secs(60);
 const DEVICE_RETRY_PAUSE: Duration = Duration::from_millis(500);
 pub(crate) const EVENT_QUEUE: usize = 64;
 const MONITOR_CACHE: Duration = Duration::from_secs(2);
@@ -152,6 +163,12 @@ pub(crate) struct Screen<P: Platform> {
     /// The encoder failed once: a new device and a new file at this moment.
     pub(crate) rebuild_at: Option<Instant>,
     pub(crate) capture_retry_at: Option<Instant>,
+    /// Captures in a row that failed to start or stopped by themselves, and the first wait after
+    /// one (`CAPTURE_RETRY`; a test shortens it).
+    pub(crate) capture_failures: u32,
+    pub(crate) capture_retry: Duration,
+    /// When the running capture's first frame arrived.
+    pub(crate) capture_since: Option<Instant>,
     /// A `no_monitor` line is out and no `capture` has ended its wait yet.
     pub(crate) no_monitor: bool,
     pub(crate) paused: bool,
@@ -259,6 +276,7 @@ impl<P: Platform> Screen<P> {
                 // `DXGI_ERROR_DEVICE_REMOVED`, as a removed device reports it.
                 code: "0x887a0005".into(),
                 message: "device-lost-at test switch".into(),
+                permission: false,
             });
         }
         let warp = self.test.as_ref().is_some_and(|t| t.warp);
@@ -348,12 +366,12 @@ impl<P: Platform> Screen<P> {
                 }
                 log(format_args!("can't capture {}: {e}", self.monitor.id));
                 // A grant that went away between two starts never comes back by itself: end the
-                // screen part instead of trying every second.
-                if self.permission_gone() {
+                // screen part instead of trying again. The platform's own answer decides first.
+                if e.permission || self.permission_gone() {
                     self.drop_for_permission();
                     return;
                 }
-                self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+                self.capture_failed();
             }
         }
     }
@@ -363,6 +381,7 @@ impl<P: Platform> Screen<P> {
             source.stop();
         }
         self.capturing = false;
+        self.capture_since = None;
         self.generation += 1;
         self.last = None;
     }
@@ -498,17 +517,74 @@ impl<P: Platform> Screen<P> {
         log(format_args!("the screen capture stopped: {}", stop.why));
         self.end_video("error");
         self.stop_capture();
+        if stop.by_user {
+            self.drop_stopped_by_user();
+            return;
+        }
         if stop.permission_lost || self.permission_gone() {
             self.drop_for_permission();
             return;
         }
         if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
             // The display is still there, so the stream stopped for some other reason: try again
-            // after a pause, not at once, so a stream that stops as it starts doesn't spin.
-            self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+            // after a pause that grows, so a stream that stops as it starts doesn't spin.
+            self.capture_failed();
         } else {
             self.on_monitor_lost();
         }
+    }
+
+    /// A capture failed to start or stopped by itself with its display still there. It is tried
+    /// again after a wait that doubles with each failure in a row, up to 30 s, and after
+    /// `CAPTURE_FAILURES` the screen part ends with reason `capture`: a stream that starts and
+    /// stops again would otherwise open a video file a second for the rest of the meeting.
+    fn capture_failed(&mut self) {
+        self.capture_failures += 1;
+        if self.capture_failures >= CAPTURE_FAILURES {
+            log(format_args!(
+                "the screen capture failed {} times in a row; the screen isn't recorded any more",
+                self.capture_failures
+            ));
+            self.end_screen(Reason::Capture);
+            return;
+        }
+        let wait = capture_retry_after(self.capture_retry, self.capture_failures);
+        log(format_args!(
+            "trying the capture again in {} ms (failure {} in a row)",
+            wait.as_millis(),
+            self.capture_failures
+        ));
+        self.capture_retry_at = Some(Instant::now() + wait);
+    }
+
+    /// Drops what still records, the video first, for `reason`. `apply_drop` stops the session
+    /// once both parts are gone.
+    fn end_screen(&mut self, reason: Reason) {
+        self.capture_retry_at = None;
+        if self.mode == Mode::Video && self.drops.video.is_none() {
+            self.drops.video = Some(reason);
+            self.apply_drop(Part::Video, reason);
+        }
+        if self.drops.frames.is_none() {
+            self.drops.frames = Some(reason);
+            self.apply_drop(Part::Frames, reason);
+        }
+    }
+
+    /// macOS doesn't stop a running stream when the user switches Screen Recording off: frames
+    /// of the current screen keep coming (seen at the Mac). So the grant is checked while
+    /// capturing, every second, and its loss ends the screen part as a stop for the permission
+    /// does. The preflight can lag behind a revoke in a running process; the source's own
+    /// re-read of the shareable content, refused for the permission, catches it too
+    /// (`Source::health`).
+    fn check_permission(&mut self) {
+        if !self.capturing || !self.permission_gone() {
+            return;
+        }
+        log("Screen Recording was switched off while capturing");
+        self.end_video("error");
+        self.stop_capture();
+        self.drop_for_permission();
     }
 
     /// Whether a real screen can't be captured by this process any more. The synthetic screen
@@ -535,20 +611,26 @@ impl<P: Platform> Screen<P> {
             let t = self.now_t();
             self.write(&Line::NoPermission { t });
         }
-        if self.mode == Mode::Video && self.drops.video.is_none() {
-            self.drops.video = Some(Reason::Device);
-            self.apply_drop(Part::Video, Reason::Device);
+        self.end_screen(Reason::Device);
+    }
+
+    /// The user stopped the capture from the system's control: the screen part ends as for a
+    /// lost permission, but the journal says so, so Voice doesn't say Screen Recording is off
+    /// when it is on.
+    fn drop_stopped_by_user(&mut self) {
+        log("the user stopped the screen capture from the system's control");
+        if (self.mode == Mode::Video && self.drops.video.is_none()) || self.drops.frames.is_none() {
+            let t = self.now_t();
+            self.write(&Line::StoppedByUser { t });
         }
-        if self.drops.frames.is_none() {
-            self.drops.frames = Some(Reason::Device);
-            self.apply_drop(Part::Frames, Reason::Device);
-        }
+        self.end_screen(Reason::Device);
     }
 
     fn on_monitor_lost(&mut self) {
         let list = self.monitors(true);
-        if list.iter().any(|m| m.id == self.monitor.id) {
-            // Still there, as after a mode change: capture it again.
+        if let Some(listed) = list.iter().find(|m| m.id == self.monitor.id) {
+            // Still there, as after a mode change: capture it again, at its size now.
+            self.monitor = listed.clone();
             self.end_video("resize");
             self.stop_capture();
             self.start_capture();
@@ -582,6 +664,32 @@ impl<P: Platform> Screen<P> {
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
         }
+    }
+
+    /// The recorded monitor changed its size: the user picked another scaling, rotated it, or
+    /// macOS switched its mode for a projector. A capture keeps the size it started with, and
+    /// ScreenCaptureKit scales the new picture into it, so the capture starts again at the new
+    /// size, in a new video file, after a `monitor` line with reason `resize`.
+    fn check_monitor_size(&mut self) {
+        let Some(listed) = self
+            .monitors(false)
+            .into_iter()
+            .find(|m| m.id == self.monitor.id)
+        else {
+            return;
+        };
+        if (listed.width, listed.height) == (self.monitor.width, self.monitor.height) {
+            return;
+        }
+        log(format_args!(
+            "{} is {}x{} now, was {}x{}",
+            listed.id, listed.width, listed.height, self.monitor.width, self.monitor.height
+        ));
+        self.end_video("resize");
+        self.stop_capture();
+        self.monitor = listed;
+        self.write_monitor("resize");
+        self.start_capture();
     }
 
     fn on_device_lost(&mut self) {
@@ -673,6 +781,7 @@ impl<P: Platform> Screen<P> {
         if self.awaiting_capture {
             self.awaiting_capture = false;
             self.captured = true;
+            self.capture_since = Some(Instant::now());
             self.no_monitor = false;
             let line = Line::Capture {
                 t,
@@ -922,7 +1031,7 @@ impl<P: Platform> Screen<P> {
         let Some(device) = self.device.clone() else {
             return;
         };
-        let Some(maker) = self.platform.video_maker(&device) else {
+        let Some(maker) = self.platform.video_maker(&device, &frame.picture) else {
             self.drop_video_encoder("this computer has no video encoder");
             return;
         };
@@ -1219,6 +1328,7 @@ impl<P: Platform> Screen<P> {
         }
         if self.test.is_none() && now >= self.next_lock_check {
             self.check_lock();
+            self.check_permission();
         }
         if self.rebuild_at.is_some_and(|at| now >= at) {
             self.rebuild_at = None;
@@ -1226,12 +1336,28 @@ impl<P: Platform> Screen<P> {
         }
         if self.capture_retry_at.is_some_and(|at| now >= at) {
             self.capture_retry_at = None;
-            if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
+            let listed = self
+                .monitors(true)
+                .into_iter()
+                .find(|m| m.id == self.monitor.id);
+            if let Some(listed) = listed {
+                // Its size now, which may have changed while capture was down.
+                if (listed.width, listed.height) != (self.monitor.width, self.monitor.height) {
+                    self.monitor = listed;
+                    self.write_monitor("resize");
+                }
                 self.start_capture();
             } else {
                 // The monitor went away while capture was down: choose again.
                 self.on_monitor_lost();
             }
+        }
+        // A capture that has delivered frames for a minute works: its failures start over.
+        if self
+            .capture_since
+            .is_some_and(|since| since.elapsed() >= CAPTURE_STABLE)
+        {
+            self.capture_failures = 0;
         }
         if self.capturing {
             if let Some(device) = self.device.clone() {
@@ -1245,6 +1371,17 @@ impl<P: Platform> Screen<P> {
         if self.capturing && !self.monitors(false).iter().any(|m| m.id == self.monitor.id) {
             log(format_args!("{} left the monitor list", self.monitor.id));
             self.on_monitor_lost();
+        }
+        if self.capturing {
+            self.check_monitor_size();
+        }
+        // The capture's own stop notice shares the queue with frames and is lost when it is
+        // full, and a stream can go quiet without one: the source keeps what it noticed.
+        if self.capturing {
+            let stop = self.source.as_mut().and_then(|source| source.health());
+            if let Some(stop) = stop {
+                self.on_capture_stopped(&stop);
+            }
         }
         if let Some(video) = &self.video {
             video.tick(self.platform.clocks().boot_100ns());
@@ -1440,6 +1577,21 @@ impl<P: Platform> Screen<P> {
                 self.request_stop(t, "meeting", Some(request.reply));
                 return;
             }
+            // Voice's connected Rukoo clients changed: their windows stay out from now on. The
+            // port checked the list.
+            Some("exclude") => match control::excluded_pids(&request.body) {
+                Some(pids) => {
+                    if pids != self.exclude_pids {
+                        log(format_args!("leaving out the windows of pids {pids:?}"));
+                    }
+                    if let Some(source) = self.source.as_mut() {
+                        source.exclude(&pids);
+                    }
+                    self.exclude_pids = pids;
+                    json!({ "ok": true })
+                }
+                None => error("bad_request"),
+            },
             Some(_) => error("unknown_command"),
             None => error("bad_request"),
         };
@@ -1483,6 +1635,13 @@ impl<P: Platform> Screen<P> {
     }
 }
 
+/// The wait before the next start after `failures` failed captures in a row: `base`, doubled for
+/// each failure after the first, at most `CAPTURE_RETRY_MAX` times `base`.
+fn capture_retry_after(base: Duration, failures: u32) -> Duration {
+    let doubled = 1u32 << failures.saturating_sub(1).min(16);
+    base * doubled.min(CAPTURE_RETRY_MAX)
+}
+
 fn error(code: &str) -> Value {
     json!({ "ok": false, "error": code })
 }
@@ -1513,6 +1672,21 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    /// 1, 2, 4, 8 and 16 s, then 30 s for every failure after that.
+    #[test]
+    fn the_capture_retry_doubles_up_to_30_s() {
+        let waits: Vec<u64> = (1..=8)
+            .map(|n| capture_retry_after(CAPTURE_RETRY, n).as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(capture_retry_after(CAPTURE_RETRY, 0).as_secs(), 1);
+        assert_eq!(capture_retry_after(CAPTURE_RETRY, 400).as_secs(), 30);
+        assert_eq!(
+            capture_retry_after(Duration::from_millis(10), 3),
+            Duration::from_millis(40)
+        );
+    }
 
     #[test]
     fn events_behind_a_stop_stay_queued() {

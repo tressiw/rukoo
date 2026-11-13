@@ -87,10 +87,45 @@ pub fn at_boot(boot: u64) -> Now {
 
 /// The boot time of a frame whose presentation time was `pts_100ns` on the host clock, which is
 /// `mach_absolute_time` and stops while the computer sleeps. Only the frame's age crosses over: it
-/// is how far the awake counter has moved since, taken off the continuous counter, so a frame
-/// delivered after a sleep still lands where it happened. A time in the future counts as now.
+/// is how far the awake counter has moved since, taken off the continuous counter. A frame
+/// captured before a sleep and delivered after it lands after the sleep, because the continuous
+/// counter counts the sleep and the awake one doesn't; its picture is the same either way. A time
+/// in the future counts as now.
 pub fn frame_boot(pts_100ns: u64) -> u64 {
-    frame_boot_at(boot_100ns(), awake_100ns(), pts_100ns)
+    let (boot, awake) = paired(|| {
+        // SAFETY: the calls take no arguments and only return the counters.
+        unsafe { (mach_continuous_time(), mach_absolute_time()) }
+    });
+    frame_boot_at(boot, awake, pts_100ns)
+}
+
+/// The two counters a frame's age crosses between are read close together: within this many
+/// 100 ns units, 100 µs.
+const PAIR_GAP: u64 = 1_000;
+/// Reads before the closest pair is taken as it is.
+const PAIR_TRIES: u32 = 4;
+
+/// The continuous and the absolute counter at one moment, in 100 ns units. A thread preempted
+/// between two reads would move the frame by the time it lost, so the continuous counter is read
+/// on both sides of the absolute one and the pair is read again when they are more than
+/// [`PAIR_GAP`] apart; after [`PAIR_TRIES`] the closest pair counts, with the middle of its two
+/// continuous reads.
+fn paired(mut read: impl FnMut() -> (u64, u64)) -> (u64, u64) {
+    let mut best: Option<(u64, u64, u64)> = None;
+    for _ in 0..PAIR_TRIES {
+        let (before, awake) = read();
+        let (after, _) = read();
+        let (before, after, awake) = (to_100ns(before), to_100ns(after), to_100ns(awake));
+        let gap = after.saturating_sub(before);
+        let boot = before + gap / 2;
+        if gap <= PAIR_GAP {
+            return (boot, awake);
+        }
+        if best.is_none_or(|(g, _, _)| gap < g) {
+            best = Some((gap, boot, awake));
+        }
+    }
+    best.map_or((0, 0), |(_, boot, awake)| (boot, awake))
 }
 
 fn frame_boot_at(boot_now: u64, awake_now: u64, pts_100ns: u64) -> u64 {
@@ -171,6 +206,43 @@ mod tests {
         assert_eq!(now.boot, Some(boot.saturating_sub(100 * 10_000)));
         let age = wall_ms().saturating_sub(now.wall);
         assert!((90..=400).contains(&age), "{age} ms");
+    }
+
+    /// The two counters are taken from reads close together: a pair read across a preemption is
+    /// read again, and after the last try the closest pair counts.
+    #[test]
+    fn the_counters_pair_up_close_together() {
+        let base = timebase();
+        // Ticks for a number of 100 ns units, on this Mac's timebase.
+        let ticks = |units: u64| units * 100 * u64::from(base.denom) / u64::from(base.numer);
+        // The first pair straddles a 5 ms preemption; the second is close.
+        let mut reads = vec![
+            (ticks(10_000), ticks(9_000)),
+            (ticks(60_000), 0),
+            (ticks(70_000), ticks(69_000)),
+            (ticks(70_100), 0),
+        ]
+        .into_iter();
+        let (boot, awake) = paired(|| reads.next().unwrap());
+        assert!(boot.abs_diff(70_050) <= 2, "{boot}");
+        assert!(awake.abs_diff(69_000) <= 2, "{awake}");
+        // Never close: the narrowest of the four tries.
+        let mut reads = [50_000, 50_000, 2_000, 50_000]
+            .into_iter()
+            .enumerate()
+            .flat_map(|(n, gap)| {
+                let before = (n as u64 + 1) * 1_000_000;
+                [(ticks(before), ticks(before)), (ticks(before + gap), 0)]
+            });
+        let (boot, awake) = paired(|| reads.next().unwrap());
+        assert!(boot.abs_diff(3_001_000) <= 2, "{boot}");
+        assert!(awake.abs_diff(3_000_000) <= 2, "{awake}");
+        // The real counters pair up, and the pair is now. The continuous counter is never behind
+        // the absolute one; its two reads bracket the absolute read, so their middle may be up to
+        // half the gap before it.
+        let (boot, awake) = paired(|| unsafe { (mach_continuous_time(), mach_absolute_time()) });
+        assert!(boot + PAIR_GAP >= awake, "{boot} vs {awake}");
+        assert!(boot_100ns() >= boot);
     }
 
     /// A frame is as old on the boot clock as it is on the host clock, and never from the future.
