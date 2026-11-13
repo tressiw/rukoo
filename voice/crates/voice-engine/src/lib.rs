@@ -9,6 +9,7 @@ mod dictation;
 mod engine;
 pub mod media;
 pub mod meetings;
+pub mod permissions;
 mod pill;
 mod platform;
 pub mod services;
@@ -309,7 +310,7 @@ pub fn start_with(
         .name("update-check".into())
         .spawn(move || settings::schedule_updates(weak));
     if first_run {
-        let status = settings::state(&core)["dictation"]["status"].clone();
+        let status = settings::state(&core, false)["dictation"]["status"].clone();
         if status == "modelMissing" || status == "noKey" {
             notices.push((
                 NOTIFY_WELCOME,

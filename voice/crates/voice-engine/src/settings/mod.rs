@@ -133,7 +133,10 @@ pub fn provider_error(error: &ProviderError) -> ApiError {
 
 // The state --------------------------------------------------------------------------------
 
-pub fn state(core: &Core) -> Value {
+/// The whole `SettingsState`. `permissions` is read only when Settings needs it: a state the page
+/// asks for, or a pushed state while its window exists. Starting Voice and changing a setting with
+/// Settings closed must not call TCC, because on macOS 27 a preflight read alone can list the app.
+pub fn state(core: &Core, read_permissions: bool) -> Value {
     let cfg = core.config();
     let looks = core.looks();
     let start_at_login = !core.opts.dev_mode && core.svc.autostart.is_on();
@@ -141,6 +144,9 @@ pub fn state(core: &Core) -> Value {
     let (update_state, update_version) = lock(&core.settings.updates).clone();
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
+    let permissions = read_permissions
+        .then(|| crate::permissions::view(&*core.svc.permissions))
+        .flatten();
     json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
         "version": core.opts.version,
@@ -155,6 +161,7 @@ pub fn state(core: &Core) -> Value {
         "providers": providers(),
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
+        "permissions": permissions,
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),

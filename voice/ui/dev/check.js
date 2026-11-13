@@ -32,6 +32,77 @@ check('a key list greys out the other keys in use and saves the choice', async (
   assert.match(await page.locator('[data-section="status"]').innerText(), /Hold F13 to dictate/);
 });
 
+check('a Mac key list shows Mac names and only the keys a Mac has', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  const labels = await page.locator('.radio-row .rl').allInnerTexts();
+  for (const name of ['Right Option', 'Right Command', 'Right Control', 'Right Shift', 'F13', 'F14', 'F15']) {
+    assert.ok(labels.includes(name), `${name} is offered on a Mac: ${labels.join()}`);
+  }
+  for (const name of ['Right Alt', 'Pause', 'Scroll Lock']) {
+    assert.ok(!labels.includes(name), `${name} isn't a Mac key: ${labels.join()}`);
+  }
+  assert.equal(await page.locator('.radio-row', { hasText: 'Right Command' }).isDisabled(), true, 'the rewrite key is taken');
+  await page.locator('.radio-row', { hasText: 'F15' }).click();
+  assert.equal((await mockState()).config.dictation.hotkey, 'f15');
+});
+
+check('the Permissions group shows each macOS state and opens its pane', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en');
+  assert.equal(await page.locator('#group-permissions').count(), 0, 'no permission rows on Windows');
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  const section = page.locator('[data-section="permissions"]');
+  assert.match(
+    await section.innerText(),
+    /Microphone[\s\S]*System Audio Recording Only[\s\S]*Input Monitoring[\s\S]*Device Control and Data Access[\s\S]*Screen & System Audio Recording/,
+    'the English rows use the macOS 27 pane names'
+  );
+  const rows = section.locator('.row');
+  assert.equal(await rows.count(), 5);
+  assert.match(await rows.nth(0).innerText(), /Records your voice for dictation and meetings\.[\s\S]*On/, 'the microphone is on');
+  assert.match(await rows.nth(1).innerText(), /Unknown/, 'the system audio section has no preflight');
+  assert.match(await rows.nth(2).innerText(), /Off/, 'Input Monitoring is off');
+  assert.match(await rows.nth(2).innerText(), /switch on Input Monitoring; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./);
+  assert.match(await rows.nth(3).innerText(), /On/, 'device control and data access is on');
+  assert.match(await rows.nth(4).innerText(), /Not asked yet/, 'screen recording is not an error');
+  await rows.nth(3).locator('[data-a="permission:accessibility"]').click();
+  assert.ok(
+    (await calls()).some(([command, args]) => command === 'settings_open_permission' && args.permission === 'accessibility'),
+    'the app opens the Device Control and Data Access pane'
+  );
+  // The action sentence names the same pane the row does.
+  await open('settings.html?mock=1&lang=en&platform=macos&permissions=denied');
+  const english = await page.locator('[data-section="permissions"]').innerText();
+  assert.match(
+    english,
+    /switch on Device Control and Data Access; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./,
+    'the English off note names the macOS 27 pane'
+  );
+  // Dutch keeps the group and the action sentence whole, and names the panes as macOS 27 does.
+  await open('settings.html?mock=1&lang=nl&platform=macos&permissions=denied');
+  const dutch = await page.locator('[data-section="permissions"]').innerText();
+  assert.match(dutch, /Machtigingen[\s\S]*Microfoon[\s\S]*minknop en voeg het opnieuw toe/);
+  assert.match(
+    dutch,
+    /Microfoon[\s\S]*Alleen systeemaudio-opname[\s\S]*Invoer vastleggen[\s\S]*Apparaatbeheer en gegevenstoegang[\s\S]*Scherm- en systeemaudio-opname/,
+    'the Dutch rows use the macOS 27 pane names'
+  );
+});
+
+check('Settings reads the permissions again when its window gains focus', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&platform=macos&permissions=mixed');
+  const accessibility = page.locator('[data-section="permissions"] .row').nth(3);
+  assert.match(await accessibility.innerText(), /On/);
+  const seq = (await mockState()).seq;
+  // The user switched it off in System Settings. No state event comes: only focus tells the page.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.permissions.accessibility = 'denied'), { emit: false }));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelector('[data-section="permissions"] .row:nth-child(4)').innerText.includes('remove it with the minus button'));
+  assert.equal((await mockState()).seq, seq, 'the app did not have to send a state');
+});
+
+
 check('Escape goes back one page, and the back button too', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&page=dictionary');
   assert.equal(await page.locator('h1').innerText(), 'Dictionary');
@@ -47,7 +118,7 @@ check('text being typed survives the download progress redrawing its card', asyn
   await page.click('[data-a="model:orukeet:download"]');
   const minutes = page.locator('[data-field="local.idleMinutes"]');
   await minutes.click();
-  await minutes.press('Control+A');
+  await minutes.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
   for (const key of ['4', '5']) {
     await page.keyboard.type(key);
     await page.waitForTimeout(450);

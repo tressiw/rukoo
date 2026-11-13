@@ -1,10 +1,13 @@
 // Mock of the app's side of Settings, for settings.html?mock=1. Not used inside the app. Paths and versions are
 // made up; no real profile is read.
 //
-// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1
+// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1&platform=macos&permissions=<state>
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
+//   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
+//   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
+//   public preflight.
 //   later=1 turns every feature in state.features on; features=screen,speakers,sync turns on the ones listed.
 //   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|key|consent|mistral|stopped: Speaker labels
 //   in that state, with the feature on.
@@ -89,6 +92,8 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    // macOS permissions, from the preflight calls; other platforms have none (API.md).
+    permissions: null,
     features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
@@ -431,6 +436,22 @@ function speakersState(state, forced) {
 export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
+  // A Mac shows the Permissions group, Mac key names and only the keys a Mac keyboard has. A
+  // development copy keeps F13 and F14 on either platform.
+  if (params.get('platform') === 'macos') {
+    state.platform = 'macos';
+    if (!state.devMode) {
+      state.config.dictation.hotkey = 'right alt';
+      state.config.dictation.rewriteHotkey = 'right command';
+    }
+    const states = {
+      granted: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'granted', accessibility: 'granted', screenRecording: 'granted' },
+      denied: { microphone: 'denied', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
+      notAsked: { microphone: 'notAsked', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
+      mixed: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'granted', screenRecording: 'notAsked' }
+    };
+    state.permissions = states[params.get('permissions')] || states.mixed;
+  }
   // state.features as the engine builds it: every part with later=1, else those listed; a scenario parameter of
   // a feature (screen's, &speakers=, &sync=) turns that feature on too.
   const later = params.get('later') === '1';
@@ -647,6 +668,7 @@ export function createMock(params) {
     },
     settings_open_folder: () => null,
     settings_open_link: () => null,
+    settings_open_permission: () => null,
     settings_clean_preview: ({ preview }) => clean(preview.text, preview),
     settings_check_updates: async () => {
       await wait(900);

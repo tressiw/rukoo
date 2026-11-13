@@ -64,6 +64,48 @@ pub mod ops {
         }
     }
 
+    /// The System Settings pane for each privacy permission, in one table. Checked on macOS 27:
+    /// each link opens its pane. System Audio Recording shares the Screen & System Audio Recording
+    /// pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane.
+    const PERMISSION_PANES: [(&str, &str); 5] = [
+        (
+            "microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        ),
+        (
+            "systemAudio",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        ),
+        (
+            "inputMonitoring",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        ),
+        (
+            "accessibility",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        ),
+        (
+            "screenRecording",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        ),
+    ];
+
+    pub fn permission_url(permission: &str) -> Result<&'static str, ApiError> {
+        PERMISSION_PANES
+            .iter()
+            .find(|(id, _)| *id == permission)
+            .map(|(_, url)| *url)
+            .ok_or_else(|| {
+                ApiError::new("invalid_value", format!("Unknown permission {permission}"))
+            })
+    }
+
+    pub fn open_permission(shell: &dyn Shell, permission: &str) -> Result<(), ApiError> {
+        shell
+            .open_url(permission_url(permission)?)
+            .map_err(|e| ApiError::new("failed", e))
+    }
+
     pub fn folder(name: &str) -> Result<Folder, ApiError> {
         match name {
             "logs" => Ok(Folder::Logs),
@@ -252,6 +294,15 @@ pub async fn settings_open_link(link: String, state: State<'_, Shared>) -> Resul
 }
 
 #[tauri::command]
+pub async fn settings_open_permission(
+    permission: String,
+    state: State<'_, Shared>,
+) -> Result<(), ApiError> {
+    let shell = state.shell.clone();
+    blocking(move || ops::open_permission(&*shell, &permission)).await
+}
+
+#[tauri::command]
 pub async fn settings_clean_preview(
     preview: Value,
     state: State<'_, Shared>,
@@ -351,6 +402,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         settings_choose_folder,
         settings_open_folder,
         settings_open_link,
+        settings_open_permission,
         settings_clean_preview,
         settings_check_updates,
         settings_new_token,
@@ -432,6 +484,44 @@ mod tests {
                 "https://huggingface.co/oruk/orukeet".to_string(),
                 "https://huggingface.co/nvidia/Nemotron-3-Diarization".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn permission_panes_come_from_the_apps_table_only() {
+        let shell = FakeShell::default();
+        for permission in [
+            "microphone",
+            "systemAudio",
+            "inputMonitoring",
+            "accessibility",
+            "screenRecording",
+        ] {
+            ops::open_permission(&shell, permission).unwrap();
+        }
+        assert_eq!(
+            *shell.opened.lock().unwrap(),
+            vec![
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            ]
+        );
+        // The page names a permission, never a URL.
+        assert_eq!(
+            ops::open_permission(
+                &shell,
+                "x-apple.systempreferences:com.apple.preference.security"
+            )
+            .unwrap_err()
+            .code,
+            "invalid_value"
+        );
+        assert!(
+            shell.opened.lock().unwrap().len() == 5,
+            "nothing else opened"
         );
     }
 

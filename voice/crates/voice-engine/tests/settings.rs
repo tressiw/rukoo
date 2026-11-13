@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use support::{lock, sync_state, wait_for, Harness, TempDir, BUCKET, BUCKET_SECRET};
 use voice_core::config::{Consent, ConsentMode};
 use voice_core::{ErrorKind, ProviderError};
+use voice_engine::permissions::{Permission, PermissionState};
 use voice_engine::Folder;
 
 const SECRET: &str = "sk-test-0123456789";
@@ -35,6 +36,7 @@ fn the_state_has_every_part_api_md_lists() {
         "providers",
         "dictation",
         "rukoo",
+        "permissions",
         "models",
         "speakers",
         "storage",
@@ -57,6 +59,24 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["config"]["meetings"]["screen"], "off");
     assert_eq!(state["devMode"], true);
     assert_eq!(state["version"], "0.1.0-test");
+    // macOS lists each privacy permission's real state; other platforms have none, so Settings
+    // shows no permission rows.
+    if cfg!(target_os = "macos") {
+        for id in [
+            "microphone",
+            "systemAudio",
+            "inputMonitoring",
+            "accessibility",
+            "screenRecording",
+        ] {
+            assert!(
+                state["permissions"][id].is_string(),
+                "permission {id} is missing"
+            );
+        }
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
     assert_eq!(state["theme"], "dark");
     assert_eq!(state["config"]["dictation"]["hotkey"], "f13");
     assert_eq!(state["config"]["dictation"]["startAtLogin"], false);
@@ -120,6 +140,112 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["sync"]["state"], "off");
     assert_eq!(state["features"]["sync"], state["sync"]["available"]);
     assert_eq!(state["config"]["storage"]["sync"]["enabled"], false);
+    engine.shutdown();
+}
+
+#[test]
+fn permissions_come_from_the_permissions_service() {
+    let h = Harness::new("permissions");
+    h.permissions
+        .set(Permission::Microphone, PermissionState::Granted);
+    h.permissions
+        .set(Permission::InputMonitoring, PermissionState::Denied);
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::NotAsked);
+    h.permissions
+        .set(Permission::ScreenRecording, PermissionState::Granted);
+    h.config(json!({}));
+    let engine = h.start();
+    let state = engine.settings_state();
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            state["permissions"],
+            json!({
+                "microphone": "granted",
+                "systemAudio": "unknown",
+                "inputMonitoring": "denied",
+                "accessibility": "notAsked",
+                "screenRecording": "granted",
+            })
+        );
+        // Settings reads them again for every state, so a change made in System Settings shows
+        // the next time the window asks.
+        h.permissions
+            .set(Permission::Accessibility, PermissionState::Granted);
+        assert_eq!(
+            engine.settings_state()["permissions"]["accessibility"],
+            "granted"
+        );
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+    engine.shutdown();
+}
+
+#[test]
+fn permissions_are_read_only_when_settings_asks_or_its_window_exists() {
+    let h = Harness::new("permissions-closed");
+    // A first start: the welcome path builds a state too.
+    let engine = h.start();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "starting Voice read the privacy permissions"
+    );
+    assert_eq!(
+        lock(&h.sink.settings).last().unwrap()["permissions"],
+        Value::Null,
+        "a pushed state while Settings is closed carries no permissions"
+    );
+
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "a setting change with Settings closed read the privacy permissions"
+    );
+    assert_eq!(
+        engine.settings_state_quiet()["permissions"],
+        Value::Null,
+        "a state for a caller that isn't the page read the privacy permissions"
+    );
+
+    // The page asks on load and on focus.
+    let state = engine.settings_state();
+    assert_eq!(
+        h.permissions.calls(),
+        5,
+        "the page's state didn't read every permission"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(state["permissions"]["accessibility"], "unknown");
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+
+    // While the window exists, pushed states carry them too; closing stops the reads.
+    engine.settings_opened();
+    let opened = h.permissions.calls();
+    assert!(opened > 5, "opening Settings read no permissions");
+    engine
+        .settings_set("dictation.readyChime", json!(false))
+        .unwrap();
+    assert!(
+        h.permissions.calls() > opened,
+        "a pushed state with Settings open read no permissions"
+    );
+    engine.settings_closed();
+    let closed = h.permissions.calls();
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        closed,
+        "a setting change after Settings closed read the permissions again"
+    );
     engine.shutdown();
 }
 

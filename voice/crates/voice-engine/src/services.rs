@@ -25,6 +25,7 @@ use crate::api::{EngineOptions, Locale, Theme};
 use crate::media::{RecordedScreen, ScreenMedia};
 use crate::meetings::controller::ControllerTiming;
 use crate::meetings::screen::{ScreenTiming, SCREEN_EXE};
+use crate::permissions::Permissions;
 
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
@@ -156,6 +157,8 @@ pub struct Services {
     pub autostart: Arc<dyn Autostart>,
     pub updates: Arc<dyn Updates>,
     pub system: Arc<dyn System>,
+    /// The macOS privacy permissions Settings shows; no permissions on Windows and Linux.
+    pub permissions: Arc<dyn Permissions>,
     /// Ownkey's settings, read only by the import.
     pub ownkey_config: Option<PathBuf>,
     /// Ownkey's model folder, read only.
@@ -206,6 +209,7 @@ impl Services {
             autostart: crate::autostart::system(),
             updates: Arc::new(GitHubUpdates),
             system: Arc::new(crate::platform::SystemInfo),
+            permissions: Arc::new(crate::permissions::SystemPermissions),
             ownkey_config: voice_core::paths::ownkey_config(),
             ownkey_models,
             recorder_exe: options.exe_dir.join(RECORDER_EXE),

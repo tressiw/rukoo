@@ -147,7 +147,7 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 
 Window `settings`, `settings.html`, 760 × 680, minimum 480 × 480, native decorations. The app sets the window's background to the theme's `--bg` (`#141519` dark, `#f3f4f6` light) before the page loads, so it doesn't flash white.
 
-The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `about`. The app can use it to open Settings at the import after the first start.
+The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `permissions`, `about`. The app can use it to open Settings at the import after the first start.
 
 ### Command `settings_state`
 
@@ -165,6 +165,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
+  "permissions": null,
   "features": { "screen": true, "speakers": true, "sync": true },
   "theme": "dark",
   "locale": "en",
@@ -219,6 +220,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
+| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; system audio before a tap can be checked). `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
 | `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
@@ -252,8 +254,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Key | Values | Default | From Ownkey's |
 |---|---|---|---|
-| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt`; `f13` in dev mode | `hotkey` |
-| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl`; `f14` in dev mode | `rewrite_hotkey` |
+| `dictation.hotkey` | `right alt`, `right command`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
+| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl` on Windows; `right command` on macOS; `f14` in dev mode | `rewrite_hotkey` |
 | `dictation.pasteMode` | bool | `true` | `paste_mode` |
 | `dictation.readyChime` | bool | `false` | `ready_chime` |
 | `dictation.startAtLogin` | bool; `dev_mode` error in dev mode | `true` for an installed copy | the Run key |
@@ -280,6 +282,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
+
+A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: a key stored on another platform still parses and is shown by its own name.
 
 Bucket sync, saved in `config.json` under `storage_sync`:
 
@@ -430,6 +434,20 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 `invoke('settings_open_link', { link })` → nothing. Opens a fixed address in the browser. The page never sends a URL; the app keeps the table: `orukeet` → `https://huggingface.co/oruk/orukeet`, `nemotron` → `https://huggingface.co/nvidia/Nemotron-3-Diarization`.
 
+### Command `settings_open_permission`
+
+`invoke('settings_open_permission', { permission })` → nothing. Opens that permission's pane in System Settings on macOS. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table. Checked on macOS 27:
+
+| `permission` | System Settings pane |
+|---|---|
+| `microphone` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone` |
+| `systemAudio` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
+| `inputMonitoring` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent` |
+| `accessibility` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
+| `screenRecording` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
+
+The system audio permission shares the Screen & System Audio Recording pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane. The pane names here and in Settings are macOS 27's; macOS 26 and earlier called three of them "Accessibility", "Screen Recording" and "System Audio Recording". Rejects with `invalid_value` for an id outside the table.
+
 ### Command `settings_clean_preview`
 
 `invoke('settings_clean_preview', { preview })` → the cleaned text. `preview` is `{ "text", "enabled", "languages", "custom" }`. The app runs `voice_core::cleanup` with those values without saving them, so the Filler words preview shows the real cleanup.
@@ -495,6 +513,7 @@ The page shows the code only in its dialog, with the window hidden from capture 
 | `pill.html?mock=dictation`, `mock=meeting`, `mock=cycle` | A dictation; a meeting with a two-step stop you can click; every state in turn |
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
+| `&platform=macos&permissions=granted`, `denied`, `notAsked`, `mixed` | The macOS Permissions group in that state, Mac key names, and only the keys a Mac keyboard has |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
 | `&features=screen` | The Settings of the features listed (`screen`, `speakers`, `sync`, comma-separated), as the engine lists them in `state.features` |
 | `&noEncoder=1`, `&noOcr=1`, `&screenUnavailable=1` | Screen recording on a computer without a hardware video encoder, without an OCR language, or on a Windows that can't capture; each turns on `features.screen` |

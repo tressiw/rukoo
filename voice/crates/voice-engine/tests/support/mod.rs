@@ -2,7 +2,7 @@
 //! network is ever touched.
 #![allow(dead_code)]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -20,6 +20,7 @@ use voice_engine::media::{RecordedScreen, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
+use voice_engine::permissions::{Permission, PermissionState, Permissions};
 use voice_engine::services::{
     AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
     TextInput, Updates,
@@ -698,6 +699,40 @@ impl System for FakeSystem {
     }
 }
 
+/// The macOS permissions Settings shows, as a platform without them (every state `None`) or with
+/// the states a test set. Missing entries are `unknown`, as a preflight this version can't read.
+pub struct FakePermissions {
+    pub supported: bool,
+    pub states: Mutex<HashMap<Permission, PermissionState>>,
+    /// How often the engine asked, one per permission per state that reads them.
+    calls: AtomicUsize,
+}
+
+impl FakePermissions {
+    pub fn set(&self, permission: Permission, state: PermissionState) {
+        lock(&self.states).insert(permission, state);
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Permissions for FakePermissions {
+    fn state(&self, permission: Permission) -> Option<PermissionState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.supported {
+            return None;
+        }
+        Some(
+            lock(&self.states)
+                .get(&permission)
+                .copied()
+                .unwrap_or(PermissionState::Unknown),
+        )
+    }
+}
+
 /// An engine on fakes in a temp data folder.
 pub struct Harness {
     pub dir: TempDir,
@@ -709,6 +744,7 @@ pub struct Harness {
     pub chime: Arc<FakeChime>,
     pub autostart: Arc<FakeAutostart>,
     pub updates: Arc<FakeUpdates>,
+    pub permissions: Arc<FakePermissions>,
     pub ownkey_config: Option<PathBuf>,
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
@@ -758,6 +794,11 @@ impl Harness {
             chime: Arc::new(FakeChime::default()),
             autostart: Arc::new(FakeAutostart::default()),
             updates: Arc::new(FakeUpdates::default()),
+            permissions: Arc::new(FakePermissions {
+                supported: cfg!(target_os = "macos"),
+                states: Mutex::new(HashMap::new()),
+                calls: AtomicUsize::new(0),
+            }),
             ownkey_config: None,
             ownkey_models: None,
             timing: ControllerTiming::default(),
@@ -808,6 +849,7 @@ impl Harness {
                 Arc::clone(&self.free),
                 Arc::clone(&self.system_theme),
             )),
+            permissions: Arc::clone(&self.permissions) as Arc<dyn Permissions>,
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),

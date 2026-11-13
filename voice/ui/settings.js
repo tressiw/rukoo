@@ -14,12 +14,21 @@ const LATER = mocked && params.get('later') === '1';
 const feature = (name) => LATER || state?.features?.[name] === true;
 
 const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
+// A Mac keyboard has no Pause or Scroll Lock, and adds Right Command. Right Option is the same key
+// as Right Alt, so it keeps that name in the config and gets a Mac label here.
+const MAC_HOTKEYS = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15'];
 const KEY_NAMES = {
   'right alt': 'settings.keys.rightAlt',
+  'right command': 'settings.keys.rightCommand',
   'right ctrl': 'settings.keys.rightCtrl',
   'right shift': 'settings.keys.rightShift',
   pause: 'settings.keys.pause',
   'scroll lock': 'settings.keys.scrollLock'
+};
+// macOS names, as System Settings and the keyboard print them.
+const MAC_KEY_NAMES = {
+  'right alt': 'settings.keys.rightOption',
+  'right ctrl': 'settings.keys.rightControl'
 };
 // The keys a choice can't share, with the hint that says who has it.
 const KEY_ROLES = {
@@ -122,7 +131,19 @@ const SPEAKER_REASONS = {
 // documents; Windows has the x86-64 features, macOS the arm64 ones.
 const CPU_FEATURE_NAMES = { avx2: 'AVX2', fma: 'FMA', f16c: 'F16C', bmi2: 'BMI2', neon: 'NEON', dotprod: 'DotProd', fp16: 'FP16' };
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
-const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'about'];
+const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permissions', 'about'];
+
+// macOS privacy permissions, in the order System Settings groups them. The names are the ones
+// System Settings on macOS 27 shows, the same in both catalogs: macOS 26 and earlier said
+// "Accessibility", "Screen Recording" and "System Audio Recording". Each row says why Voice needs
+// it (voice/ui/API.md, SettingsState.permissions).
+const PERMISSIONS = [
+  ['microphone', 'settings.permissions.microphone', 'settings.permissions.microphoneWhy'],
+  ['systemAudio', 'settings.permissions.systemAudio', 'settings.permissions.systemAudioWhy'],
+  ['inputMonitoring', 'settings.permissions.inputMonitoring', 'settings.permissions.inputMonitoringWhy'],
+  ['accessibility', 'settings.permissions.accessibility', 'settings.permissions.accessibilityWhy'],
+  ['screenRecording', 'settings.permissions.screenRecording', 'settings.permissions.screenRecordingWhy']
+];
 
 const page = document.getElementById('page');
 
@@ -163,7 +184,13 @@ function setPath(object, key, value) {
   target[last] = value;
 }
 
-const keyName = (key) => (key === 'off' || !key ? t('common.off') : KEY_NAMES[key] ? t(KEY_NAMES[key]) : key.toUpperCase());
+const macos = () => state?.platform === 'macos';
+const hotkeyList = () => (macos() ? MAC_HOTKEYS : HOTKEYS);
+const keyName = (key) => {
+  if (key === 'off' || !key) return t('common.off');
+  const name = macos() ? MAC_KEY_NAMES[key] || KEY_NAMES[key] : KEY_NAMES[key];
+  return name ? t(name) : key.toUpperCase();
+};
 const kbd = (key) => `<kbd>${esc(keyName(key))}</kbd>`;
 const labelOf = (pairs, value) => {
   const found = pairs.find(([v]) => v === value);
@@ -334,6 +361,49 @@ function speakersRow() {
   });
 }
 
+// A permission's state, calm: "Not asked yet" and "Unknown" are not errors.
+function permissionStatus(value) {
+  switch (value) {
+    case 'granted':
+      return status('ok', t('settings.permissions.state.on'));
+    case 'notAsked':
+      return status('off', t('settings.permissions.state.notAsked'));
+    case 'unknown':
+      return status('off', t('settings.permissions.state.unknown'));
+    default:
+      return status('off', t('settings.permissions.state.off'));
+  }
+}
+
+// Settings > Permissions, on macOS only. macOS ties a grant to the app's signature, and an ad-hoc
+// signed Voice gets a new one with every update, so an update drops them while System Settings
+// keeps showing the old entry switched on. The state comes from the preflight calls, and the row
+// says what to do when it is off.
+function permissionsCard() {
+  const permissions = state.permissions || {};
+  return card(
+    PERMISSIONS.map(([id, name, why]) => {
+      const value = permissions[id] || 'unknown';
+      const note =
+        value === 'denied'
+          ? t('settings.permissions.denied', { name: t(name) })
+          : value === 'notAsked'
+            ? t('settings.permissions.notAskedHelp')
+            : id === 'systemAudio' && value === 'unknown'
+              ? t('settings.permissions.systemAudioUnknown')
+              : '';
+      return row({
+        title: t(name),
+        desc: t(why),
+        below: note ? `<div class="desc note">${icons.info}<span>${esc(note)}</span></div>` : '',
+        side: `<div class="side">${permissionStatus(value)}<button class="btn sm secondary" data-a="permission:${id}">${esc(
+          t('settings.permissions.open')
+        )}</button></div>`
+      });
+    }).join('')
+  );
+}
+
 // ---------- pages ----------
 
 function mainPage() {
@@ -439,6 +509,9 @@ function mainPage() {
       section('dictation', groupTitle(t('settings.groups.dictation'), 'dictation') + dictationCard),
       section('meetings', groupTitle(t('settings.groups.meetings'), 'meetings') + meetingsCard),
       section('general', groupTitle(t('settings.groups.general'), 'general') + generalCard),
+      ...(macos()
+        ? [section('permissions', groupTitle(t('settings.groups.permissions'), 'permissions') + paragraph(t('settings.permissions.intro')) + permissionsCard())]
+        : []),
       section('about', groupTitle(t('settings.groups.about'), 'about') + aboutCard)
     ]
   };
@@ -1303,7 +1376,7 @@ async function keyChoice(role) {
       .filter(([key]) => key && key !== 'off')
   );
   const ownkeyKeys = state.ownkey.running ? state.ownkey.keys : [];
-  const keys = role === 'dictation.hotkey' ? HOTKEYS : ['off', ...HOTKEYS];
+  const keys = role === 'dictation.hotkey' ? hotkeyList() : ['off', ...hotkeyList()];
   const options = keys.map((key) => ({
     value: key,
     label: keyName(key),
@@ -1555,6 +1628,10 @@ async function act(action, button) {
       return invoke('settings_open_folder', { folder: arg }).catch((error) => showError(t('settings.errors.failed'), error?.message));
     case 'link':
       return invoke('settings_open_link', { link: arg }).catch(() => {});
+    case 'permission':
+      return invoke('settings_open_permission', { permission: arg }).catch((error) =>
+        showError(t('settings.permissions.openFailed'), error?.message || String(error))
+      );
     case 'dict-mode':
       dictionary = { correcting: !dictionary.correcting, error: '' };
       render();
@@ -2131,6 +2208,23 @@ function applyState(next, { first = false } = {}) {
   // A meeting started recording the screen, from the pill, a key or Rukoo: a key dialog closes (RUK-110 D18).
   if (keyDialog && next.sync?.screenRecording) keyDialog();
 }
+
+// macOS permissions change in System Settings while Settings is open, so read them again when the
+// window gets the focus. Only that part is taken from the answer: the app's settings events carry
+// every other change in order.
+async function refreshPermissions() {
+  if (!state || !macos()) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.permissions || !state || state.platform !== 'macos') return;
+    if (JSON.stringify(next.permissions) === JSON.stringify(state.permissions)) return;
+    state.permissions = next.permissions;
+    render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+window.addEventListener('focus', refreshPermissions);
 
 async function start() {
   await connect('settings');
