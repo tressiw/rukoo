@@ -98,8 +98,8 @@ fn a_call_of_exact_zeros_is_reported_while_another_app_plays() {
     // Sound, then zeros: the grant works and the call went quiet.
     let quiet = TempMeeting::new("sound-then-zeros");
     let extra = ["--silence-ms", "1500"];
-    let mut a = denied.record(&["call=synthetic:tap,playing"], &extra);
-    let mut b = late.record(&["call=synthetic:tap,sound-at=3000,playing"], &extra);
+    let mut a = denied.record(&["call=synthetic:tap,zeros,playing"], &extra);
+    let mut b = late.record(&["call=synthetic:tap,sound-at=3000,zeros,playing"], &extra);
     let mut c = quiet.record(
         &["call=synthetic:tap,sound-at=0,sound-until=500,playing"],
         &extra,

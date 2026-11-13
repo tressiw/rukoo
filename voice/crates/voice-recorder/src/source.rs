@@ -30,13 +30,15 @@ pub enum SourceSpec {
     /// A healthy loopback endpoint with nothing playing: it delivers no packets, for tests of
     /// the call-track padding.
     Idle { faults: Faults },
-    /// A macOS process tap, for tests: it delivers blocks of exact zeros all the time, as a tap
-    /// does while nothing plays or when macOS doesn't let Voice record system audio. With
-    /// `sound` it plays a tone between those two times, in ms since the recorder started.
-    /// `playing` says another app plays sound the whole time.
+    /// A macOS process tap, for tests. Like a real one on a Mac mini's speakers, it delivers
+    /// nothing while nothing plays, so it is padded. With `sound` it plays a tone between those
+    /// two times, in ms since the recorder started. `zeros` makes it deliver blocks of exact
+    /// zeros instead of nothing, which no tap has been seen to do but the silence check still
+    /// handles. `playing` says another app plays sound the whole time.
     Tap {
         faults: Faults,
         sound: Option<(u64, Option<u64>)>,
+        zeros: bool,
         playing: bool,
     },
     /// A WAV file played in real time, then silence, or looped.
@@ -138,10 +140,15 @@ impl FromStr for SourceSpec {
             let mut parts = rest.split(',');
             let kind = parts.next().unwrap_or_default();
             let mut faults = Faults::default();
-            let (mut sound_at, mut sound_until, mut playing) = (None, None, false);
+            let (mut sound_at, mut sound_until, mut playing, mut zeros) =
+                (None, None, false, false);
             for option in parts {
                 if option == "playing" && kind == "tap" {
                     playing = true;
+                    continue;
+                }
+                if option == "zeros" && kind == "tap" {
+                    zeros = true;
                     continue;
                 }
                 let (key, value) = option
@@ -180,6 +187,7 @@ impl FromStr for SourceSpec {
                 return Ok(SourceSpec::Tap {
                     faults,
                     sound: sound_at.map(|at| (at, sound_until)),
+                    zeros,
                     playing,
                 });
             }
@@ -343,8 +351,14 @@ impl Backend {
                 self.open_synthetic(Signal::Tone(*hz), *faults, spec, sink)
             }
             SourceSpec::Idle { faults } => self.open_synthetic(Signal::Idle, *faults, spec, sink),
-            SourceSpec::Tap { faults, sound, .. } => {
-                let mut opened = self.open_synthetic(Signal::Tap(*sound), *faults, spec, sink)?;
+            SourceSpec::Tap {
+                faults,
+                sound,
+                zeros,
+                ..
+            } => {
+                let mut opened =
+                    self.open_synthetic(Signal::Tap(*sound, *zeros), *faults, spec, sink)?;
                 opened.silent_when_denied = true;
                 Ok(opened)
             }
@@ -398,7 +412,7 @@ impl Backend {
         let number = faults.device_number(elapsed);
         let mut name = match &signal {
             Signal::Tone(hz) => format!("Synthetic {hz} Hz tone"),
-            Signal::Tap(_) => "Synthetic process tap".into(),
+            Signal::Tap(..) => "Synthetic process tap".into(),
             _ => "Synthetic idle output".into(),
         };
         if number > 1 {
@@ -574,6 +588,7 @@ impl fmt::Display for SourceSpec {
             SourceSpec::Tap {
                 faults: x,
                 sound,
+                zeros,
                 playing,
             } => {
                 f.write_str("synthetic:tap")?;
@@ -583,6 +598,9 @@ impl fmt::Display for SourceSpec {
                     if let Some(until) = until {
                         write!(f, ",sound-until={until}")?;
                     }
+                }
+                if *zeros {
+                    f.write_str(",zeros")?;
                 }
                 if *playing {
                     f.write_str(",playing")?;
@@ -610,8 +628,9 @@ const TONE_LEVEL: f32 = 0.5;
 enum Signal {
     Tone(f32),
     Idle,
-    /// Exact zeros, with a tone between the two times (ms since the recorder started).
-    Tap(Option<(u64, Option<u64>)>),
+    /// Nothing, or exact zeros with `true`, with a tone between the two times (ms since the
+    /// recorder started).
+    Tap(Option<(u64, Option<u64>)>, bool),
     File {
         channels: u16,
         samples: Vec<f32>,
@@ -702,16 +721,22 @@ fn run_synthetic(
         while produced + block_frames as u64 <= due {
             let block = match &signal {
                 Signal::Idle => None,
-                Signal::Tap(sound) => {
+                Signal::Tap(sound, zeros) => {
                     let now = started.elapsed().as_millis() as u64;
                     let sounding = sound.is_some_and(|(at, until)| {
                         now >= at && until.is_none_or(|until| now < until)
                     });
-                    Some(if sounding {
-                        tone_block(TAP_TONE_HZ, produced, block_frames, rate, channels)
+                    if sounding {
+                        Some(tone_block(
+                            TAP_TONE_HZ,
+                            produced,
+                            block_frames,
+                            rate,
+                            channels,
+                        ))
                     } else {
-                        vec![0.0; block_frames * channels]
-                    })
+                        zeros.then(|| vec![0.0; block_frames * channels])
+                    }
                 }
                 Signal::Tone(hz) => Some(tone_block(*hz, produced, block_frames, rate, channels)),
                 Signal::File {
@@ -760,6 +785,19 @@ mod cpal_capture {
     impl Capture for CpalStream {}
 
     pub fn open(host: &cpal::Host, spec: &SourceSpec, sink: Sink) -> Result<Opened, String> {
+        open_as(host, spec, sink, false)
+    }
+
+    /// [`open`]; `force_own` takes the recorder's own tap for any output device, so the path a
+    /// USB headset takes can run on a Mac's speakers (`records_the_default_output` tests).
+    pub fn open_as(
+        host: &cpal::Host,
+        spec: &SourceSpec,
+        sink: Sink,
+        force_own: bool,
+    ) -> Result<Opened, String> {
+        #[cfg(not(target_os = "macos"))]
+        let _ = force_own;
         let loopback = spec.is_loopback();
         let device = match spec {
             SourceSpec::DefaultInput if super::no_microphone() => return Err(NO_MICROPHONE.into()),
@@ -798,7 +836,7 @@ mod cpal_capture {
             let has_inputs = device
                 .supported_input_configs()
                 .is_ok_and(|mut configs| configs.next().is_some());
-            match super::tap_path(has_inputs) {
+            match super::tap_path(has_inputs || force_own) {
                 super::TapPath::Cpal => (device, config, None),
                 super::TapPath::Own => own_tap(host, &id)?,
             }
@@ -970,11 +1008,12 @@ mod tests {
                 SourceSpec::Tap {
                     faults: Faults::default(),
                     sound: None,
+                    zeros: false,
                     playing: false,
                 },
             ),
             (
-                "synthetic:tap,open-ms=7000,skip-at=800,skip-ms=300,sound-at=0,sound-until=500,playing",
+                "synthetic:tap,open-ms=7000,skip-at=800,skip-ms=300,sound-at=0,sound-until=500,zeros,playing",
                 SourceSpec::Tap {
                     faults: Faults {
                         open_ms: Some(7000),
@@ -983,6 +1022,7 @@ mod tests {
                         ..Faults::default()
                     },
                     sound: Some((0, Some(500))),
+                    zeros: true,
                     playing: true,
                 },
             ),
@@ -1101,6 +1141,53 @@ mod tests {
         assert!(f.skipping(800) && f.skipping(1_099));
         assert!(!f.skipping(1_100));
         assert!(!f.unavailable(900), "a skip isn't a failure");
+    }
+
+    /// Opens the default output's process tap for three seconds and reports what it delivered:
+    /// blocks, samples and exact zeros. `own` takes the recorder's own tap. The open and the
+    /// stream must not fail. Needs the System Audio Recording grant for the process that runs it;
+    /// without it macOS prompts.
+    #[cfg(target_os = "macos")]
+    fn record_default_output(own: bool) -> (usize, usize, usize) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(10_000);
+        let flags = Arc::new(StreamFlags::default());
+        let sink = Sink::new(tx, 0, 1, flags.clone());
+        let host = cpal::default_host();
+        let opened = cpal_capture::open_as(&host, &SourceSpec::DefaultOutput, sink, own)
+            .expect("the tap opens");
+        eprintln!(
+            "opened {} ({}): {} Hz, {} ch",
+            opened.device.name, opened.device.id, opened.rate, opened.channels
+        );
+        std::thread::sleep(Duration::from_secs(3));
+        drop(opened);
+        let (mut blocks, mut samples, mut zeros) = (0, 0, 0);
+        for event in rx.try_iter() {
+            if let Event::Audio { data, .. } = event {
+                blocks += 1;
+                samples += data.len();
+                zeros += data.iter().filter(|&&s| s == 0.0).count();
+            }
+        }
+        assert!(flags.take_failure().is_none());
+        eprintln!("blocks {blocks}, samples {samples}, exact zeros {zeros}");
+        (blocks, samples, zeros)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "opens a process tap on this Mac's default output"]
+    fn records_the_default_output_through_cpals_tap() {
+        // On the Mac mini's speakers with nothing playing this printed 0 blocks: an idle tap
+        // delivers nothing (voice/RECORDING.md, Silence).
+        record_default_output(false);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "opens the recorder's own process tap on this Mac's default output"]
+    fn records_the_default_output_through_the_own_tap() {
+        record_default_output(true);
     }
 
     #[test]
