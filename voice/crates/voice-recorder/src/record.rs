@@ -404,7 +404,14 @@ struct Opening {
     /// The open took longer than `OPEN_SLOW` and the timeline says the track has no device.
     waiting: Option<String>,
     flags: Arc<StreamFlags>,
+    /// Blocks the new stream delivered before the recorder heard that it opened, with when they
+    /// arrived; they go to the track once it is open.
+    early: Vec<(Instant, Vec<f32>)>,
 }
+
+/// At most this many early blocks are kept, a few seconds' worth; a stream can't deliver much
+/// between its start and the recorder handling `Opened`.
+const EARLY_BLOCKS: usize = 512;
 
 struct Live {
     _capture: Box<dyn Capture>,
@@ -599,8 +606,16 @@ impl Recorder {
         if track.generation != generation {
             return;
         }
-        let State::Open(live) = &mut track.state else {
-            return;
+        let live = match &mut track.state {
+            State::Open(live) => live,
+            // The stream started before the recorder heard that it opened: keep the block.
+            State::Opening(opening) => {
+                if opening.early.len() < EARLY_BLOCKS {
+                    opening.early.push((at, data.to_vec()));
+                }
+                return;
+            }
+            State::Lost { .. } => return,
         };
         live.last_packet = Instant::now();
         if live.silent_when_denied {
@@ -782,6 +797,7 @@ impl Recorder {
             after_loss,
             waiting: None,
             flags,
+            early: Vec::new(),
         });
         let backend = self.backend.clone();
         let spec = track.spec.clone();
@@ -811,8 +827,16 @@ impl Recorder {
         {
             return;
         }
+        let early = match &mut self.tracks[i].state {
+            State::Opening(opening) => std::mem::take(&mut opening.early),
+            _ => Vec::new(),
+        };
         match result.and_then(|opened| self.opened(i, opened)) {
-            Ok(()) => {}
+            Ok(()) => {
+                for (at, data) in early {
+                    self.on_audio(i, generation, at, &data);
+                }
+            }
             Err(error) => self.open_failed(i, error),
         }
     }
