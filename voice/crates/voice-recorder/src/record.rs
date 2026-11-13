@@ -328,6 +328,16 @@ fn catching(open: impl FnOnce() -> Result<Opened, String>) -> Result<Opened, Str
     })
 }
 
+/// What a track whose open takes long says while it waits: on macOS a process tap waits for the
+/// System Audio Recording prompt.
+fn waiting_error(spec: &SourceSpec) -> &'static str {
+    if is_tap(spec) {
+        WAITING_FOR_TAP
+    } else {
+        WAITING
+    }
+}
+
 /// A macOS process tap: opening one creates objects in the audio server.
 fn is_tap(spec: &SourceSpec) -> bool {
     cfg!(target_os = "macos") && matches!(spec, SourceSpec::DefaultOutput | SourceSpec::Output(_))
@@ -925,12 +935,7 @@ impl Recorder {
         if opening.waiting.is_some() || now.duration_since(opening.since) < OPEN_SLOW {
             return;
         }
-        let tap = cfg!(target_os = "macos")
-            && matches!(
-                track.spec,
-                SourceSpec::DefaultOutput | SourceSpec::Output(_)
-            );
-        let error = if tap { WAITING_FOR_TAP } else { WAITING };
+        let error = waiting_error(&track.spec);
         let (t, already_lost) = (opening.at.max(track.covered_until), opening.after_loss);
         if let State::Opening(opening) = &mut self.tracks[i].state {
             opening.waiting = Some(error.into());
@@ -1415,6 +1420,23 @@ mod tests {
         );
         let missing = catching(|| Err("not connected".into()));
         assert_eq!(missing.err().as_deref(), Some("not connected"));
+    }
+
+    #[test]
+    fn a_slow_call_open_names_the_permission_prompt_on_a_mac() {
+        let expected = if cfg!(target_os = "macos") {
+            WAITING_FOR_TAP
+        } else {
+            WAITING
+        };
+        assert_eq!(waiting_error(&SourceSpec::DefaultOutput), expected);
+        assert_eq!(
+            waiting_error(&SourceSpec::Output("coreaudio:x".into())),
+            expected
+        );
+        assert_eq!(waiting_error(&SourceSpec::DefaultInput), WAITING);
+        let synthetic: SourceSpec = "synthetic:tap,open-ms=7000".parse().unwrap();
+        assert_eq!(waiting_error(&synthetic), WAITING);
     }
 
     #[test]
