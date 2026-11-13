@@ -1044,9 +1044,12 @@ fn a_development_copy_imports_only_on_request_and_keeps_its_keys() {
     let engine = h.start();
     let cfg = h.saved_config();
     assert_eq!(cfg.audio_provider, "mistral");
+    // An import in development never changes the keys: it keeps this platform's default.
+    let (hotkey, rewrite_hotkey) =
+        voice_core::config::default_hotkeys_on(true, cfg!(target_os = "macos"));
     assert_eq!(
         (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
-        ("f13", "f14")
+        (hotkey, rewrite_hotkey)
     );
     assert_eq!(
         engine.settings_state()["ownkey"]["report"]["hotkeys"],
@@ -1075,7 +1078,7 @@ fn a_damaged_config_is_kept_aside_and_voice_starts_with_defaults() {
     assert!(note.body.contains("damaged"), "{}", note.body);
     assert_eq!(
         engine.settings_state()["config"]["dictation"]["hotkey"],
-        "f13"
+        voice_core::config::default_hotkeys_on(true, cfg!(target_os = "macos")).0
     );
     let kept = std::fs::read_dir(h.data())
         .unwrap()

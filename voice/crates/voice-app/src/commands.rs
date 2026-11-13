@@ -636,7 +636,10 @@ mod tests {
 
         assert_eq!(
             engine
-                .settings_set("dictation.hotkey", json!("f14"))
+                .settings_set(
+                    "dictation.hotkey",
+                    json!(engine.settings_state()["config"]["dictation"]["rewriteHotkey"])
+                )
                 .unwrap_err()
                 .code,
             "same_key"
