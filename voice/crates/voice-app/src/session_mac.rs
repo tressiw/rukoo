@@ -6,6 +6,7 @@
 //! key-up that happens while the session is gone never reaches the poll. Each of those events therefore
 //! releases a held hotkey, so push-to-talk can't stay on (Ownkey #11).
 
+use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -14,10 +15,11 @@ use objc2_app_kit::{
     NSWorkspace, NSWorkspaceScreensDidSleepNotification,
     NSWorkspaceSessionDidResignActiveNotification, NSWorkspaceWillSleepNotification,
 };
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
-use objc2_foundation::{
-    NSDistributedNotificationCenter, NSNotification, NSNotificationName, NSString,
+use objc2_core_foundation::{
+    CFBoolean, CFDictionary, CFNotificationCenter, CFNotificationName,
+    CFNotificationSuspensionBehavior, CFRetained, CFString, CFType,
 };
+use objc2_foundation::{NSNotification, NSNotificationName};
 
 /// `kCGSessionOnConsoleKey` and `CGSSessionScreenIsLocked` of `CGSessionCopyCurrentDictionary`. A missing
 /// dictionary means no GUI session at all, which reads as neither flag.
@@ -73,7 +75,7 @@ pub enum Release {
 }
 
 impl Release {
-    /// Every event Voice observes; the tests hold this list against the observers.
+    /// Every event Voice observes.
     #[cfg(test)]
     pub const ALL: [Release; 4] = [
         Release::SessionResigned,
@@ -90,21 +92,6 @@ impl Release {
             Release::WillSleep => "the Mac is about to sleep",
             Release::ScreensSleep => "the screens slept",
         }
-    }
-
-    /// The workspace notification for an event, if it is one of the AppKit ones.
-    #[cfg(test)]
-    fn from_workspace(name: &str) -> Option<Release> {
-        workspace_events()
-            .into_iter()
-            .find(|(event_name, _)| event_name.to_string() == name)
-            .map(|(_, event)| event)
-    }
-
-    /// The distributed notification for an event, if it is one of those.
-    #[cfg(test)]
-    fn from_distributed(name: &str) -> Option<Release> {
-        (name == SCREEN_LOCKED).then_some(Release::ScreenLocked)
     }
 }
 
@@ -127,10 +114,12 @@ fn workspace_events() -> [(&'static NSNotificationName, Release); 3] {
     }
 }
 
+type OnRelease = Arc<dyn Fn(Release) + Send + Sync>;
+
 /// Calls `on_release` for every session event that can swallow a hotkey's key-up, until Voice quits.
 /// Call it once, from the main thread: both notification centers deliver on the main run loop.
 pub fn watch_releases(on_release: impl Fn(Release) + Send + Sync + 'static) {
-    let on: Arc<dyn Fn(Release) + Send + Sync> = Arc::new(on_release);
+    let on: OnRelease = Arc::new(on_release);
     let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
     for (name, event) in workspace_events() {
         let on = Arc::clone(&on);
@@ -143,25 +132,59 @@ pub fn watch_releases(on_release: impl Fn(Release) + Send + Sync + 'static) {
         };
         std::mem::forget(observer);
     }
-    let distributed = NSDistributedNotificationCenter::defaultCenter();
-    let name = NSString::from_str(SCREEN_LOCKED);
-    let on_this = Arc::clone(&on);
-    let block =
-        RcBlock::new(move |_: NonNull<NSNotification>| dispatch(&on_this, Release::ScreenLocked));
-    // SAFETY: as above. The distributed center's observer gets the same treatment.
-    let observer = unsafe {
-        distributed.addObserverForName_object_queue_usingBlock(Some(&name), None, None, &block)
+    // The lock comes from another process. An app that isn't active, and Voice is an accessory
+    // app that almost never is, gets distributed notifications held back unless the observer asks
+    // for them at once; the block API can't, Core Foundation's can.
+    let Some(distributed) = CFNotificationCenter::distributed_center() else {
+        log::warn!("session: no distributed notification center; the lock isn't observed");
+        return;
     };
-    std::mem::forget(observer);
+    let name = CFString::from_str(SCREEN_LOCKED);
+    // Leaked on purpose, like the observers above: the center keeps the pointer until Voice quits.
+    let observer: *const OnRelease = Box::into_raw(Box::new(on));
+    // SAFETY: the observer pointer stays valid for the life of the process, and the callback reads
+    // it as the `OnRelease` it is.
+    unsafe {
+        distributed.add_observer(
+            observer.cast::<c_void>(),
+            Some(screen_locked),
+            Some(&name),
+            std::ptr::null(),
+            CFNotificationSuspensionBehavior::DeliverImmediately,
+        );
+    }
 }
 
-/// Runs the handler off the notification's thread: stopping a dictation closes a microphone, and that
-/// must not hold up AppKit or the poller.
-fn dispatch(on: &Arc<dyn Fn(Release) + Send + Sync>, event: Release) {
-    let on = Arc::clone(on);
-    let _ = std::thread::Builder::new()
+/// Core Foundation's callback for [`SCREEN_LOCKED`].
+unsafe extern "C-unwind" fn screen_locked(
+    _center: *mut CFNotificationCenter,
+    observer: *mut c_void,
+    _name: *const CFNotificationName,
+    _object: *const c_void,
+    _info: *const CFDictionary,
+) {
+    // SAFETY: `watch_releases` registered a leaked `OnRelease` as the observer.
+    let on = unsafe { &*observer.cast::<OnRelease>() };
+    dispatch(on, Release::ScreenLocked);
+}
+
+/// Runs the handler for an event. Stopping a dictation closes a microphone, which must not hold up
+/// AppKit, so it runs on a thread of its own, or right here when no thread can start. The Mac
+/// about to sleep is the exception: the handler runs inside the notification, which AppKit lets
+/// hold sleep back for a moment, so the recording stops before the Mac sleeps rather than at wake,
+/// hours later, inserting its text into whatever has focus then.
+fn dispatch(on: &OnRelease, event: Release) {
+    if event == Release::WillSleep {
+        on(event);
+        return;
+    }
+    let for_thread = Arc::clone(on);
+    let spawned = std::thread::Builder::new()
         .name("session-release".into())
-        .spawn(move || on(event));
+        .spawn(move || for_thread(event));
+    if spawned.is_err() {
+        on(event);
+    }
 }
 
 #[cfg(test)]
@@ -180,58 +203,96 @@ mod tests {
         assert!(!at_the_console_from(Some(true), Some(true)));
     }
 
-    /// Each of the four events is observed: three from the workspace and the lock from the
-    /// distributed center.
+    /// The three AppKit events reach the handler through the observers `watch_releases` adds.
+    /// Posting on NSWorkspace's own notification center stays inside this process; nothing else
+    /// on the Mac hears it. The lock comes from another process, so it can't be posted from here
+    /// without every app hearing it; its callback is called directly below.
     #[test]
-    fn every_session_event_has_an_observer() {
-        let mut seen = Vec::new();
-        for (name, event) in workspace_events() {
-            assert_eq!(
-                Release::from_workspace(&name.to_string()),
-                Some(event),
-                "{event:?} is heard on the workspace center"
-            );
-            seen.push(event);
-        }
-        assert_eq!(
-            Release::from_distributed(SCREEN_LOCKED),
-            Some(Release::ScreenLocked)
-        );
-        seen.push(Release::ScreenLocked);
-        seen.sort_by_key(|event| format!("{event:?}"));
-        let mut all = Release::ALL.to_vec();
-        all.sort_by_key(|event| format!("{event:?}"));
-        assert_eq!(seen, all);
-        assert_eq!(
-            Release::from_workspace("NSWorkspaceDidWakeNotification"),
-            None,
-            "waking isn't a release: the monitor notification already was one"
-        );
-        assert_eq!(
-            Release::from_distributed("com.apple.screenIsUnlocked"),
-            None
-        );
-    }
-
-    /// The handler runs for every event, off the notifying thread.
-    #[test]
-    fn every_event_reaches_the_release_handler() {
+    fn watch_releases_hears_the_workspace_events() {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let on: Arc<dyn Fn(Release) + Send + Sync> = {
+        watch_releases({
             let seen = Arc::clone(&seen);
-            Arc::new(move |event| seen.lock().unwrap().push(event))
-        };
-        for event in Release::ALL {
-            dispatch(&on, event);
+            move |event| seen.lock().unwrap().push(event)
+        });
+        let center = NSWorkspace::sharedWorkspace().notificationCenter();
+        for (name, _) in workspace_events() {
+            // SAFETY: a notification with no object and no user info; the observers ignore both.
+            unsafe { center.postNotificationName_object(name, None) };
         }
         let deadline = Instant::now() + Duration::from_secs(5);
-        while seen.lock().unwrap().len() < Release::ALL.len() && Instant::now() < deadline {
+        while seen.lock().unwrap().len() < 3 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(2));
         }
         let mut seen = seen.lock().unwrap().clone();
         seen.sort_by_key(|event| format!("{event:?}"));
-        let mut all = Release::ALL.to_vec();
-        all.sort_by_key(|event| format!("{event:?}"));
-        assert_eq!(seen, all);
+        assert_eq!(
+            seen,
+            [
+                Release::ScreensSleep,
+                Release::SessionResigned,
+                Release::WillSleep
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lock_callback_reaches_the_handler() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let on: OnRelease = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |event| seen.lock().unwrap().push(event))
+        };
+        let observer: *const OnRelease = &on;
+        // SAFETY: the observer is an `OnRelease`, as `watch_releases` registers it; the other
+        // arguments are unused.
+        unsafe {
+            screen_locked(
+                std::ptr::null_mut(),
+                observer.cast_mut().cast(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while seen.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(*seen.lock().unwrap(), [Release::ScreenLocked]);
+    }
+
+    /// Sleep is handled before the notification returns, on its own thread; every other event on
+    /// a thread of its own, so AppKit isn't held up.
+    #[test]
+    fn only_sleep_is_handled_inside_the_notification() {
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let on: OnRelease = {
+            let threads = Arc::clone(&threads);
+            Arc::new(move |event| {
+                let name = std::thread::current().name().map(str::to_string);
+                threads.lock().unwrap().push((event, name));
+            })
+        };
+        let here = std::thread::current().name().map(str::to_string);
+        dispatch(&on, Release::WillSleep);
+        assert_eq!(
+            *threads.lock().unwrap(),
+            [(Release::WillSleep, here)],
+            "ran before dispatch returned, on the notifying thread"
+        );
+        for event in Release::ALL {
+            if event != Release::WillSleep {
+                dispatch(&on, event);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while threads.lock().unwrap().len() < Release::ALL.len() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let threads = threads.lock().unwrap();
+        assert_eq!(threads.len(), Release::ALL.len());
+        for (event, name) in threads.iter().skip(1) {
+            assert_eq!(name.as_deref(), Some("session-release"), "{event:?}");
+        }
     }
 }

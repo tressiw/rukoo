@@ -295,7 +295,9 @@ pub trait EngineApi: Send + Sync + 'static {
     /// A hotkey's key-up may never arrive: the Mac's session resigned (a fast
     /// user switch), the screen locked, or the Mac or its screens slept. Ends a
     /// running dictation as if the key came up, so recording never stays on.
-    /// Other platforms have no such observer yet, so the default does nothing.
+    /// Returns once the release was handled, or after two seconds when a press
+    /// is still opening the microphone. Other platforms have no such observer
+    /// yet, so the default does nothing.
     fn release_hotkeys(&self) {}
     /// The system's theme or language changed. A setting that follows the system shows the new one
     /// in the pill and Settings, and the app re-reads [`EngineApi::ui`] when something changed. Safe

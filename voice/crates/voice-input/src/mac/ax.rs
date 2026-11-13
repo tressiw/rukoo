@@ -11,6 +11,7 @@
 //! out because the objc2 crate only binds the functions, not the constants.
 
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement};
 use objc2_core_foundation::{CFRetained, CFString, CFType};
@@ -99,9 +100,47 @@ pub(crate) fn selected_text() -> Option<String> {
     text(&value)
 }
 
+/// Whether the app with `pid` answers one Accessibility request, for its role, within
+/// `timeout`. An app whose main thread is stuck gives `kAXErrorCannotComplete` once the timeout
+/// has passed: the macOS counterpart of a window that doesn't answer Windows' `WM_NULL`.
+pub(crate) fn app_answers(pid: i32, timeout: Duration) -> bool {
+    // SAFETY: any pid makes an element; one of a process that is gone just fails the request.
+    let app = unsafe { AXUIElement::new_application(pid) };
+    // SAFETY: the element is valid; the timeout is a plain number of seconds.
+    let _ = unsafe { app.set_messaging_timeout(timeout.as_secs_f32()) };
+    let name = CFString::from_str(ROLE);
+    let mut value: *const CFType = std::ptr::null();
+    // SAFETY: as in `attribute`: valid element and name, and a +1 reference on success.
+    let error = unsafe { app.copy_attribute_value(&name, NonNull::from(&mut value)) };
+    if let Some(value) = NonNull::new(value.cast_mut()) {
+        // SAFETY: the copy rule gave Voice the reference; dropping it releases it.
+        drop(unsafe { CFRetained::from_raw(value) });
+    }
+    answered(error)
+}
+
+/// Any answer but "couldn't complete" came from the app itself, an error included: an app
+/// without the attribute still read the request.
+pub(crate) fn answered(error: AXError) -> bool {
+    error != AXError::CannotComplete
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_request_that_could_not_complete_means_no_answer() {
+        assert!(!answered(AXError::CannotComplete));
+        for error in [
+            AXError::Success,
+            AXError::AttributeUnsupported,
+            AXError::NoValue,
+            AXError::Failure,
+        ] {
+            assert!(answered(error), "{error:?}");
+        }
+    }
 
     /// Reads this process's own grant. It changes nothing and prompts nobody:
     /// the test binary either is or isn't trusted on the machine it runs on.

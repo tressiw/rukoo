@@ -2,7 +2,7 @@
 //! to 16 kHz mono. Opened at every press and closed at every release, as Ownkey did, so a new
 //! default microphone applies from the next dictation (ownkey-dictation.md 4.3).
 
-use crate::services::{AudioSink, MicStream, Microphone};
+use crate::services::{AudioSink, MicLost, MicStream, Microphone};
 
 /// What the user sees when there is no microphone to open. cpal's missing device and Core
 /// Audio's `kAudioObjectUnknown` read the same, so a Mac and a PC say it the same way.
@@ -13,21 +13,41 @@ pub struct DefaultMicrophone;
 
 impl Microphone for DefaultMicrophone {
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
+        self.open_watched(on_audio, Box::new(|| {}))
+    }
+
+    fn open_watched(
+        &self,
+        on_audio: AudioSink,
+        on_lost: MicLost,
+    ) -> Result<Box<dyn MicStream>, String> {
         #[cfg(any(windows, target_os = "macos"))]
         {
-            cpal_mic::open(on_audio).map(|mic| Box::new(mic) as Box<dyn MicStream>)
+            cpal_mic::open(on_audio, on_lost).map(|mic| Box::new(mic) as Box<dyn MicStream>)
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
-            let _ = on_audio;
+            let _ = (on_audio, on_lost);
             Err("Dictation isn't supported on this platform yet.".into())
         }
     }
 }
 
+/// Whether a stream error means the stream delivers nothing more: the device went away, or
+/// changed under it. cpal 0.18.2 pauses a Core Audio stream for both, a sample rate change
+/// included. Anything else passes: an overrun, or a default device that changed and that cpal
+/// followed on its own.
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn ends_stream(kind: cpal::ErrorKind) -> bool {
+    matches!(
+        kind,
+        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated
+    )
+}
+
 #[cfg(any(windows, target_os = "macos"))]
 mod cpal_mic {
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex, PoisonError};
     use std::thread::{self, JoinHandle};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -35,7 +55,7 @@ mod cpal_mic {
     use voice_audio::Resampler;
 
     use super::NO_MICROPHONE;
-    use crate::services::{AudioSink, MicStream};
+    use crate::services::{AudioSink, MicLost, MicStream};
 
     /// The stream lives on its own thread, which drops it when the microphone closes.
     pub struct CpalMic {
@@ -54,13 +74,13 @@ mod cpal_mic {
         }
     }
 
-    pub fn open(on_audio: AudioSink) -> Result<CpalMic, String> {
+    pub fn open(on_audio: AudioSink, on_lost: MicLost) -> Result<CpalMic, String> {
         let (opened_tx, opened_rx) = mpsc::channel::<Result<(), String>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let thread = thread::Builder::new()
             .name("dictation-mic".into())
             .spawn(move || {
-                let stream = match build(on_audio) {
+                let stream = match build(on_audio, on_lost) {
                     Ok(stream) => stream,
                     Err(e) => {
                         let _ = opened_tx.send(Err(e));
@@ -89,7 +109,7 @@ mod cpal_mic {
         }
     }
 
-    fn build(mut on_audio: AudioSink) -> Result<cpal::Stream, String> {
+    fn build(mut on_audio: AudioSink, on_lost: MicLost) -> Result<cpal::Stream, String> {
         // A Mac with no input device still gets a device from cpal; see `mac_microphone`.
         #[cfg(target_os = "macos")]
         if super::mac_microphone::is_missing(super::mac_microphone::default_input_id()) {
@@ -115,8 +135,23 @@ mod cpal_mic {
                 }
             }
         };
-        // A lost device just stops delivering; the release ends the dictation as usual.
-        let on_error = |_: cpal::Error| {};
+        // A lost or changed device stops delivering. The dictation hears about it once, on a
+        // thread of its own: it replaces this stream, which joins the thread that holds it.
+        let on_lost = Arc::new(Mutex::new(Some(on_lost)));
+        let on_error = move |error: cpal::Error| {
+            if !super::ends_stream(error.kind()) {
+                return;
+            }
+            let taken = on_lost
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(on_lost) = taken {
+                let _ = thread::Builder::new()
+                    .name("dictation-mic-lost".into())
+                    .spawn(on_lost);
+            }
+        };
         let stream = device
             .build_input_stream_raw(config.config(), format, on_data, on_error, None)
             .map_err(|e| e.to_string())?;
@@ -262,6 +297,23 @@ mod tests {
         assert!(
             *seen.lock().unwrap() > 0,
             "the microphone delivered no samples"
+        );
+    }
+}
+
+#[cfg(all(test, any(windows, target_os = "macos")))]
+mod stream_errors {
+    use super::ends_stream;
+
+    #[test]
+    fn only_a_device_that_went_or_changed_ends_the_stream() {
+        assert!(ends_stream(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(ends_stream(cpal::ErrorKind::StreamInvalidated));
+        assert!(!ends_stream(cpal::ErrorKind::BackendError));
+        assert!(!ends_stream(cpal::ErrorKind::Xrun));
+        assert!(
+            !ends_stream(cpal::ErrorKind::DeviceChanged),
+            "cpal rerouted the stream itself"
         );
     }
 }

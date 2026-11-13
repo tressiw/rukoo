@@ -30,6 +30,14 @@ use crate::permissions::Permissions;
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
 
+/// How long ago a key that isn't a modifier went down anywhere, `None` where the platform
+/// doesn't say (voice-input's `since_key_down`).
+pub type KeyActivity = Arc<dyn Fn() -> Option<Duration> + Send + Sync>;
+
+/// Whether someone is at this computer's console: on a Mac, the session is the one on the
+/// console and its screen isn't locked. Voice ignores hotkey presses otherwise.
+pub type AtConsole = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Text into the focused app, and the selection out of it.
 ///
 /// Both call `before_keys` right before every batch of keys they send, after any wait for the
@@ -68,10 +76,23 @@ pub type AudioSink = Box<dyn FnMut(&[i16]) + Send>;
 /// An open microphone. Dropping it stops the capture.
 pub trait MicStream: Send {}
 
+/// Runs once, on a thread of its own, when an open microphone stops for good.
+pub type MicLost = Box<dyn FnOnce() + Send>;
+
 pub trait Microphone: Send + Sync {
     /// Opens the default microphone; blocks until it is open or failed. The error is an English
     /// sentence for the notification.
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String>;
+    /// [`Microphone::open`], calling `on_lost` when the device goes away or changes under the
+    /// stream, which then delivers nothing more. The default never calls it.
+    fn open_watched(
+        &self,
+        on_audio: AudioSink,
+        on_lost: MicLost,
+    ) -> Result<Box<dyn MicStream>, String> {
+        drop(on_lost);
+        self.open(on_audio)
+    }
 }
 
 /// Speech and rewrite providers, and the local model.
@@ -145,11 +166,36 @@ pub trait System: Send + Sync {
     fn free_bytes(&self, path: &Path) -> Option<u64>;
 }
 
+/// The safety limits on a held dictation.
+#[derive(Clone, Copy, Debug)]
+pub struct DictationTiming {
+    /// How often the watchdog reads a recording's key. Two reads in a row that find it up stop
+    /// the recording, whatever happened to the key-up.
+    pub watchdog: Duration,
+    /// The longest a recording runs before it stops as if the key came up.
+    pub longest: Duration,
+}
+
+impl Default for DictationTiming {
+    fn default() -> DictationTiming {
+        DictationTiming {
+            watchdog: Duration::from_secs(1),
+            // 19 MB of 16 kHz WAV, under the 25 MB a cloud provider such as OpenAI takes.
+            longest: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
 /// Everything [`crate::start_with`] runs on.
 pub struct Services {
     /// `None` reads the real keyboard through voice-input's poller; tests inject the key state.
     pub key_state: Option<KeyState>,
     pub hotkey_interval: Duration,
+    pub dictation_timing: DictationTiming,
+    /// The app passes the Mac's session state in; Windows has no such check yet, so the
+    /// default is always at the console.
+    pub at_console: AtConsole,
+    pub key_activity: KeyActivity,
     pub input: Arc<dyn TextInput>,
     pub microphone: Arc<dyn Microphone>,
     pub speech: Arc<dyn Speech>,
@@ -200,6 +246,9 @@ impl Services {
         Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
+            dictation_timing: DictationTiming::default(),
+            at_console: Arc::new(|| true),
+            key_activity: Arc::new(voice_input::since_key_down),
             input: Arc::new(SystemInput),
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {
