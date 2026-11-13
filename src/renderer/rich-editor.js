@@ -1,8 +1,9 @@
-// Formatting, selection and link editing shared by mail and meeting notes.
+// Formatting, selection, link editing and image sizing shared by mail and meeting notes.
 import { t } from './i18n.js';
 import { icons } from './icons.js';
 import { esc } from './ui.js';
 import { mountEditorLinks } from './editor-links.js';
+import { mountEditorImages } from './editor-images.js';
 
 // Shared with the signature editor in Settings (signature.js).
 export const formatButtons = () => `
@@ -38,6 +39,8 @@ export function mountRichEditor(page, editor, { onChange = () => {}, onSelection
   const links = mountEditorLinks(editor, { editorRange, restoreRange, onChange });
   cleanups.push(() => links.dispose());
   const { insertLink } = links;
+  const images = mountEditorImages(editor, { onChange });
+  cleanups.push(() => images.dispose());
   const updateToolbar = () => {
     for (const cmd of ['bold', 'italic', 'underline', 'insertOrderedList', 'insertUnorderedList']) {
       const on = document.queryCommandState(cmd);

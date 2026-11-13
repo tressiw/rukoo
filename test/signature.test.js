@@ -175,3 +175,9 @@ test('inline images become Content-ID parts, once per picture', () => {
   assert.ok(!html.includes('data:'));
   assert.equal(attachments[0].content.subarray(1, 4).toString(), 'PNG');
 });
+
+test('an inline image keeps the size it was given in the editor', () => {
+  const util = require('../src/main/mailutil');
+  const { html, attachments } = util.inlineDataImages(`<div><img width="200" src="${PNG}" style="height: auto; max-width: 100%; width: 200px;"></div>`);
+  assert.equal(html, `<div><img width="200" src="cid:${attachments[0].cid}" style="height: auto; max-width: 100%; width: 200px;"></div>`);
+});

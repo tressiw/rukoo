@@ -2,6 +2,7 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 // The message editor. It runs inline in the main window's reading pane, or on its own in a
 // compose window (compose.js). Either way it saves drafts as you write.
 import { formatButtons, mountRichEditor } from './rich-editor.js';
+import { soleImage } from './editor-images.js';
 import { icons } from './icons.js';
 import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
 import { fillFrame } from './mailframe.js';
@@ -887,8 +888,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const placeFloatBar = () => {
     const sel = window.getSelection();
     const range = sel.rangeCount ? sel.getRangeAt(0) : null;
-    // An open menu keeps it hidden: the selection a right-click makes can report after the menu has opened.
-    if (!range || range.collapsed || !editor.contains(range.commonAncestorContainer) || closing || closed || menuOpen()) {
+    // An open menu keeps it hidden: the selection a right-click makes can report after the menu has opened. A
+    // selected image has a bar of its own (editor-images.js).
+    if (!range || range.collapsed || !editor.contains(range.commonAncestorContainer) || closing || closed || menuOpen() || soleImage(range)) {
       floatBar.hidden = true;
       return;
     }

@@ -3560,6 +3560,8 @@ body.compose-window {
   }
 }
 .compose-body {
+  /* The frame around a selected image is placed in here. */
+  position: relative;
   padding: 16px 0 4px;
   cursor: text;
 }
@@ -3765,6 +3767,7 @@ body.compose-window {
 /* Links in the text (editor-links.js), for mail and meeting notes: the bubble under a link at the caret and the
    popover Ctrl+K opens. Both are popovers in the top layer, so no pane clips them; the script places them. */
 .link-bubble,
+.img-bubble,
 .link-pop {
   position: fixed;
   inset: auto;
@@ -3778,17 +3781,20 @@ body.compose-window {
   transform-origin: top left;
   animation: pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.link-bubble {
+.link-bubble,
+.img-bubble {
   align-items: center;
   gap: 2px;
   padding: 4px;
   border-radius: 10px;
   font-size: 12.5px;
 }
-.link-bubble:popover-open {
+.link-bubble:popover-open,
+.img-bubble:popover-open {
   display: flex;
 }
-.link-bubble button {
+.link-bubble button,
+.img-bubble button {
   flex: none;
   height: 28px;
   padding: 0 8px;
@@ -3798,11 +3804,13 @@ body.compose-window {
   white-space: nowrap;
   transition: background-color 120ms ease, color 120ms ease;
 }
-.link-bubble button:hover {
+.link-bubble button:hover,
+.img-bubble button:hover {
   background: var(--hover);
   color: var(--text);
 }
-.link-bubble button:active {
+.link-bubble button:active,
+.img-bubble button:active {
   background: var(--active);
 }
 /* The address gives way first in a narrow window; Change and Remove keep their words. */
@@ -3826,7 +3834,8 @@ body.compose-window {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.link-bubble .sep {
+.link-bubble .sep,
+.img-bubble .sep {
   flex: none;
   width: 1px;
   height: 16px;
@@ -3879,9 +3888,62 @@ body.compose-window {
 }
 @media (prefers-reduced-motion: reduce) {
   .link-bubble,
+  .img-bubble,
   .link-pop {
     animation: none;
   }
+}
+/* A selected image in the text: a frame with a handle on each corner, and a bar under it that looks like the
+   link's bubble (editor-images.js). */
+.editor img::selection {
+  background: transparent;
+}
+.img-frame {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
+  pointer-events: none;
+}
+.img-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid var(--raised);
+  border-radius: 2px;
+  pointer-events: auto;
+  touch-action: none;
+}
+/* A larger target than the square that shows. */
+.img-handle::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+.img-handle[data-corner='nw'] {
+  left: -5px;
+  top: -5px;
+  cursor: nwse-resize;
+}
+.img-handle[data-corner='ne'] {
+  right: -5px;
+  top: -5px;
+  cursor: nesw-resize;
+}
+.img-handle[data-corner='sw'] {
+  left: -5px;
+  bottom: -5px;
+  cursor: nesw-resize;
+}
+.img-handle[data-corner='se'] {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
+}
+.img-bubble button[aria-pressed='true'] {
+  background: var(--sel);
+  color: var(--text);
 }
 .color-input {
   position: absolute;

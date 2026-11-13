@@ -2799,6 +2799,26 @@
     "message": "Underline (Ctrl+U)",
     "description": "composer > format. src/renderer/composer.js"
   },
+  "composer.image.bestFit": {
+    "message": "Best fit",
+    "description": "composer > image. Button in the bar under a selected image in the text; sets the image to a width that fits a mail app's reading pane. src/renderer/editor-images.js"
+  },
+  "composer.image.options": {
+    "message": "Image",
+    "description": "composer > image. Accessible name of the bar under a selected image in the text, a toolbar with Small, Best fit, Original size and Remove. src/renderer/editor-images.js"
+  },
+  "composer.image.original": {
+    "message": "Original size",
+    "description": "composer > image. Button in the bar under a selected image in the text; shows the image at its own size again. src/renderer/editor-images.js"
+  },
+  "composer.image.remove": {
+    "message": "Remove",
+    "description": "composer > image. Button in the bar under a selected image in the text; takes the image out of the text. src/renderer/editor-images.js"
+  },
+  "composer.image.small": {
+    "message": "Small",
+    "description": "composer > image. Button in the bar under a selected image in the text; makes the image small. src/renderer/editor-images.js"
+  },
   "composer.link.address": {
     "message": "Address",
     "description": "composer > link. Label of the address field in the signature editor's link bar. src/renderer/signature.js"
