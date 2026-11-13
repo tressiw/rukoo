@@ -46,7 +46,7 @@ Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonica
 
 A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. A power cut can lose up to the last 5 s.
 
-While it records on Windows, the recorder holds the timeline and the open segment with read and delete sharing only. Other processes can read them, and a second writer can't open them.
+While it records, the recorder keeps a second writer out of the timeline and of every segment it has open: on Windows it shares them for reading and deleting only, and on macOS and Linux it holds an exclusive lock on each open file. Other processes can read them, and a second writer can't open them. The lock goes with the process, so a recorder that was hard-killed leaves its meeting writable.
 
 ### Reading
 
@@ -66,12 +66,12 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 
 - A reader ignores a last line without a newline, any line that doesn't parse, and kinds and fields it doesn't know. Before a recorder or `finalize` writes to a timeline, it cuts off a last line without a newline.
 - `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept, never by a step of the wall clock. Pauses don't stop the clock.
-- On Windows, `session` and `heartbeat` lines also carry `boot`: the Windows interrupt time read right after `t`, in 100 ns units. It counts sleep and comes from the same counter as the recorder's monotonic clock, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs.
+- On Windows and macOS, `session` and `heartbeat` lines also carry `boot`: a clock that counts sleep, read right after `t`, in 100 ns units. It is the Windows interrupt time on Windows and `mach_continuous_time` on macOS. It counts sleep and the meeting clock follows the same counter, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs. Linux has no shared counter that counts sleep, so the field is missing there.
 - Lines appear in the order they were written, which is close to the order of `t` but not exactly: `segment_end` carries the end computed from the samples, a padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`, and `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
 
 | `kind` | Fields | When |
 |---|---|---|
-| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `recorder` | A recorder starts recording into the meeting. `session` counts from 1, `version` is the format version 1, `recorder` the recorder's version. `boot` is the Windows interrupt time when `t` was read, in 100 ns units; it counts sleep, and it is missing on other platforms |
+| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `recorder` | A recorder starts recording into the meeting. `session` counts from 1, `version` is the format version 1, `recorder` the recorder's version. `boot` is the clock that counts sleep when `t` was read, in 100 ns units: the Windows interrupt time, or `mach_continuous_time` on macOS. It is missing on Linux |
 | `track` | `t`, `track`, `source`, `device`, `deviceId`, `nativeRate`, `nativeChannels` | A track opened a device: at the start, after a loss, after a move and after a suspend. `device` is its name |
 | `segment` | `t`, `track`, `seq`, `file` | A segment starts at `t`. `file` is relative to the meeting folder, with forward slashes |
 | `segment_end` | `t`, `track`, `seq`, `samples` | A segment closed; `t` is its end |
@@ -224,7 +224,7 @@ Relative paths in the journal use forward slashes and start with `screen/`.
 
 ### Meeting time on the screen
 
-`t` in the screen journal is meeting time in milliseconds on the recorder's clock, so a frame and a passage with the same time show the same moment. The screen process takes its anchor from the latest `session` or `heartbeat` line of the recorder's current session and maps a moment to meeting time with `t = anchor.t + (boot - anchor.boot) / 10,000`, where `boot` is the moment's Windows interrupt time. A captured frame's own interrupt time comes from its capture timestamp, read back to back with the current interrupt time, so only the frame's age of a few milliseconds goes through another counter. Without `boot` in the timeline, it uses `t = anchor.t + (wall - anchor.wall)` and writes `anchor` `wall` in its `session` line.
+`t` in the screen journal is meeting time in milliseconds on the recorder's clock, so a frame and a passage with the same time show the same moment. The screen process takes its anchor from the latest `session` or `heartbeat` line of the recorder's current session and maps a moment to meeting time with `t = anchor.t + (boot - anchor.boot) / 10,000`, where `boot` is the moment's clock that counts sleep: the interrupt time on Windows, `mach_continuous_time` on macOS. A captured frame's own moment comes from its capture timestamp, read back to back with the current value of that clock, so only the frame's age of a few milliseconds goes through another counter. Without `boot` in the timeline, it uses `t = anchor.t + (wall - anchor.wall)` and writes `anchor` `wall` in its `session` line.
 
 - Time never steps back: a frame captured before the last time handed out gets that time.
 - A new recorder `session` line moves the anchor. When the new mapping differs from the old one by more than 50 ms at the same moment, the open video file ends with `video_end` reason `clock` and a new one starts, so each file maps to meeting time with one offset.
@@ -240,16 +240,16 @@ The screen process writes it after its `session` line, to a temporary name that 
 
 ### The screen journal
 
-`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records on Windows, the screen process holds the journal with read and delete sharing only, so a second screen process can't open it.
+`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records, the screen process keeps a second screen process out of the journal: on Windows with read and delete sharing only, on macOS and Linux with an exclusive lock on the open file.
 
 | `kind` | Fields | When |
 |---|---|---|
-| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on other platforms |
-| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the Windows device name, such as `\\.\DISPLAY1` |
+| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on Linux |
+| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the platform's monitor id: the Windows device name such as `\\.\DISPLAY1`, or the display id on macOS |
 | `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
 | `video_end` | `t`, `seq`, `reason`, `bytes` | A video file ended; `t` is the end of its last sample. `reason` is `pause`, `lock`, `monitor`, `resize`, `clock`, `stop`, `error`, `disk` or `crash` |
-| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what Windows read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
+| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what the platform's text reader read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
 | `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder` or `device` |
 | `lock`, `unlock` | `t` | The session locked or disconnected, and came back. Nothing is captured in between |
 | `device_lost` | `t` | The graphics device was removed or reset. The next `capture` line ends the gap |
@@ -287,7 +287,7 @@ A frames meeting with one slide change, locked for a minute, the heartbeats left
 - Video is H.264 at up to 15 frames per second, from a hardware encoder. A fragment ends at the first keyframe once it holds a second of video, and the sample after that second is always a keyframe. A frame goes to the encoder while the screen changes. One that changed next to nothing since the last frame sent waits, as Windows can hand over unchanged frames at 15 a second: after a quarter second without a sample the newest waiting frame goes in at its capture time, or else the last picture again. So a still screen records about four frames a second, a small change such as typed text shows within half a second, and fragments are 1 to 2 s long. The cursor isn't recorded.
 - A video file has the monitor's own size when each side is at most 4096 and the picture at most 36,864 macroblocks of 16 x 16, else it is scaled by one factor to fit both. Both sides are then rounded down to even, so a portrait 1440 x 2560 monitor keeps its size and 5120 x 1440 becomes 4096 x 1152.
 - A frame is saved when at least 1% of a 1/8-scale picture changed noticeably since the last saved frame, once the screen is still for 0.7 s or 3 s after the change began, at most one every 2 s, and one every 10 s after 10 saves in a row at that pace. One is always saved at the start of a capture, after a monitor switch, an unlock and a resume.
-- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by Windows' own OCR, in the user's language when Windows has a recognizer for it.
+- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by the platform's text reader, Windows' OCR on Windows and Vision on macOS, in the user's language when it reads that language.
 
 ### Readers
 
@@ -337,9 +337,9 @@ rukoo-voice-screen inspect <file.mp4>
 { "version": 1, "capture": true, "encoders": [{ "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }], "hardwareEncoder": { "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }, "ocr": ["nl-NL"], "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL S3220DGF", "x": 0, "y": 0, "width": 2560, "height": 1440, "primary": true }] }
 ```
 
-`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads.
+`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads, and on macOS the shared box walker reads them.
 
-`record`, `finalize` and `probe` need Windows; elsewhere they exit with code 2. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
+`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. Until ScreenCaptureKit lands, macOS records the synthetic screen of `--test` and refuses a real one. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
 
 `--test` is honoured only in a development copy, with `RUKOO_VOICE_DATA_DIR` set. It replaces the screen with a synthetic source and adds faults, as `synthetic:<w>x<h>` followed by options separated by commas:
 

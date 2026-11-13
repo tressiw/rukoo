@@ -141,7 +141,9 @@ jobs:
       - name: Probe how well this host keeps time
         run: node scripts/host-probe.mjs
       # Unlike Windows, this job fetches no speaker label assets: the NeMo runtime those tests need is a Windows
-      # build until the arm64 one is published, so they skip. The screen process's tests wait for its macOS port.
+      # build until the arm64 one is published, so they skip. The screen process's crash and clock tests run here
+      # on the synthetic screen with VideoToolbox's software encoder and Vision; its real-screen and Windows sink
+      # writer spikes stay on Windows.
       - run: cargo test --workspace --no-fail-fast
       # The five programs together, as voice/AGENTS.md builds them: the app finds the other four next to itself.
       - run: cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen

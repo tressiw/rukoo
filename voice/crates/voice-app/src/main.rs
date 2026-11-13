@@ -7,8 +7,10 @@
 
 mod appearance;
 mod args;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_mac;
 mod catalog;
 mod commands;
 mod devhook;

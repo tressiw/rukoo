@@ -37,6 +37,8 @@ const SKIPPED = [
   'voice-recorder pause_resume_mark_and_dictation_lines',
   'voice-recorder a_new_default_device_moves_the_track',
   'voice-engine a_failing_bucket_never_slows_the_recorder',
+  'voice-screen orchestration a_session_runs_to_the_recorders_stop',
+  'voice-screen clock_mac both_counters_move_with_the_clock',
 ];
 
 const C = String.raw`

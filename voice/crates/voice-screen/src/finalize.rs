@@ -11,8 +11,7 @@ use voice_screen_files::mp4::{self, Repaired};
 use voice_screen_files::paths;
 use voice_screen_files::screenfile;
 
-use crate::frames::jpeg;
-use crate::frames::ocr::Ocr;
+use crate::platform::{ImageText, Platform, Reader};
 use crate::{log, ExitError};
 
 /// What `finalize` did. `stopped` says whether it wrote `stop` now; `t` is the `stop` line's time.
@@ -37,8 +36,12 @@ impl Finalized {
 /// Finishes the screen journal of a meeting whose screen process died: repairs the open video
 /// file, journals orphan frames and writes `stop` at the last moment the journal or the video
 /// reached. Running it again changes nothing. It refuses a live screen process with exit code 4.
-pub fn finalize(meeting: &Path, reason: &str) -> Result<Finalized, ExitError> {
-    crate::com::init_mta();
+pub fn finalize<P: Platform>(
+    platform: &P,
+    meeting: &Path,
+    reason: &str,
+) -> Result<Finalized, ExitError> {
+    platform.init();
     if !meeting.is_dir() {
         return Err(ExitError::usage(format!(
             "meeting folder {} doesn't exist",
@@ -77,8 +80,8 @@ pub fn finalize(meeting: &Path, reason: &str) -> Result<Finalized, ExitError> {
         }
     };
     let (repaired, video_end) = close_open_video(meeting, &mut journal, &lines, &history);
-    let ocr = Ocr::new();
-    let orphans = journal_orphans(meeting, &mut journal, &history, &ocr);
+    let reader = platform.reader();
+    let orphans = journal_orphans(meeting, &mut journal, &history, reader.as_ref());
     remove_temp_files(meeting);
     let t = history.last_seen.max(video_end).max(orphans);
     journal
@@ -171,7 +174,7 @@ pub(crate) fn journal_orphans(
     meeting: &Path,
     journal: &mut JournalWriter,
     history: &History,
-    ocr: &Ocr,
+    reader: &dyn Reader,
 ) -> u64 {
     let dir = paths::screen_dir(meeting).join("frames");
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -191,24 +194,18 @@ pub(crate) fn journal_orphans(
     let mut last = 0;
     for (t, id) in orphans {
         let file = paths::frame_file(&id);
-        let bitmap = fs::read(meeting.join(&file))
-            .ok()
-            .and_then(|bytes| jpeg::decode(&bytes).ok());
-        let Some(bitmap) = bitmap else {
+        let Ok(bytes) = fs::read(meeting.join(&file)) else {
             log(format_args!("frame {id} doesn't open; left out"));
             continue;
         };
-        let (width, height) = (
-            bitmap.PixelWidth().unwrap_or(0) as u32,
-            bitmap.PixelHeight().unwrap_or(0) as u32,
-        );
-        let (text, status) = if !ocr.available() {
-            (String::new(), "none")
-        } else {
-            match ocr.read(&bitmap) {
-                Ok(lines) => (voice_screen_files::frames::clean_text(&lines), "ok"),
-                Err(_) => (String::new(), "failed"),
-            }
+        let Ok((text, (width, height))) = reader.read_image(&bytes) else {
+            log(format_args!("frame {id} doesn't open; left out"));
+            continue;
+        };
+        let (text, status) = match text {
+            ImageText::Text(lines) => (voice_screen_files::frames::clean_text(&lines), "ok"),
+            ImageText::None => (String::new(), "none"),
+            ImageText::Failed => (String::new(), "failed"),
         };
         let _ = journal.write(&Line::Frame {
             t,
@@ -218,7 +215,7 @@ pub(crate) fn journal_orphans(
             height,
             text,
             ocr: status.into(),
-            language: ocr.language(),
+            language: reader.language(),
         });
         last = last.max(t);
     }
