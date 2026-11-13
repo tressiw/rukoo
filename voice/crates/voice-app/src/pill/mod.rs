@@ -174,22 +174,41 @@ thread_local! {
     static SCREEN_HIT: std::cell::RefCell<Option<ButtonWindow>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Where a pill button is on screen. Windows scales CSS pixels to the monitor's DPI from the client
-/// origin; on macOS a CSS pixel is a point and only the y axis turns around.
+#[cfg(target_os = "macos")]
+thread_local! {
+    // macOS: the inert panel under the two, over the drawn pill.
+    static BODY: std::cell::RefCell<Option<ButtonWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Where a pill button's window goes on screen. Windows scales the drawn button's CSS pixels to the
+/// monitor's DPI from the client origin. On macOS a CSS pixel is a point and only the y axis turns
+/// around, and the panel reaches past the drawn button (`place::hit_areas`).
 #[cfg(windows)]
 type ButtonRect = place::Rect;
 #[cfg(target_os = "macos")]
-type ButtonRect = place::Frame;
+type ButtonRect = hit_mac::PanelFrame;
 
 #[cfg(windows)]
-fn button_rect(win: &WebviewWindow, css: &place::CssRect) -> Option<ButtonRect> {
+fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
+    let css = match target {
+        Target::Stop => layout.button,
+        Target::Screen => layout.screen_button,
+    }?;
     window::origin_and_scale(win)
-        .and_then(|(origin, scale)| place::css_to_physical(origin, scale, css))
+        .and_then(|(origin, scale)| place::css_to_physical(origin, scale, &css))
 }
 
 #[cfg(target_os = "macos")]
-fn button_rect(win: &WebviewWindow, css: &place::CssRect) -> Option<ButtonRect> {
-    window::button_frame(win, css)
+fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
+    let areas = place::hit_areas(layout);
+    let area = match target {
+        Target::Stop => areas.stop,
+        Target::Screen => areas.screen,
+    }?;
+    Some(hit_mac::PanelFrame {
+        hit: window::button_frame(win, &area.hit)?,
+        button: window::button_frame(win, &area.button),
+    })
 }
 
 #[cfg(windows)]
@@ -472,6 +491,7 @@ impl Pill {
             "pill": self.window().and_then(|w| window::recipe(&w)),
             "stopPanel": HIT.with(panel),
             "screenPanel": SCREEN_HIT.with(panel),
+            "bodyPanel": BODY.with(panel),
         })
     }
 
@@ -765,6 +785,13 @@ impl Pill {
                 }
             });
         }
+        #[cfg(target_os = "macos")]
+        BODY.with(|body| {
+            if let Some(body) = body.borrow().as_ref() {
+                body.set_appearance(&ui);
+                body.set_capture_excluded(ui.hide_pill_from_capture);
+            }
+        });
         #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (&self.catalog, keys::STOP_BUTTON, keys::SCREEN_BUTTON);
         // The button windows take the new capture setting too.
@@ -862,6 +889,19 @@ impl Pill {
                 }
             });
         }
+        #[cfg(target_os = "macos")]
+        BODY.with(|cell| {
+            if cell.borrow().is_some() {
+                return;
+            }
+            match ButtonWindow::create_inert() {
+                Ok(panel) => {
+                    panel.set_appearance(&ui);
+                    *cell.borrow_mut() = Some(panel)
+                }
+                Err(error) => log::error!("pill: could not create the body panel: {error}"),
+            }
+        });
     }
 
     /// What a click or a pointer move on one of the native button windows does.
@@ -899,22 +939,45 @@ impl Pill {
     /// while the pill shows them, else hides them.
     #[cfg(any(windows, target_os = "macos"))]
     fn update_hit(self: &Arc<Self>) {
-        let (want_stop, want_screen, button, screen_button, excluded) = {
+        let (want_stop, want_screen, layout, excluded) = {
             let i = self.lock();
             let snapshot = i.snapshot.as_ref().filter(|_| i.shown);
             (
                 snapshot.is_some_and(has_stop),
                 snapshot.is_some_and(has_screen),
-                i.layout.as_ref().and_then(|l| l.button),
-                i.layout.as_ref().and_then(|l| l.screen_button),
+                i.layout
+                    .clone()
+                    .filter(|_| snapshot.is_some_and(|s| s.visible)),
                 i.ui.hide_pill_from_capture,
             )
         };
         let win = self.window();
-        let rect = |want: bool, button: Option<place::CssRect>| match (want, button, &win) {
-            (true, Some(button), Some(win)) => button_rect(win, &button),
+        let rect = |want: bool, target: Target| match (want, &layout, &win) {
+            (true, Some(layout), Some(win)) => button_rect(win, layout, target),
             _ => None,
         };
+        // macOS: the body panel first, so the button panels order in above it.
+        #[cfg(target_os = "macos")]
+        {
+            let body = match (&layout, &win) {
+                (Some(layout), Some(win)) => place::hit_areas(layout)
+                    .body
+                    .and_then(|css| window::button_frame(win, &css))
+                    .map(|hit| hit_mac::PanelFrame { hit, button: None }),
+                _ => None,
+            };
+            BODY.with(|cell| {
+                if let Some(panel) = cell.borrow().as_ref() {
+                    match body {
+                        Some(place) => {
+                            panel.set_capture_excluded(excluded);
+                            panel.show_at(place);
+                        }
+                        None => panel.hide(),
+                    }
+                }
+            });
+        }
         let show = |cell: &std::cell::RefCell<Option<ButtonWindow>>, rect: Option<ButtonRect>| {
             let cell = cell.borrow();
             let Some(hit) = cell.as_ref() else {
@@ -929,8 +992,8 @@ impl Pill {
             }
             hit.is_visible()
         };
-        let stop = rect(want_stop, button);
-        let screen = rect(want_screen, screen_button);
+        let stop = rect(want_stop, Target::Stop);
+        let screen = rect(want_screen, Target::Screen);
         let visible = HIT.with(|cell| show(cell, stop));
         let screen_visible = SCREEN_HIT.with(|cell| show(cell, screen));
         let mut i = self.lock();

@@ -322,8 +322,8 @@ fn styles_ok(styles: &Value) -> bool {
         && native_ok(&styles["native"])
 }
 
-/// macOS: neither the pill nor the stop panel is ever the key window, neither hides with the app, and
-/// both sit at the pill's level.
+/// macOS: neither the pill, the stop panel nor the body panel is ever the key window, none hides with
+/// the app, and all sit at the pill's level.
 #[cfg(target_os = "macos")]
 fn native_ok(native: &Value) -> bool {
     let window_ok = |w: &Value| {
@@ -332,7 +332,7 @@ fn native_ok(native: &Value) -> bool {
             && w["canHide"] == false
             && w["level"] == json!(crate::pill::window::LEVEL)
     };
-    window_ok(&native["pill"]) && window_ok(&native["stopPanel"])
+    window_ok(&native["pill"]) && window_ok(&native["stopPanel"]) && window_ok(&native["bodyPanel"])
 }
 
 #[cfg(windows)]
