@@ -47,8 +47,10 @@ const REBUILD_AFTER: Duration = Duration::from_millis(2000);
 const PAGE_LOAD_LIMIT: Duration = Duration::from_secs(10);
 /// Display changes come in bursts; repair once they settle.
 const SETTLE: Duration = Duration::from_millis(300);
-/// How often the paint watchdog looks.
+/// How often the paint watchdog looks ...
 const WATCH_POLL: Duration = Duration::from_millis(100);
+/// ... and how often while the pill can't be seen, which can last until the next show.
+const UNSEEN_POLL: Duration = Duration::from_secs(1);
 /// At most one raise per this long from the foreground hook.
 const RAISE_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -979,12 +981,14 @@ impl Pill {
         }
         let mut clock = PaintClock::new(Instant::now());
         let mut waiting_logged = false;
+        let mut pause = WATCH_POLL;
         loop {
-            thread::sleep(WATCH_POLL);
+            thread::sleep(pause);
             if self.watch_state(seq, generation).is_none() {
                 return;
             }
             let expected = self.paint_expected();
+            pause = if expected { WATCH_POLL } else { UNSEEN_POLL };
             if !expected && !waiting_logged {
                 log::info!(
                     "pill: snapshot {seq} not painted while the pill can't be seen; the watchdog waits"
