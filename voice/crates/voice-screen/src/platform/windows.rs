@@ -21,7 +21,7 @@ use crate::video::writer::WinVideoMaker;
 
 use super::{
     Clocks, DeviceInfo, Disk, Displays, FrameIo, ImageText, Jpeg, Pixels, Platform, PlatformError,
-    Reader, ThreadInit, Thumbs, VideoMaker,
+    Reader, SourceOptions, ThreadInit, Thumbs, VideoMaker,
 };
 
 impl From<windows::core::Error> for PlatformError {
@@ -130,10 +130,12 @@ impl Platform for WindowsPlatform {
     fn source(
         &self,
         device: D3D,
-        test: Option<&TestSpec>,
+        options: &SourceOptions,
         to_main: SyncSender<Ev<Texture>>,
     ) -> Box<dyn super::Source> {
-        match test {
+        // Windows leaves Rukoo out through Rukoo's own content protection, so the exclusions
+        // are ignored here.
+        match &options.test {
             Some(spec) => Box::new(synthetic::new(device, to_main, spec)),
             None => Box::new(wgc::new(device, to_main)),
         }
@@ -189,7 +191,7 @@ impl Displays for WinDisplays {
         }
     }
 
-    fn z_order(&self) -> Vec<WindowInfo> {
+    fn z_order(&self, _exclude_pids: &[u32]) -> Vec<WindowInfo> {
         monitors_win::z_order()
     }
 

@@ -131,10 +131,15 @@ fn main() {
             "screen_mode_changes_require_each_clients_current_ack",
             screen_mode_changes_require_each_clients_current_ack,
         ),
+        (
+            "a_screen_without_permission_says_so_and_is_not_retried",
+            a_screen_without_permission_says_so_and_is_not_retried,
+        ),
     ];
     // The screen process records on Windows only until its macOS port, so the tests that start one
-    // run there. These two never start it and run everywhere: turning the screen off starts nothing,
-    // and the slow-screen case answers through a stand-in process of its own.
+    // run there. These three run everywhere: turning the screen off starts nothing, the slow-screen
+    // case answers through a stand-in process of its own, and the permission case's stand-in is a
+    // script that refuses the way the screen process does without a Screen Recording grant.
     #[cfg(not(windows))]
     let tests: Vec<(&str, fn())> = tests
         .into_iter()
@@ -143,6 +148,7 @@ fn main() {
                 *name,
                 "screen_off_sends_no_meeting_starting"
                     | "screen_select_answers_by_its_deadline_when_the_screen_is_slow"
+                    | "a_screen_without_permission_says_so_and_is_not_retried"
             )
         })
         .collect();
@@ -150,8 +156,8 @@ fn main() {
     #[cfg(not(windows))]
     assert_eq!(
         tests.len(),
-        2,
-        "the filter in main() keeps the two tests that start no screen process; a rename dropped one out, so \
+        3,
+        "the filter in main() keeps the three tests that start no real screen process; a rename dropped one out, so \
          update its name there"
     );
     let filters: Vec<String> = std::env::args()
@@ -1583,4 +1589,84 @@ fn screen_mode_changes_require_each_clients_current_ack() {
         before
     );
     rig.stop(&id);
+}
+
+/// A stand-in for `rukoo-voice-screen` that exits with code 5 on `record`, as the real one does
+/// when macOS' Screen Recording is off, and writes a line to `screen-runs.txt` each time it is
+/// asked to record. Other commands, such as `probe`, exit 0 without a word.
+fn refusing_screen(dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let script = dir.join("screen.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\nif \"%1\"==\"record\" (\r\n echo run>>\"%~dp0screen-runs.txt\"\r\n echo Screen Recording is off for Rukoo Voice 1>&2\r\n exit /b 5\r\n)\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        script
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("screen.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = record ]; then\n  echo run >> \"$(dirname \"$0\")/screen-runs.txt\"\n  echo 'Screen Recording is off for Rukoo Voice' >&2\n  exit 5\nfi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+}
+
+/// A screen process that refuses for want of the Screen Recording grant: the meeting records its
+/// audio, the pill and a notification say that Screen Recording is off, and the supervisor
+/// doesn't launch it again as it would a screen process that crashed.
+fn a_screen_without_permission_says_so_and_is_not_retried() {
+    let scripts = TempDir::new("no-permission-screen");
+    let mut h = engine_harness("no-permission", SCREEN.to_string());
+    h.screen_exe = refusing_screen(&scripts.join(""));
+    h.test_screen = None;
+    h.config(json!({"meetings_screen": "frames"}));
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    let dir = h.data().join("meetings").join(&id);
+
+    let notice = wait_notice(&h, "pill.screenPermission");
+    assert_eq!(notice.phase, PillPhase::Meeting);
+    let note = h.sink.wait_note("app.notify.meeting");
+    assert_eq!(
+        note.body_key.as_deref(),
+        Some("app.notify.screenPermission"),
+        "{note:?}"
+    );
+    assert!(note.body.contains("Screen Recording"), "{}", note.body);
+    assert!(note.body.contains("Privacy & Security"), "{}", note.body);
+
+    // The supervisor's own five tries are over in under a second at these timings, and a retry
+    // would have written the runs file again.
+    thread::sleep(Duration::from_millis(1500));
+    let runs = std::fs::read_to_string(scripts.join("screen-runs.txt")).unwrap_or_default();
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "the screen process ran again: {runs:?}"
+    );
+    assert!(
+        !h.sink
+            .notes()
+            .iter()
+            .any(|n| n.body.contains("stopped 5 times in a row")),
+        "the give-up notice came too"
+    );
+
+    // The audio goes on.
+    let timeline = dir.join("timeline.jsonl");
+    let before = std::fs::metadata(&timeline).unwrap().len();
+    wait_for("the recorder to go on", || {
+        std::fs::metadata(&timeline).unwrap().len() > before
+    });
+    assert_eq!(engine.tray_state().meeting.as_deref(), Some("recording"));
+    engine.stop_meeting(voice_engine::StopReason::User).unwrap();
+    engine.shutdown();
 }

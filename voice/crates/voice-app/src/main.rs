@@ -385,6 +385,7 @@ fn tray_action(app: &AppHandle, action: TrayAction) {
             shared.tray.notify(&Notification {
                 title_key: keys::TRAY_TOOLTIP.to_string(),
                 body: error.message,
+                body_key: None,
             });
         }
     });

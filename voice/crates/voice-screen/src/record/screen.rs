@@ -30,7 +30,9 @@ use crate::args::{Mode, TestSpec};
 use crate::finalize;
 use crate::frames::worker::{FrameDone, FrameJob, FrameWorker};
 use crate::log;
-use crate::platform::{Frame, Platform, PlatformError, Source, Thumbs, VideoError, WriterOptions};
+use crate::platform::{
+    Frame, Platform, PlatformError, Source, SourceOptions, Thumbs, VideoError, WriterOptions,
+};
 use crate::video::thread::{self as video_thread, VideoStart, VideoThread};
 use crate::video::FPS;
 
@@ -48,6 +50,19 @@ pub enum Ev<F> {
     DeviceLost(u64),
     /// The monitor of this generation's capture went away.
     CaptureClosed(u64),
+    /// The platform's capture stopped itself: ScreenCaptureKit stops the stream when the display
+    /// goes or the user revokes Screen Recording.
+    CaptureStopped(u64, CaptureStop),
+}
+
+/// Why a platform's capture stopped itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureStop {
+    /// The platform's own words, for the log.
+    pub why: String,
+    /// The stop says that this process may not capture the screen any more, as when the user
+    /// switches Screen Recording off, rather than that the display went away.
+    pub permission_lost: bool,
 }
 
 const TICK: Duration = Duration::from_millis(250);
@@ -126,6 +141,8 @@ pub(crate) struct Screen<P: Platform> {
     pub(crate) monitor: MonitorInfo,
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pub(crate) pinned: Option<String>,
+    /// `--exclude-pid`: the processes whose windows stay out of the recording.
+    pub(crate) exclude_pids: Vec<u32>,
     pub(crate) video: Option<VideoThread<P::Video>>,
     /// Which frames of the open video file go to the encoder.
     pub(crate) gate: VideoGate,
@@ -212,6 +229,11 @@ impl<P: Platform> Screen<P> {
                     self.on_monitor_lost();
                 }
             }
+            Ev::CaptureStopped(generation, stop) => {
+                if generation == self.generation && self.capturing {
+                    self.on_capture_stopped(&stop);
+                }
+            }
         }
     }
 
@@ -284,11 +306,11 @@ impl<P: Platform> Screen<P> {
             .clone()
             .ok_or_else(|| PlatformError::new("no graphics device"))?;
         if self.source.is_none() {
-            self.source = Some(self.platform.source(
-                device,
-                self.test.as_ref(),
-                self.events.clone(),
-            ));
+            let options = SourceOptions {
+                test: self.test.clone(),
+                exclude_pids: self.exclude_pids.clone(),
+            };
+            self.source = Some(self.platform.source(device, &options, self.events.clone()));
         }
         self.generation += 1;
         let generation = self.generation;
@@ -325,6 +347,12 @@ impl<P: Platform> Screen<P> {
                     return;
                 }
                 log(format_args!("can't capture {}: {e}", self.monitor.id));
+                // A grant that went away between two starts never comes back by itself: end the
+                // screen part instead of trying every second.
+                if self.permission_gone() {
+                    self.drop_for_permission();
+                    return;
+                }
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
         }
@@ -462,6 +490,61 @@ impl<P: Platform> Screen<P> {
         Ok(self.monitor.id.clone())
     }
 
+    /// The platform's capture stopped by itself, as ScreenCaptureKit's does when the display goes
+    /// or the user revokes Screen Recording. Without the permission the whole screen part goes at
+    /// once, so the frames and the video end cleanly and the audio carries on. Otherwise the
+    /// monitor rules take it from here: a display that came back is recorded again.
+    fn on_capture_stopped(&mut self, stop: &CaptureStop) {
+        log(format_args!("the screen capture stopped: {}", stop.why));
+        self.end_video("error");
+        self.stop_capture();
+        if stop.permission_lost || self.permission_gone() {
+            self.drop_for_permission();
+            return;
+        }
+        if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
+            // The display is still there, so the stream stopped for some other reason: try again
+            // after a pause, not at once, so a stream that stops as it starts doesn't spin.
+            self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+        } else {
+            self.on_monitor_lost();
+        }
+    }
+
+    /// Whether a real screen can't be captured by this process any more. The synthetic screen
+    /// never needs a grant.
+    fn permission_gone(&self) -> bool {
+        self.test.is_none() && self.platform.displays().missing_permission().is_some()
+    }
+
+    /// The screen part ends because the platform won't capture. Both parts go, and `apply_drop`
+    /// stops the session once they have: the files keep what reached them, and the audio, in the
+    /// recorder, carries on.
+    fn drop_for_permission(&mut self) {
+        let why = self
+            .platform
+            .displays()
+            .missing_permission()
+            .unwrap_or_else(|| "the system stopped the capture".into());
+        log(format_args!("the screen can't be captured any more: {why}"));
+        let ending =
+            (self.mode == Mode::Video && self.drops.video.is_none()) || self.drops.frames.is_none();
+        if ending {
+            // Before the drops, so whoever reads the journal knows why they follow and doesn't
+            // take them for a lost graphics device.
+            let t = self.now_t();
+            self.write(&Line::NoPermission { t });
+        }
+        if self.mode == Mode::Video && self.drops.video.is_none() {
+            self.drops.video = Some(Reason::Device);
+            self.apply_drop(Part::Video, Reason::Device);
+        }
+        if self.drops.frames.is_none() {
+            self.drops.frames = Some(Reason::Device);
+            self.apply_drop(Part::Frames, Reason::Device);
+        }
+    }
+
     fn on_monitor_lost(&mut self) {
         let list = self.monitors(true);
         if list.iter().any(|m| m.id == self.monitor.id) {
@@ -474,7 +557,7 @@ impl<P: Platform> Screen<P> {
         let next = match &self.test {
             Some(_) => list.first().map(|m| m.id.clone()),
             None => monitors::choose(
-                &self.platform.displays().z_order(),
+                &self.platform.displays().z_order(&self.exclude_pids),
                 self.platform.displays().cursor_monitor().as_deref(),
                 &list,
             ),

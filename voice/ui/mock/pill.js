@@ -58,6 +58,7 @@ export const STATES = {
   'meeting-video-dropped-device': { phase: 'meeting', notice: 'pill.videoDropped.device', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-frames-dropped': { phase: 'meeting', notice: 'pill.framesDropped.disk', meeting: meeting({ screen: 'frames' }) },
   'meeting-screen-failed': { phase: 'meeting', notice: 'pill.screenFailed', meeting: meeting({ screen: 'frames' }) },
+  'meeting-screen-permission': { phase: 'meeting', notice: 'pill.screenPermission', meeting: meeting({ screen: 'off' }) },
   'meeting-screen-moved': { phase: 'meeting', notice: 'pill.screenMoved', args: { name: 'DELL U2720Q' }, meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-screen-button': { phase: 'meeting', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-screen-off': { phase: 'meeting', meeting: meeting({ screen: 'off', screenSwitch: true }) },
