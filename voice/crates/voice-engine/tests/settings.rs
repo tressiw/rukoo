@@ -40,6 +40,7 @@ fn the_state_has_every_part_api_md_lists() {
         "models",
         "speakers",
         "storage",
+        "callSound",
         "screen",
         "updates",
         "ownkey",

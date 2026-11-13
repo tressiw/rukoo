@@ -206,6 +206,10 @@
     "message": "Screen recording stopped",
     "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. A notification says the same. voice/ui/pill.js (meetingView)."
   },
+  "pill.callSilent": {
+    "message": "No sound from the call",
+    "description": "Pill notice: the call track has recorded only exact silence while another app played sound; macOS may not let Voice record system audio. A notification explains where to fix it; the recording goes on. voice/ui/pill.js (meetingView)."
+  },
   "pill.screenChangeFailed": { "message": "Screen change failed", "description": "Pill notice when a selected screen mode or monitor could not be applied. The previous mode remains. Full details appear in a notification." },
   "pill.screenMoved": {
     "message": "Screen: {name}",
@@ -282,6 +286,10 @@
   "app.notify.screenStopped": {
     "message": "The screen recording was stopped from macOS' screen sharing control, so Voice records no screen for the rest of this meeting. The audio goes on.",
     "description": "Body of the tray notification titled \"Meeting recording\" when the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar. Screen Recording is still on. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.callSilent": {
+    "message": "Voice has heard no sound from the call for a minute while another app had its audio output open. If people in the call are talking, macOS may not be letting Voice record it. Check System Settings > Privacy & Security > Screen & System Audio Recording: Rukoo Voice should be switched on under System Audio Recording Only. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice there with the minus button and add it again. The recording goes on.",
+    "description": "Body of the tray notification titled \"Meeting recording\" when the call track has recorded only exact silence for a minute while another app had its audio output open. That is what a Mac gives when System Audio Recording is off for Voice or its permission went stale after an update, but also when nobody in the call talks, so it says to check the switch first and to remove and add Voice only when the switch is on. Names the panes in System Settings as macOS does in this language. Read by voice-app (see voice/ui/API.md)."
   },
   "app.notify.settings": {
     "message": "Rukoo Voice Settings",
@@ -390,6 +398,10 @@
   "settings.permissions.notAskedHelp": {
     "message": "Voice asks when it first needs it.",
     "description": "Settings > Permissions: note under a permission macOS hasn't asked for yet. voice/ui/settings.js (permissionsCard)."
+  },
+  "settings.permissions.systemAudioSilent": {
+    "message": "The last meeting's call held only silence for a minute while another app had its audio output open. If people were talking, check that Rukoo Voice is switched on here. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice with the minus button and add it again.",
+    "description": "Settings > Permissions: note under System Audio Recording after a meeting whose call held only exact silence while another app had its audio output open (SettingsState.callSound \"silent\"). A hint, not an error: it can also mean nobody talked. voice/ui/settings.js (permissionsCard)."
   },
   "settings.permissions.systemAudioUnknown": {
     "message": "macOS doesn't let Voice check this one; it asks when a meeting records the call.",
