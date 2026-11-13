@@ -301,6 +301,82 @@ pub fn css_to_points(window: &Frame, r: &CssRect) -> Option<Frame> {
     Some(Frame::new(left, bottom, right - left, top - bottom))
 }
 
+/// How far a macOS button panel reaches past its drawn button, in CSS pixels (points): a near miss
+/// still hits the button instead of falling through to the wallpaper, where a click reveals the desktop.
+#[cfg(any(target_os = "macos", test))]
+pub const BUTTON_MARGIN: f64 = 6.0;
+/// Left of the first button the reach stops at half of `pill.css`'s 8px between the pill's text and
+/// that button, so a click on the text never stops the meeting.
+#[cfg(any(target_os = "macos", test))]
+pub const LABEL_CLEARANCE: f64 = 4.0;
+/// How far the inert panel under the buttons reaches past the drawn pill.
+#[cfg(any(target_os = "macos", test))]
+pub const BODY_MARGIN: f64 = 6.0;
+
+/// One button's panel on macOS: where it takes clicks, and the drawn button inside it, which alone
+/// shows hover and pressed. In CSS pixels from the pill window's top left, as `pill_layout` sends.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitArea {
+    pub hit: CssRect,
+    pub button: CssRect,
+}
+
+/// The panels over the pill on macOS: the two buttons' and the inert one over the drawn pill.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HitAreas {
+    pub stop: Option<HitArea>,
+    pub screen: Option<HitArea>,
+    pub body: Option<CssRect>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn usable(r: &CssRect) -> bool {
+    [r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) && r.width > 0.0 && r.height > 0.0
+}
+
+/// The macOS panels for `layout`. Each button reaches `BUTTON_MARGIN` past its edges, except towards
+/// the other button, where the gap between them is split in half so the two never overlap, and
+/// towards the text on its left, where it stops at `LABEL_CLEARANCE`. The body is the drawn pill with
+/// `BODY_MARGIN` around it.
+#[cfg(any(target_os = "macos", test))]
+pub fn hit_areas(layout: &Layout) -> HitAreas {
+    let stop = layout.button.filter(usable);
+    let screen = layout.screen_button.filter(usable);
+    let area = |button: CssRect, other: Option<CssRect>| {
+        let right_edge = button.x + button.width;
+        let mut left = LABEL_CLEARANCE;
+        let mut right = BUTTON_MARGIN;
+        if let Some(other) = other {
+            if other.x < button.x {
+                left = ((button.x - (other.x + other.width)) / 2.0).max(0.0);
+            } else {
+                right = ((other.x - right_edge) / 2.0).max(0.0);
+            }
+        }
+        HitArea {
+            hit: CssRect {
+                x: button.x - left,
+                y: button.y - BUTTON_MARGIN,
+                width: button.width + left + right,
+                height: button.height + 2.0 * BUTTON_MARGIN,
+            },
+            button,
+        }
+    };
+    HitAreas {
+        stop: stop.map(|b| area(b, screen)),
+        screen: screen.map(|b| area(b, stop)),
+        body: layout.pill.filter(usable).map(|p| CssRect {
+            x: p.x - BODY_MARGIN,
+            y: p.y - BODY_MARGIN,
+            width: p.width + 2.0 * BODY_MARGIN,
+            height: p.height + 2.0 * BODY_MARGIN,
+        }),
+    }
+}
+
 /// Windows that are the desktop or the taskbar, not an app the user dictates into.
 #[cfg(any(windows, test))]
 pub fn is_shell_class(class: &str) -> bool {
@@ -726,5 +802,106 @@ mod tests {
         ] {
             assert_eq!(css_to_points(&window, &broken), None);
         }
+    }
+
+    fn css(x: f64, y: f64, width: f64, height: f64) -> CssRect {
+        CssRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn overlap(a: &CssRect, b: &CssRect) -> bool {
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    }
+
+    /// A meeting pill as the page lays it out: pill 96..289 x 24..60, the screen button 4px left of
+    /// the stop button, both 4px inside the pill's right and vertical edges, the text ending 8px left
+    /// of the screen button.
+    fn meeting_layout() -> Layout {
+        Layout {
+            seq: 1,
+            pill: Some(css(96.0, 24.0, 193.0, 36.0)),
+            button: Some(css(257.0, 28.0, 28.0, 28.0)),
+            screen_button: Some(css(225.0, 28.0, 28.0, 28.0)),
+        }
+    }
+
+    #[test]
+    fn mac_the_buttons_reach_past_their_edges_without_meeting_or_covering_the_text() {
+        let areas = hit_areas(&meeting_layout());
+        let stop = areas.stop.unwrap();
+        let screen = areas.screen.unwrap();
+        // The stop button: 6 above, below and right; half the 4px gap on its left.
+        assert_eq!(stop.hit, css(255.0, 22.0, 36.0, 40.0));
+        assert_eq!(stop.button, css(257.0, 28.0, 28.0, 28.0));
+        // The screen button: half the gap on its right, 4 of the 8px to the text on its left.
+        assert_eq!(screen.hit, css(221.0, 22.0, 34.0, 40.0));
+        // They touch and don't overlap.
+        assert_eq!(screen.hit.x + screen.hit.width, stop.hit.x);
+        assert!(!overlap(&stop.hit, &screen.hit));
+        // The text ends at 225 - 8 = 217; nothing reaches it.
+        assert!(screen.hit.x >= 217.0);
+        // Each drawn button is inside its own area.
+        for a in [stop, screen] {
+            assert!(a.hit.x <= a.button.x && a.hit.y <= a.button.y);
+            assert!(a.hit.x + a.hit.width >= a.button.x + a.button.width);
+            assert!(a.hit.y + a.hit.height >= a.button.y + a.button.height);
+        }
+        // The body is the drawn pill and a margin, under both.
+        assert_eq!(areas.body, Some(css(90.0, 18.0, 205.0, 48.0)));
+    }
+
+    #[test]
+    fn mac_the_stop_button_alone_keeps_clear_of_the_text() {
+        let layout = Layout {
+            screen_button: None,
+            ..meeting_layout()
+        };
+        let areas = hit_areas(&layout);
+        assert_eq!(areas.stop.unwrap().hit, css(253.0, 22.0, 38.0, 40.0));
+        assert_eq!(areas.screen, None);
+        // The widened "Stop?" button moves its left edge; the reach follows it.
+        let wide = Layout {
+            button: Some(css(233.5, 28.0, 52.5, 28.0)),
+            ..layout
+        };
+        let hit = hit_areas(&wide).stop.unwrap().hit;
+        assert_eq!((hit.x, hit.width), (229.5, 62.5));
+    }
+
+    #[test]
+    fn mac_touching_or_overlapping_buttons_split_nothing() {
+        let layout = Layout {
+            button: Some(css(250.0, 28.0, 28.0, 28.0)),
+            screen_button: Some(css(225.0, 28.0, 28.0, 28.0)),
+            ..meeting_layout()
+        };
+        let areas = hit_areas(&layout);
+        let (stop, screen) = (areas.stop.unwrap().hit, areas.screen.unwrap().hit);
+        assert_eq!(stop.x, 250.0);
+        assert_eq!(screen.x + screen.width, 253.0);
+    }
+
+    #[test]
+    fn mac_a_dictation_pill_has_only_the_body_and_broken_rectangles_nothing() {
+        let layout = Layout {
+            seq: 2,
+            pill: Some(css(130.0, 24.0, 124.0, 36.0)),
+            button: None,
+            screen_button: None,
+        };
+        let areas = hit_areas(&layout);
+        assert_eq!((areas.stop, areas.screen), (None, None));
+        assert!(areas.body.is_some());
+        let broken = Layout {
+            seq: 3,
+            pill: Some(css(f64::NAN, 0.0, 10.0, 10.0)),
+            button: Some(css(0.0, 0.0, 0.0, 28.0)),
+            screen_button: None,
+        };
+        assert_eq!(hit_areas(&broken), HitAreas::default());
     }
 }

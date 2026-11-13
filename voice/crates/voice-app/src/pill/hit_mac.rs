@@ -10,11 +10,17 @@
 //! first mouse, so the click that reaches a window of an inactive app is a click and not only an
 //! activation attempt.
 //!
-//! Hover comes from a tracking area that is active while Voice isn't, which a plain window of an
-//! inactive app wouldn't get. The page draws hover and pressed from `pill://pointer`
-//! (`pointer.rs` decides what it hears).
+//! Each button panel reaches a few points past its drawn button (`place::hit_areas`), so a near miss
+//! still clicks instead of landing on the wallpaper, where macOS's "click wallpaper to reveal desktop"
+//! moves every window aside. Hover comes from a tracking area over the drawn button alone, active
+//! while Voice isn't, so only the button itself looks hovered or pressed. The page draws those looks
+//! from `pill://pointer` (`pointer.rs` decides what it hears).
+//!
+//! A third, inert panel of the same kind lies under the two, over the drawn pill and a margin around
+//! it: a click on the pill's text or edge is swallowed there, never reaching the app or the wallpaper
+//! behind, and does nothing else. It is as non-activating as the button panels.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
@@ -39,6 +45,25 @@ pub type HitHandler = Box<dyn Fn(HitEvent)>;
 pub struct PanelIvars {
     handler: HitHandler,
     pointer: RefCell<PointerState>,
+    /// The drawn button in the panel's own coordinates; `None` for the inert body panel.
+    button: Cell<Option<NSRect>>,
+    /// The body panel: takes clicks and does nothing with them.
+    inert: bool,
+}
+
+/// Half-open, as AppKit hit-tests.
+fn contains(r: NSRect, p: NSPoint) -> bool {
+    p.x >= r.origin.x
+        && p.x < r.origin.x + r.size.width
+        && p.y >= r.origin.y
+        && p.y < r.origin.y + r.size.height
+}
+
+/// Where a panel goes, in AppKit screen points: the area it takes clicks in and the drawn button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelFrame {
+    pub hit: Frame,
+    pub button: Option<Frame>,
 }
 
 define_class!(
@@ -61,17 +86,25 @@ define_class!(
         }
 
         #[unsafe(method(mouseDown:))]
-        fn mouse_down(&self, _event: &NSEvent) {
-            let events = self.ivars().pointer.borrow_mut().down();
+        fn mouse_down(&self, event: &NSEvent) {
+            if self.ivars().inert {
+                return;
+            }
+            let point = event.locationInWindow();
+            let on_button = self.ivars().button.get().is_some_and(|b| contains(b, point));
+            let events = self.ivars().pointer.borrow_mut().down(on_button);
             self.report(events);
         }
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            let point = event.locationInWindow();
+            if self.ivars().inert {
+                return;
+            }
             let size = self.frame().size;
-            let inside = point.x >= 0.0 && point.x < size.width && point.y >= 0.0 && point.y < size.height;
-            let events = self.ivars().pointer.borrow_mut().up(inside);
+            let bounds = NSRect::new(NSPoint::new(0.0, 0.0), size);
+            let on_panel = contains(bounds, event.locationInWindow());
+            let events = self.ivars().pointer.borrow_mut().up(on_panel);
             self.report(events);
         }
 
@@ -134,17 +167,30 @@ define_class!(
 pub struct HitPanel {
     panel: Retained<ButtonPanel>,
     view: Retained<ButtonView>,
+    /// The tracking area over the drawn button, replaced when the button moves.
+    tracking: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 impl HitPanel {
     /// A hidden, invisible button panel. `title` is what screen readers announce.
     pub fn create(title: &str, handler: HitHandler) -> Result<HitPanel, String> {
+        Self::build(title, handler, false)
+    }
+
+    /// The hidden body panel, which swallows clicks on the pill around its buttons.
+    pub fn create_inert() -> Result<HitPanel, String> {
+        Self::build("", Box::new(|_| {}), true)
+    }
+
+    fn build(title: &str, handler: HitHandler, inert: bool) -> Result<HitPanel, String> {
         let mtm =
             MainThreadMarker::new().ok_or("the button panel has to be made on the main thread")?;
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
         let this = ButtonPanel::alloc(mtm).set_ivars(PanelIvars {
             handler,
             pointer: RefCell::new(PointerState::default()),
+            button: Cell::new(None),
+            inert,
         });
         let mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
         // SAFETY: NSPanel's designated initializer, on a freshly allocated instance of a subclass that
@@ -161,25 +207,14 @@ impl HitPanel {
         // SAFETY: NSView's designated initializer on a fresh instance of a subclass without ivars.
         let view: Retained<ButtonView> =
             unsafe { msg_send![ButtonView::alloc(mtm), initWithFrame: frame] };
-        // SAFETY: a fresh tracking area owned by the panel, which outlives the view it is added to.
-        let tracking = unsafe {
-            NSTrackingArea::initWithRect_options_owner_userInfo(
-                NSTrackingArea::alloc(),
-                frame,
-                NSTrackingAreaOptions::MouseEnteredAndExited
-                    | NSTrackingAreaOptions::ActiveAlways
-                    | NSTrackingAreaOptions::InVisibleRect
-                    | NSTrackingAreaOptions::EnabledDuringMouseDrag,
-                Some(&panel),
-                None,
-            )
-        };
-        view.addTrackingArea(&tracking);
-        // VoiceOver announces a button with the stop or screen label, and can press it.
-        view.setAccessibilityElement(true);
-        // SAFETY: AppKit's role constants are immutable strings that last as long as the process.
-        view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
-        view.setAccessibilityLabel(Some(&NSString::from_str(title)));
+        // VoiceOver announces a button with the stop or screen label, and can press it. The body
+        // panel isn't anything to VoiceOver.
+        view.setAccessibilityElement(!inert);
+        if !inert {
+            // SAFETY: AppKit's role constants are immutable strings that last as long as the process.
+            view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+            view.setAccessibilityLabel(Some(&NSString::from_str(title)));
+        }
         panel.setContentView(Some(&view));
 
         // Not `setFloatingPanel(true)`: that moves the panel to the floating level, below the pill.
@@ -199,7 +234,11 @@ impl HitPanel {
         // SAFETY: nobody else holds a claim on this window's release; Rust owns it.
         unsafe { panel.setReleasedWhenClosed(false) };
         panel.orderOut(None);
-        Ok(HitPanel { panel, view })
+        Ok(HitPanel {
+            panel,
+            view,
+            tracking: RefCell::new(None),
+        })
     }
 
     pub fn set_title(&self, title: &str) {
@@ -210,17 +249,47 @@ impl HitPanel {
 
     /// Over the button and above the pill: called right after every raise of the pill, so it sits
     /// directly above it at the same level.
-    pub fn show_at(&self, frame: Frame) {
-        if frame.w <= 0.0 || frame.h <= 0.0 {
+    pub fn show_at(&self, place: PanelFrame) {
+        let hit = place.hit;
+        if hit.w <= 0.0 || hit.h <= 0.0 {
             return;
         }
-        let rect = NSRect::new(
-            NSPoint::new(frame.x, frame.y),
-            NSSize::new(frame.w, frame.h),
-        );
+        let rect = NSRect::new(NSPoint::new(hit.x, hit.y), NSSize::new(hit.w, hit.h));
         self.panel.setFrame_display(rect, false);
+        let button = place.button.map(|b| {
+            NSRect::new(
+                NSPoint::new(b.x - hit.x, b.y - hit.y),
+                NSSize::new(b.w, b.h),
+            )
+        });
+        if !self.panel.ivars().inert && self.panel.ivars().button.replace(button) != button {
+            self.track(button);
+        }
         self.panel.setLevel(window::LEVEL);
         self.panel.orderFrontRegardless();
+    }
+
+    /// Hover over the drawn button only: a tracking area of that size, active while Voice isn't.
+    fn track(&self, button: Option<NSRect>) {
+        if let Some(old) = self.tracking.borrow_mut().take() {
+            self.view.removeTrackingArea(&old);
+        }
+        let Some(button) = button else { return };
+        // SAFETY: a fresh tracking area whose owner is the panel; AppKit holds the owner weakly, and
+        // the panel outlives the view it is added to.
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                button,
+                NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::ActiveAlways
+                    | NSTrackingAreaOptions::EnabledDuringMouseDrag,
+                Some(&self.panel),
+                None,
+            )
+        };
+        self.view.addTrackingArea(&area);
+        *self.tracking.borrow_mut() = Some(area);
     }
 
     pub fn hide(&self) {
