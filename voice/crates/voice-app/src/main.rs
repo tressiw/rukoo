@@ -127,7 +127,13 @@ fn run() -> i32 {
 fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
     let exit_code = Arc::new(AtomicI32::new(0));
     let setup_code = exit_code.clone();
-    let built = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // A menu bar app never asks to be the active app at launch. tao asks by default, with
+    // `activateIgnoringOtherApps(true)`, and macOS can hold that request for an app launched in the
+    // background and grant it later, when the pill first shows: the user's app then loses the keys.
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(false);
+    let built = builder
         .invoke_handler(commands::handler())
         .setup(move |app| {
             setup(app.handle(), data_dir, dev_mode, args, guard, &setup_code);
