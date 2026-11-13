@@ -367,7 +367,8 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         seq,
     )?;
     // The button windows over the pill's stop and screen buttons: Windows and macOS. They follow the
-    // page's layout, which a Mac without anyone at its console never sends (no frames run there).
+    // layout the page sends after it painted, so on a Mac whose screen runs no frames (locked, or a
+    // session nobody shows) they wait for that paint, as the capture does.
     #[cfg(windows)]
     wait(
         "the stop window over the button",
@@ -375,7 +376,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         || pill.status().hit_visible,
     )?;
     #[cfg(target_os = "macos")]
-    if crate::session_mac::at_the_console() {
+    if painted(&pill, seq) {
         wait(
             "the stop window over the button",
             Duration::from_secs(5),

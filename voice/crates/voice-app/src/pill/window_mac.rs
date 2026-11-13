@@ -512,22 +512,26 @@ pub fn button_frame(window: &WebviewWindow, css: &place::CssRect) -> Option<Fram
 }
 
 /// Whether WebKit can paint the pill now. It runs no frames for a window that is wholly covered or
-/// off screen (the lock screen, a switched-out session), so the page's paint acknowledgement can't
-/// come then, and the paint watchdog waits instead of rebuilding a window that is fine.
+/// off screen, so the page's paint acknowledgement can't come then, and the paint watchdog waits
+/// instead of rebuilding a window that is fine.
+///
+/// The screen lock counts, but not whether the session is the console's: a session someone uses over
+/// Screen Sharing paints without being on the console. A switched-out session nobody shows is told
+/// apart by the window's occlusion, which AppKit reports per session.
 pub fn paint_expected(window: &WebviewWindow) -> bool {
-    let at_console = crate::session_mac::at_the_console();
+    let (_, screen_locked) = crate::session_mac::session_flags();
     let visible = with_ns(window, |ns, _| {
         ns.occlusionState()
             .contains(NSWindowOcclusionState::Visible)
     });
-    paint_expected_from(at_console, visible)
+    paint_expected_from(screen_locked, visible)
 }
 
-/// The rule `paint_expected` applies: someone is at the console and the window isn't occluded. A
-/// window that can't be asked (gone, or not the main thread) counts as painting, so the watchdog still
+/// The rule `paint_expected` applies: the screen isn't locked and the window isn't occluded. A window
+/// that can't be asked (gone, or not the main thread) counts as painting, so the watchdog still
 /// repairs it.
-pub fn paint_expected_from(at_console: bool, occlusion_visible: Option<bool>) -> bool {
-    at_console && occlusion_visible != Some(false)
+pub fn paint_expected_from(screen_locked: Option<bool>, occlusion_visible: Option<bool>) -> bool {
+    screen_locked != Some(true) && occlusion_visible != Some(false)
 }
 
 #[cfg(test)]
@@ -558,15 +562,16 @@ mod tests {
 
     #[test]
     fn the_watchdog_waits_while_nobody_can_see_the_pill() {
-        assert!(paint_expected_from(true, Some(true)));
+        assert!(paint_expected_from(Some(false), Some(true)));
+        assert!(paint_expected_from(None, Some(true)), "no session flag");
         assert!(
-            paint_expected_from(true, None),
+            paint_expected_from(Some(false), None),
             "unknown counts as painting"
         );
-        // Wholly covered, or the display's content gone (lock screen): WebKit paints nothing.
-        assert!(!paint_expected_from(true, Some(false)));
-        // Locked or switched out.
-        assert!(!paint_expected_from(false, Some(true)));
-        assert!(!paint_expected_from(false, None));
+        // Wholly covered, or a switched-out session nobody shows: WebKit paints nothing.
+        assert!(!paint_expected_from(Some(false), Some(false)));
+        // Locked.
+        assert!(!paint_expected_from(Some(true), Some(true)));
+        assert!(!paint_expected_from(Some(true), None));
     }
 }
