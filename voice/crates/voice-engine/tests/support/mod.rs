@@ -878,6 +878,9 @@ impl Harness {
         let data = self.data();
         std::fs::create_dir_all(&data).unwrap();
         let mut cfg = voice_core::Config::defaults(self.dev_mode);
+        // The tests press F13 and F14 on every platform; a Mac's default keys are other ones.
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         cfg.switch_audio_provider("orukeet");
         let mut value = serde_json::to_value(&cfg).unwrap();
         for (key, v) in patch.as_object().unwrap() {

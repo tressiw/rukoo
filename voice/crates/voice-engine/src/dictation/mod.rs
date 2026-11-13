@@ -1168,6 +1168,9 @@ mod tests {
     #[test]
     fn hotkeys_come_from_settings_with_ownkeys_fallbacks() {
         let mut cfg = Config::defaults(true);
+        // Pinned, so the test reads the same on a Mac, whose development copy has other defaults.
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         let (keys, stop) = hotkeys(&cfg, true);
         assert_eq!(
             (keys.dictate, keys.rewrite, stop),
@@ -1177,9 +1180,15 @@ mod tests {
         cfg.rewrite_hotkey = "off".into();
         cfg.meetings_stop_key = "f15".into();
         let (keys, stop) = hotkeys(&cfg, true);
+        // An unknown key falls back to F13, or to Right Option on a Mac.
+        let fallback = if cfg!(target_os = "macos") {
+            Key::RightAlt
+        } else {
+            Key::F13
+        };
         assert_eq!(
             (keys.dictate, keys.rewrite, stop),
-            (Key::F13, None, Some(Key::F15))
+            (fallback, None, Some(Key::F15))
         );
         let (keys, _) = hotkeys(&cfg, false);
         assert_eq!(keys.dictate, Key::RightAlt);

@@ -65,15 +65,18 @@ fn installed_defaults() {
 
 #[test]
 fn development_defaults_never_use_ownkeys_keys() {
+    // On Windows and Linux a development copy uses F13 and F14; a Mac has no Ownkey and uses the
+    // installed keys.
+    let keys = if cfg!(target_os = "macos") {
+        ("right alt", "right command")
+    } else {
+        ("f13", "f14")
+    };
     let cfg = Config::defaults(true);
-    assert_eq!(cfg.hotkey, "f13");
-    assert_eq!(cfg.rewrite_hotkey, "f14");
+    assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
     // Missing or unknown keys fall back to the development keys too.
     let cfg = Config::from_value(&json!({"hotkey": "nonsense"}), true);
-    assert_eq!(
-        (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
-        ("f13", "f14")
-    );
+    assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
 }
 
 #[test]
