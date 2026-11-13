@@ -20,6 +20,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// How long stopping waits for answers already on their way and for their log lines.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+
 /// A TcpListener on 127.0.0.1, a thread per connection, the store, the log and the faults.
 pub struct FakeS3 {
     addr: SocketAddr,
@@ -214,8 +217,26 @@ impl Drop for FakeS3 {
         if let Some(accept) = self.accept.take() {
             let _ = accept.join();
         }
+        // A connection between requests sees EOF and leaves, while one that is writing its answer
+        // still finishes and logs it. A request is logged after its answer, so a client that got
+        // one finds its line once `stop` returns.
         for stream in lock(&self.shared.connections).values() {
-            let _ = stream.shutdown(Shutdown::Both);
+            let _ = stream.shutdown(Shutdown::Read);
+        }
+        // A thread drops its entry once it has logged its last answer.
+        let deadline = Instant::now() + STOP_WAIT;
+        loop {
+            if lock(&self.shared.connections).is_empty() {
+                return;
+            }
+            if Instant::now() >= deadline {
+                // A client that doesn't read its answer keeps the thread in a write: let go.
+                for stream in lock(&self.shared.connections).values() {
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
