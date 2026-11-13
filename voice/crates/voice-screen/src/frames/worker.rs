@@ -505,8 +505,8 @@ fn write_synced(path: &Path, bytes: &[u8], fault: bool) -> io::Result<()> {
     let tmp = path.with_extension("jpg.tmp");
     let result = (|| {
         if fault {
-            // ERROR_DISK_FULL, as a full disk reports it.
-            return Err(io::Error::from_raw_os_error(112));
+            // The platform's full-disk error: ERROR_DISK_FULL on Windows, ENOSPC on Unix.
+            return Err(crate::disk::test_disk_full_error());
         }
         let mut f = File::create(&tmp)?;
         f.write_all(bytes)?;
@@ -546,7 +546,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f-000001000.jpg");
         let e = write_synced(&path, b"jpeg", true).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(112));
+        assert!(crate::disk::is_disk_full(&e), "{e}");
         assert!(!path.exists() && !path.with_extension("jpg.tmp").exists());
         write_synced(&path, b"jpeg", false).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"jpeg");

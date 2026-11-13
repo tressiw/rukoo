@@ -17,6 +17,8 @@ use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
 use crate::args::TestSpec;
 use crate::record::Ev;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(windows)]
 pub mod windows;
 

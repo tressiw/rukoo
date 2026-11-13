@@ -1,6 +1,7 @@
 //! `rukoo-voice-screen inspect <file.mp4>`: what a video file holds, from the box walker on every
 //! platform and, on Windows, from Media Foundation's source reader too, which reads the samples
-//! the way a player would.
+//! the way a player would. macOS reads the samples through the box walker (`voice_screen_files`)
+//! as well, so the report has the same shape without Media Foundation.
 
 use std::path::Path;
 
@@ -9,8 +10,8 @@ use voice_screen_files::mp4;
 
 /// `{ bytes, complete, completeBytes, timescale, fragments, fragmentMs, durationMs, minFragmentMs,
 /// maxFragmentMs, samples, syncFragments, keyframes, reader }`, or `{ error }`. `reader` is
-/// `{ samples, keyframes, lastMs, width, height }` from Media Foundation on Windows, `{ error }`
-/// when it can't read the file, and `null` elsewhere.
+/// `{ samples, keyframes, lastMs, width, height }`: from Media Foundation on Windows, from the
+/// box walker on macOS, `{ error }` when it can't read the file, and `null` on Linux.
 pub fn inspect(path: &Path) -> Value {
     let index = match mp4::index_path(path) {
         Ok(index) => index,
@@ -45,9 +46,55 @@ pub fn inspect(path: &Path) -> Value {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_samples(_path: &Path) -> Value {
     Value::Null
+}
+
+/// What the shared MP4 box walker reads of the file: its samples, the fragments that start on a
+/// keyframe, where the media ends, and the size the `avc1` sample entry declares.
+#[cfg(target_os = "macos")]
+fn read_samples(path: &Path) -> Value {
+    let Ok(index) = mp4::index_path(path) else {
+        return json!({ "error": format!("can't read {}", path.display()) });
+    };
+    let samples: u64 = index.fragments.iter().map(|f| u64::from(f.samples)).sum();
+    let keyframes = index.fragments.iter().filter(|f| f.first_sync).count() as u64;
+    let last_ms = index
+        .fragments
+        .last()
+        .map_or(0, |fragment| index.to_ms(fragment.end()));
+    let (width, height) = file_size(path, &index).unwrap_or((0, 0));
+    json!({
+        "samples": samples,
+        "keyframes": keyframes,
+        "lastMs": last_ms,
+        "width": width,
+        "height": height,
+        "error": Value::Null,
+    })
+}
+
+/// The picture size from the file's `avc1` sample entry, which the encoder wrote.
+#[cfg(target_os = "macos")]
+fn file_size(path: &Path, index: &mp4::Index) -> Option<(u32, u32)> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut moov = vec![0u8; (index.moov.end - index.moov.start) as usize];
+    file.seek(SeekFrom::Start(index.moov.start)).ok()?;
+    file.read_exact(&mut moov).ok()?;
+    // The entry is a box: four bytes of size, then `avc1`, then 24 bytes before the width and
+    // height, as `voice_screen_files::fmp4` writes them.
+    let at = moov.windows(8).position(|window| &window[4..] == b"avc1")?;
+    let payload = at + 8;
+    let width = u32::from(u16::from_be_bytes(
+        moov.get(payload + 24..payload + 26)?.try_into().ok()?,
+    ));
+    let height = u32::from(u16::from_be_bytes(
+        moov.get(payload + 26..payload + 28)?.try_into().ok()?,
+    ));
+    Some((width, height))
 }
 
 #[cfg(windows)]
