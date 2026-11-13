@@ -4635,6 +4635,7 @@ name = "voice-audio"
 version = "0.1.0"
 dependencies = [
  "hound",
+ "libc",
 ]
 
 [[package]]
@@ -4748,6 +4749,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "hound",
+ "libc",
  "serde",
  "serde_json",
  "voice-audio",
@@ -4778,6 +4780,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
+ "libc",
  "serde",
  "serde_json",
  "voice-protocol",
