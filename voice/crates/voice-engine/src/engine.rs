@@ -479,8 +479,12 @@ impl Core {
             *last = Some((id.to_string(), call));
             previous
         };
+        if self.meetings.controller.current().map(|r| r.id).as_deref() == Some(id) {
+            let silent = call == CallSound::Silent;
+            self.pill
+                .update(|p, now| p.meeting_call_silent(silent, now));
+        }
         if call == CallSound::Silent && previous != Some(CallSound::Silent) {
-            self.screen_notice(id, Some(notices::CALL_SILENT), Map::new(), DROP_HOLD);
             self.notify_keyed(NOTIFY_MEETING, NOTIFY_CALL_SILENT, CALL_SILENT_TEXT);
         }
         self.settings_changed();

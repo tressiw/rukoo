@@ -427,6 +427,11 @@ fn a_silent_call_says_so_once_and_settings_learns_it() {
         .filter(|n| n.body_key.as_deref() == Some("app.notify.callSilent"))
         .count();
     assert_eq!(told, 1);
+    // The notice stands while the call is silent, also past the 4 s a passing notice gets, and
+    // ahead of the synthetic microphone's state.
+    std::thread::sleep(Duration::from_millis(3000));
+    let notice = h.sink.last_pill().and_then(|p| p.notice).map(|n| n.key);
+    assert_eq!(notice.as_deref(), Some("pill.callSilent"));
     assert_eq!(pill_meeting_state(&h).as_deref(), Some("recording"));
     let state = engine.settings_state();
     if cfg!(target_os = "macos") {
