@@ -1631,6 +1631,9 @@ impl<P: Platform> Screen<P> {
             "encoder": self.encoder.as_ref().map(|(name, _)| name.as_str()),
             "hardware": self.encoder.as_ref().map(|(_, hardware)| *hardware),
             "saved": self.frames_saved,
+            // The frames the frame worker still holds, for its JPEG or its text. A frame's
+            // `frame` line is written after both.
+            "pending": self.worker.pending(),
         })
     }
 }

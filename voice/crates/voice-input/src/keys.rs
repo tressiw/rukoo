@@ -112,6 +112,12 @@ impl Key {
 
     /// The macOS virtual-key code, where a Mac keyboard has the key. Right
     /// Option is the same physical key as Right Alt, so it shares its code.
+    ///
+    /// A right-hand modifier's own code reads down only where macOS reports
+    /// it: on some Macs, macOS 27 with a Magic Keyboard included, the key
+    /// state folds it onto the pair's left-hand code and only the flags show
+    /// the side. `voice-input`'s macOS backend decides the side from both, so
+    /// this stays the code the key itself has.
     pub fn mac_code(self) -> Option<u16> {
         match self {
             Key::RightAlt => Some(0x3D),     // kVK_RightOption
@@ -228,6 +234,8 @@ mod tests {
         assert_eq!(Key::ScrollLock.mac_code(), None);
     }
 
+    /// The codes the keys have. A right-hand modifier's own code is not
+    /// always the one macOS reads it under: see `mac::keys`.
     #[test]
     fn the_mac_key_codes_match_the_keyboard() {
         let codes: Vec<(&str, u16)> = Key::MACOS

@@ -8804,7 +8804,8 @@ body.meeting-mode .titlebar-search {
 .mt-mark.is-gap .mt-line svg,
 .mt-mark.is-dropped .mt-line svg,
 .mt-mark.is-video_dropped .mt-line svg,
-.mt-mark.is-screen_gap .mt-line svg {
+.mt-mark.is-screen_gap .mt-line svg,
+.mt-mark.is-silent .mt-line svg {
   color: var(--warn);
 }
 

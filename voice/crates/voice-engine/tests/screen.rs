@@ -378,6 +378,47 @@ impl Rig {
         found.unwrap()
     }
 
+    /// Waits until the screen process has journaled every frame it captured: it holds none, and
+    /// two replies in a row say so with the journal's frame count unchanged between them. A
+    /// frame's line is written after its JPEG and text, so a frame captured before a mode change
+    /// can reach the journal after the change's line. One `pending: 0` reply isn't enough: a
+    /// frame already handed back can still be queued behind that reply. The reply after it is
+    /// handled after that frame, so with no work left the count no longer moves.
+    fn wait_frames_settled(&self, id: &str) {
+        let frames = || {
+            self.journal(id)
+                .iter()
+                .filter(|l| matches!(l, Line::Frame { .. }))
+                .count()
+        };
+        // The frame count after the last reply that found the worker empty.
+        let mut settled_at: Option<usize> = None;
+        wait_for("the screen's frames to settle", || {
+            let answer = screenfile::live(&self.dir(id)).and_then(|file| {
+                control::request(
+                    file.port,
+                    &file.token,
+                    json!({ "cmd": "status" }),
+                    Duration::from_secs(5),
+                )
+                .ok()
+            });
+            let Some(status) = answer else {
+                settled_at = None;
+                return false;
+            };
+            if status["pending"].as_u64() != Some(0) {
+                settled_at = None;
+                return false;
+            }
+            // After the reply, so it counts what that reply's request was queued behind.
+            let counted = frames();
+            let settled = settled_at == Some(counted);
+            settled_at = Some(counted);
+            settled
+        });
+    }
+
     fn session(&self, id: &str) -> (u64, u64) {
         match self.wait_line(id, "the screen session", |l| {
             matches!(l, Line::Session { .. })
@@ -1570,6 +1611,10 @@ fn screen_mode_changes_require_each_clients_current_ack() {
         )
         .unwrap();
     assert_eq!(screen.mode_of(&id), ScreenMode::Off);
+    // Frames the acknowledged round captured are journaled after their JPEG and text, so a few
+    // can still land after the Off line. Wait until the process holds none of them: only then is
+    // this count the one the refused round mustn't change.
+    rig.wait_frames_settled(&id);
     let before = rig
         .journal(&id)
         .iter()
