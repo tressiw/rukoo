@@ -44,8 +44,10 @@ pub(crate) fn key_state() -> Result<fn(Key) -> bool, InputError> {
     keys::key_state()
 }
 
-/// Whether `key` is physically held. A key a Mac keyboard doesn't have is
-/// never down.
+/// Whether `key` is physically held. A side-specific modifier is read from its
+/// own key code and its device-dependent flag bit together, because some Macs
+/// report a right-hand key under the left-hand code (`keys::sides_down`). A key
+/// a Mac keyboard doesn't have is never down.
 pub(crate) fn is_key_down(key: Key) -> bool {
     keys::is_key_down(key)
 }
