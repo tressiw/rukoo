@@ -3,8 +3,8 @@
 //! window recipe and front app), and captures the pill and Settings pages in both themes into
 //! `<folder>`. It never sends input and never reads the screen; the captures come from the web view
 //! rendering the app's own pages. On macOS it gives up the front once at the start, since `open` put
-//! Voice there. The report is `<folder>/self-test.json`. The app keeps running afterwards, so whoever
-//! started it stops it by its process id.
+//! Voice there. The report is `<folder>/self-test.json`. The app then quits, with 0 when the report
+//! says `ok` and 1 otherwise, unless `RUKOO_VOICE_SELF_TEST_KEEP_RUNNING` is set.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,8 +50,17 @@ pub fn spawn(app: AppHandle, out: PathBuf) {
                 log::error!("self-test: could not write {}", path.display());
             }
             log::info!("self-test: report in {}", path.display());
+            // Done: the app quits, with 0 for a passing report and 1 otherwise. A test that reads
+            // the windows from outside afterwards (Windows' `tests/launch.rs`) keeps it running.
+            if std::env::var_os(KEEP_RUNNING).is_none() {
+                let code = if report["ok"] == true { 0 } else { 1 };
+                app.exit(code);
+            }
         });
 }
+
+/// Set (to anything) to keep the app running after the self-test wrote its report.
+pub const KEEP_RUNNING: &str = "RUKOO_VOICE_SELF_TEST_KEEP_RUNNING";
 
 fn on_main<T: Send + 'static>(
     app: &AppHandle,
