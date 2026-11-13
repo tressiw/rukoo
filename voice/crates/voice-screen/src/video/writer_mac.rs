@@ -20,7 +20,6 @@
 
 use std::path::Path;
 
-use objc2_core_video::kCVPixelFormatType_32BGRA;
 use voice_screen_files::caps::video_size;
 use voice_screen_files::fmp4::{self, Mp4Writer};
 
@@ -220,20 +219,11 @@ impl MacVideoWriter {
     }
 
     /// The frame as VideoToolbox takes it: itself when it is the video's size, else scaled down
-    /// to it.
+    /// to it. Only a monitor too large for the encoder gets scaled, and that goes through BGRA
+    /// pixels, a bi-planar frame converted first.
     fn encoder_input(&self, picture: &PixelBuffer) -> Result<PixelBuffer, VideoError> {
         if (picture.width(), picture.height()) == (self.width, self.height) {
             return Ok(picture.clone());
-        }
-        if picture.pixel_format() != kCVPixelFormatType_32BGRA {
-            return Err(VideoError::Encoder(format!(
-                "a {}x{} frame in pixel format {:#x} can't be scaled to {}x{}",
-                picture.width(),
-                picture.height(),
-                picture.pixel_format(),
-                self.width,
-                self.height
-            )));
         }
         let pixels = picture
             .pixels()

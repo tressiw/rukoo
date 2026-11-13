@@ -34,6 +34,7 @@ const NOTICES = new Set([
   'pill.videoDropped.device',
   'pill.framesDropped.disk',
   'pill.screenFailed',
+  'pill.screenPermission',
   'pill.screenChangeFailed',
   'pill.screenMoved'
 ]);
@@ -45,6 +46,7 @@ const SCREEN_NOTICES = {
   'pill.videoDropped.device': 'orange',
   'pill.framesDropped.disk': 'orange',
   'pill.screenFailed': 'orange',
+  'pill.screenPermission': 'orange',
   'pill.screenChangeFailed': 'orange',
   'pill.screenMoved': 'text2'
 };

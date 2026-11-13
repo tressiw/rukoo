@@ -74,6 +74,16 @@ pub trait Source: Send {
     fn stop(&mut self);
 }
 
+/// What a source needs besides the device it captures on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceOptions {
+    /// The test's synthetic screen instead of the real one.
+    pub test: Option<TestSpec>,
+    /// The processes whose windows stay out of the recording; a platform that can't filter by
+    /// process ignores it.
+    pub exclude_pids: Vec<u32>,
+}
+
 /// What ended a video file early.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VideoError {
@@ -212,12 +222,20 @@ pub trait Clocks: Send + Sync {
 pub trait Displays: Send + Sync {
     /// Every monitor, synthetic ones when a test spec asks for them.
     fn list(&self, test: Option<&TestSpec>) -> Vec<MonitorInfo>;
-    /// Top-level windows from the foreground window down the Z-order.
-    fn z_order(&self) -> Vec<WindowInfo>;
+    /// Top-level windows from the foreground window down the Z-order. A window of a process in
+    /// `exclude_pids` counts as excluded from the recording, like one that hides itself from
+    /// capture, so a meeting started from that app picks the display behind it.
+    fn z_order(&self, exclude_pids: &[u32]) -> Vec<WindowInfo>;
     /// The cursor's monitor.
     fn cursor_monitor(&self) -> Option<String>;
-    /// Whether this computer can capture the screen at all.
+    /// Whether this computer can capture the screen at all: the platform has a capture.
     fn can_capture(&self) -> bool;
+    /// Why this process may not capture the screen, when the computer asks the user for a grant
+    /// that isn't there: macOS' Screen Recording. The words name the setting and where to switch it
+    /// on. `None` where there is no such grant, and when it is given.
+    fn missing_permission(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Free space on the meeting folder's volume, for the drop floors.
@@ -314,7 +332,7 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
     fn source(
         &self,
         device: Self::Device,
-        test: Option<&TestSpec>,
+        options: &SourceOptions,
         to_main: SyncSender<Ev<Self::Picture>>,
     ) -> Box<dyn Source>;
     fn thumbs(

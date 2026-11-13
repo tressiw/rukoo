@@ -19,6 +19,11 @@ pub struct EncoderInfo {
 pub struct Capabilities {
     pub version: u32,
     pub capture: bool,
+    /// Whether this process holds the Screen Recording grant. Only macOS has one, so Windows
+    /// leaves it out. A computer that can capture but has no grant records no screen: the screen
+    /// process refuses to start and says why (exit code 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_recording: Option<bool>,
     pub encoders: Vec<EncoderInfo>,
     pub hardware_encoder: Option<EncoderInfo>,
     pub ocr: Vec<String>,
@@ -147,15 +152,35 @@ mod tests {
         let caps = Capabilities {
             version: 1,
             capture: true,
+            screen_recording: None,
             encoders: vec![nvenc.clone()],
             hardware_encoder: Some(nvenc),
             ocr: vec!["nl-NL".into()],
             monitors: vec![],
         };
         let json = serde_json::to_value(&caps).unwrap();
+        // Windows has no grant to report, so the field is left out.
+        assert!(json.get("screenRecording").is_none());
         assert_eq!(json["hardwareEncoder"]["vendor"], "VEN_10DE");
         assert_eq!(json["ocr"][0], "nl-NL");
         let back: Capabilities = serde_json::from_value(json).unwrap();
         assert_eq!(back, caps);
+    }
+
+    /// A Mac reports its Screen Recording grant, and a probe without the field still reads.
+    #[test]
+    fn the_screen_recording_grant_is_optional() {
+        let json = serde_json::json!({
+            "version": 1, "capture": true, "screenRecording": false,
+            "encoders": [], "hardwareEncoder": null, "ocr": [], "monitors": []
+        });
+        let caps: Capabilities = serde_json::from_value(json).unwrap();
+        assert_eq!(caps.screen_recording, Some(false));
+        let older = serde_json::json!({
+            "version": 1, "capture": true,
+            "encoders": [], "hardwareEncoder": null, "ocr": [], "monitors": []
+        });
+        let caps: Capabilities = serde_json::from_value(older).unwrap();
+        assert_eq!(caps.screen_recording, None);
     }
 }

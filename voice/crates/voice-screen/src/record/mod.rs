@@ -36,7 +36,7 @@ use crate::{log, ExitError, VERSION};
 
 mod screen;
 
-pub use self::screen::Ev;
+pub use self::screen::{CaptureStop, Ev};
 use self::screen::{Screen, EVENT_QUEUE, HEARTBEAT, MEMORY_LOG};
 
 /// What the timeline said before the screen process started.
@@ -104,8 +104,15 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
     if monitor_list.is_empty() {
         return Err(ExitError::failed("there is no monitor to record"));
     }
-    if opts.test.is_none() && !platform.displays().can_capture() {
-        return Err(ExitError::failed("this computer can't capture the screen"));
+    if opts.test.is_none() {
+        // The grant comes first: a Mac that can capture but isn't allowed to is told apart, so
+        // Voice names the setting instead of retrying a start that can't work.
+        if let Some(why) = platform.displays().missing_permission() {
+            return Err(ExitError::no_permission(why));
+        }
+        if !platform.displays().can_capture() {
+            return Err(ExitError::failed("this computer can't capture the screen"));
+        }
     }
     let frames_dir = paths::screen_dir(&dir).join("frames");
     fs::create_dir_all(&frames_dir)
@@ -238,9 +245,14 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
         Line::Monitor { id, .. } => monitor_list.iter().find(|m| m.id == *id).cloned(),
         _ => None,
     });
-    let monitor = pinned
-        .or(previous_monitor)
-        .unwrap_or_else(|| choose_monitor(&platform, opts.test.as_ref(), &monitor_list));
+    let monitor = pinned.or(previous_monitor).unwrap_or_else(|| {
+        choose_monitor(
+            &platform,
+            opts.test.as_ref(),
+            &monitor_list,
+            &opts.exclude_pids,
+        )
+    });
     let video_seq = history
         .last_video_seq
         .max(finalize::highest_video_seq(&dir));
@@ -279,6 +291,7 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
         monitor_cache: (Instant::now(), monitor_list),
         monitor,
         pinned: opts.monitor,
+        exclude_pids: opts.exclude_pids,
         video: None,
         gate: VideoGate::new(),
         video_seq,
@@ -350,11 +363,12 @@ fn choose_monitor<P: Platform>(
     platform: &P,
     test: Option<&TestSpec>,
     list: &[MonitorInfo],
+    exclude_pids: &[u32],
 ) -> MonitorInfo {
     let id = match test {
         Some(_) => monitors::choose(&[], None, list),
         None => monitors::choose(
-            &platform.displays().z_order(),
+            &platform.displays().z_order(exclude_pids),
             platform.displays().cursor_monitor().as_deref(),
             list,
         ),
