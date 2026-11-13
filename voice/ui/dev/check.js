@@ -1025,7 +1025,6 @@ check('the screen notices read right in both languages, with the screen glyph', 
     'meeting-frames-dropped': ['Screen stopped: disk almost full', 'Scherm gestopt: schijf bijna vol'],
     'meeting-screen-failed': ['Screen recording stopped', 'Schermopname gestopt'],
     'meeting-screen-permission': ['Screen Recording is off', 'Schermopname staat uit'],
-    'meeting-call-silent': ['No sound from the call', 'Geen geluid van het gesprek'],
     'meeting-screen-moved': ['Screen: DELL U2720Q', 'Scherm: DELL U2720Q']
   };
   for (const [state, texts] of Object.entries(notices)) {
@@ -1036,6 +1035,15 @@ check('the screen notices read right in both languages, with the screen glyph', 
     }
   }
   assert.equal(await page.locator('.ind.tone-text2').count(), 1, 'a move is news, not a warning');
+});
+
+check('the silent-call notice reads right in both languages, with the info glyph in orange', async ({ open, page }) => {
+  for (const [lang, text] of [['en', 'No sound from the call'], ['nl', 'Geen geluid van het gesprek']]) {
+    await open(`pill.html?mock=meeting-call-silent&lang=${lang}`);
+    assert.equal(await page.locator('.label:not(.out)').innerText(), text, `in ${lang}`);
+    assert.equal(await page.locator('.ind [data-icon="info"]').count(), 1, `the info glyph in ${lang}`);
+    assert.equal(await page.locator('.ind.tone-orange').count(), 1, `orange in ${lang}`);
+  }
 });
 
 check('a meeting snapshot with an unknown screen mode is ignored', async ({ open, page }) => {
