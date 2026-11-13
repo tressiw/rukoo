@@ -98,7 +98,7 @@ fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(),
 /// report says which of those it was.
 #[cfg(target_os = "macos")]
 fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
-    if at_the_console() {
+    if crate::session_mac::at_the_console() {
         return wait(what, limit, || painted(pill, seq));
     }
     thread::sleep(Duration::from_millis(500));
@@ -122,55 +122,14 @@ fn await_paint(what: &str, _limit: Duration, pill: &Pill, seq: u64) -> Result<()
     Ok(())
 }
 
-/// Whether anyone is at this Mac's console looking at the app's windows: the GUI session on the console
-/// with its screen unlocked. A switched-out session or a locked screen counts as nobody, because WebKit
-/// paints nothing there.
-#[cfg(target_os = "macos")]
-fn at_the_console() -> bool {
-    let (on_console, screen_locked) = session_flags();
-    at_the_console_from(on_console, screen_locked)
-}
-
-/// `kCGSessionOnConsoleKey` and `CGSSessionScreenIsLocked` of `CGSessionCopyCurrentDictionary`. A missing
-/// dictionary means no GUI session at all, which reads as neither flag.
-#[cfg(target_os = "macos")]
-fn session_flags() -> (Option<bool>, Option<bool>) {
-    use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
-
-    let Some(dictionary) = objc2_core_graphics::CGSessionCopyCurrentDictionary() else {
-        return (None, None);
-    };
-    // SAFETY: a session dictionary has string keys and CoreFoundation values, and the dictionary outlives
-    // both reads below.
-    let dictionary: CFRetained<CFDictionary<CFString, CFType>> =
-        unsafe { CFRetained::cast_unchecked(dictionary) };
-    let read = |name: &str| {
-        let key = CFString::from_str(name);
-        // SAFETY: as above; the value is borrowed for the length of the closure body.
-        unsafe { dictionary.get_unchecked(&key) }
-            .and_then(CFType::downcast_ref::<CFBoolean>)
-            .map(CFBoolean::as_bool)
-    };
-    (
-        read("kCGSSessionOnConsoleKey"),
-        read("CGSSessionScreenIsLocked"),
-    )
-}
-
-/// The rule the self-test acts on, with the two flags passed in.
-#[cfg(target_os = "macos")]
-fn at_the_console_from(on_console: Option<bool>, screen_locked: Option<bool>) -> bool {
-    on_console == Some(true) && screen_locked != Some(true)
-}
-
 /// What the report says about the session the self-test ran in, so an empty pill capture is explained.
 #[cfg(target_os = "macos")]
 fn session() -> Value {
-    let (on_console, screen_locked) = session_flags();
+    let (on_console, screen_locked) = crate::session_mac::session_flags();
     json!({
         "onConsole": on_console,
         "screenLocked": screen_locked,
-        "atTheConsole": at_the_console_from(on_console, screen_locked),
+        "atTheConsole": crate::session_mac::at_the_console_from(on_console, screen_locked),
     })
 }
 
@@ -395,19 +354,4 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         "twoStepStop": { "firstClickAsks": asked, "secondClickStops": saving },
         "captures": captures,
     }))
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_an_unlocked_session_on_the_console_waits_for_the_paint() {
-        assert!(!at_the_console_from(None, None));
-        assert!(!at_the_console_from(Some(false), Some(false)));
-        assert!(at_the_console_from(Some(true), None));
-        assert!(at_the_console_from(Some(true), Some(false)));
-        // A locked screen runs no frames either, however it was reached.
-        assert!(!at_the_console_from(Some(true), Some(true)));
-    }
 }
