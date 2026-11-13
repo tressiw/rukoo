@@ -934,6 +934,24 @@ check('Restore brings the bucket\'s meetings back with progress', async ({ open,
   assert.match(await dialogText(page), /Weekly/);
 });
 
+check('a refused keychain offers Try again, waits for the keychain, then is up to date', async ({ open, page }) => {
+  for (const [lang, denied, waiting] of [
+    ['en', /didn't let Voice open its encryption key/, /Waiting for the keychain/],
+    ['nl', /liet Voice de encryptiesleutel/, /Wacht op de sleutelhanger/]
+  ]) {
+    await open(`settings.html?mock=1&lang=${lang}&page=storage&sync=key-denied`);
+    const section = page.locator('[data-section="sync"]');
+    assert.match(await section.innerText(), denied);
+    // The key is fine, so nothing offers to replace it here and Show key waits.
+    assert.equal(await section.locator('[data-a="sync-key-use"]').count(), 0);
+    assert.equal(await page.locator('[data-a="sync-key-show"]').isDisabled(), true);
+    await page.click('[data-a="sync-key-retry"]');
+    await page.waitForFunction((re) => new RegExp(re).test(document.querySelector('[data-section="sync"]').innerText), waiting.source);
+    await page.waitForSelector('[data-section="sync"] [data-a="sync-key-retry"]', { state: 'detached' });
+    await page.waitForFunction(() => !document.querySelector('[data-a="sync-key-show"]').disabled, null, { timeout: 4000 });
+  }
+});
+
 check('the bucket retention saves from its segmented control', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=storage&sync=on');
   await page.click('[data-a="seg:storage.sync.retention:days90"]');

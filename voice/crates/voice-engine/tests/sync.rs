@@ -140,6 +140,14 @@ fn main() {
             "the_key_dialogs_wait_while_the_screen_records",
             the_key_dialogs_wait_while_the_screen_records,
         ),
+        (
+            "a_refused_keychain_shows_in_settings_until_allowed",
+            a_refused_keychain_shows_in_settings_until_allowed,
+        ),
+        (
+            "the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting",
+            the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting,
+        ),
     ];
     let filters: Vec<String> = std::env::args()
         .skip(1)
@@ -1775,3 +1783,196 @@ fn the_key_dialogs_wait_while_the_screen_records() {
     engine.shutdown();
     fake.stop();
 }
+
+// The macOS keychain --------------------------------------------------------------------------
+
+/// The login keychain in memory for the engine's Keychain protector: Deny as macOS answers it,
+/// and a dialog left open, as a read that waits until the test lets it go. Never the real
+/// keychain.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Arc, Mutex};
+
+    use voice_sync::protect::keychain::{ItemStore, StoreError};
+
+    #[derive(Clone, Default)]
+    pub struct GateStore {
+        items: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        denied: Arc<Mutex<Option<StoreError>>>,
+        /// The next read waits for this, as for an answer to the keychain dialog.
+        gate: Arc<Mutex<Option<Receiver<()>>>>,
+        waiting: Arc<AtomicBool>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl GateStore {
+        pub fn deny(&self, error: StoreError) {
+            *self.denied.lock().unwrap() = Some(error);
+        }
+
+        pub fn allow(&self) {
+            *self.denied.lock().unwrap() = None;
+        }
+
+        /// The next read waits until the sender is used or dropped.
+        pub fn hold(&self) -> Sender<()> {
+            let (tx, rx) = channel();
+            *self.gate.lock().unwrap() = Some(rx);
+            tx
+        }
+
+        /// A read waits for the gate now.
+        pub fn waiting(&self) -> bool {
+            self.waiting.load(Ordering::SeqCst)
+        }
+
+        /// Reads so far: each is a keychain dialog after a new signature.
+        pub fn reads(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ItemStore for GateStore {
+        fn get(&self, account: &str) -> Result<Vec<u8>, StoreError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                self.waiting.store(true, Ordering::SeqCst);
+                let _ = gate.recv();
+                self.waiting.store(false, Ordering::SeqCst);
+            }
+            if let Some(error) = *self.denied.lock().unwrap() {
+                return Err(error);
+            }
+            let items = self.items.lock().unwrap();
+            items.get(account).cloned().ok_or(StoreError::Missing)
+        }
+
+        fn set(&self, account: &str, secret: &[u8]) -> Result<(), StoreError> {
+            if let Some(error) = *self.denied.lock().unwrap() {
+                return Err(error);
+            }
+            self.items
+                .lock()
+                .unwrap()
+                .insert(account.to_owned(), secret.to_vec());
+            Ok(())
+        }
+
+        fn delete(&self, account: &str) -> Result<(), StoreError> {
+            let mut items = self.items.lock().unwrap();
+            items.remove(account).map(drop).ok_or(StoreError::Missing)
+        }
+    }
+}
+
+/// An engine whose sync keys live in `store`, connected to `fake` and up to date, then shut down:
+/// the next start reads the key and the secret from the keychain again.
+#[cfg(target_os = "macos")]
+fn keychain_harness(name: &str, store: &keychain::GateStore, fake: &FakeS3) -> Harness {
+    let mut h = harness(name, json!({"meetings_retention": "keep"}));
+    h.protector = Arc::new(voice_sync::protect::keychain::Keychain::with_store(
+        &h.data(),
+        store.clone(),
+    ));
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    wait_uploaded(&engine);
+    engine.shutdown();
+    h
+}
+
+/// Deny in macOS's keychain dialog (errSecUserCanceled) after a new signature: Voice runs on,
+/// Settings show the refusal with Try again instead of "everything is in the bucket", and
+/// once the user allows Voice, Try again clears it and sync goes on.
+#[cfg(target_os = "macos")]
+fn a_refused_keychain_shows_in_settings_until_allowed() {
+    use voice_sync::protect::keychain::StoreError;
+
+    let fake = fake_s3();
+    let store = keychain::GateStore::default();
+    let h = keychain_harness("sync-keychain-refused", &store, &fake);
+
+    store.deny(StoreError::Denied(-128));
+    let before = store.reads();
+    let engine = h.start();
+    wait_for("the refusal in Settings", || {
+        sync_state(&engine)["state"] == "key"
+    });
+    let sync = sync_state(&engine);
+    assert_eq!(sync["lastError"]["code"], "key_denied", "{sync}");
+    let message = sync["lastError"]["message"].as_str().unwrap();
+    assert!(message.contains("-128"), "{message}");
+    assert_eq!(sync["key"]["exists"], false, "{sync}");
+    // One dialog: after the key was refused, Voice doesn't ask for the bucket secret.
+    assert_eq!(store.reads() - before, 1);
+    // Show key says the same and doesn't offer to replace a key that is fine.
+    assert_eq!(
+        engine.settings_sync_key("show", None).unwrap_err().code,
+        "key_denied"
+    );
+    let asked = store.reads();
+    // Voice doesn't ask again by itself: the refusal stays until the user acts.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(store.reads(), asked);
+    assert_eq!(sync_state(&engine)["state"], "key");
+
+    // Try again, and Always Allow this time.
+    store.allow();
+    engine.settings_sync_key("retry", None).unwrap();
+    wait_for("sync to go on after Always Allow", || {
+        let sync = sync_state(&engine);
+        sync["state"] == "idle" && sync["lastError"].is_null()
+    });
+    assert_eq!(sync_state(&engine)["key"]["exists"], true);
+    engine.shutdown();
+    fake.stop();
+}
+
+/// A keychain dialog nobody answers: the engine starts at once, Settings say sync waits for the
+/// keychain, and a meeting starts and records. Once the dialog is answered, sync goes on and
+/// the meeting reaches the bucket.
+#[cfg(target_os = "macos")]
+fn the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting() {
+    let fake = fake_s3();
+    let store = keychain::GateStore::default();
+    let h = keychain_harness("sync-keychain-open", &store, &fake);
+
+    let answer = store.hold();
+    let started = Instant::now();
+    let engine = h.start();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the start took {:?}",
+        started.elapsed()
+    );
+    wait_for("Settings to say sync waits for the keychain", || {
+        sync_state(&engine)["state"] == "unlocking"
+    });
+    assert!(store.waiting());
+
+    let id = engine.start_meeting().unwrap();
+    wait_recorded(&h.data(), &id, 3000);
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &id);
+    assert!(store.waiting(), "the dialog is still open");
+    assert_eq!(sync_state(&engine)["state"], "unlocking");
+
+    answer.send(()).unwrap();
+    wait_uploaded(&engine);
+    let code = recovery_code(&engine);
+    assert!(bucket_kinds(&fake, &code).contains(&"audio"));
+    assert!(sync_state(&engine)["lastError"].is_null());
+    engine.shutdown();
+    fake.stop();
+}
+
+/// The login keychain is macOS's; DPAPI never waits for anyone.
+#[cfg(not(target_os = "macos"))]
+fn a_refused_keychain_shows_in_settings_until_allowed() {}
+
+#[cfg(not(target_os = "macos"))]
+fn the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting() {}
