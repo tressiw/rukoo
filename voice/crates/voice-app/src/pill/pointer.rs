@@ -61,12 +61,15 @@ impl PointerState {
     }
 
     /// `mouseUp:`, with whether the release is on the button. AppKit sends it to the panel that had
-    /// the press even when the pointer left it.
+    /// the press even when the pointer left it. A release without a press here (the panel hid and
+    /// came back in between) changes nothing: the tracking area says where the pointer is.
     pub fn up(&mut self, inside: bool) -> Vec<HitEvent> {
         let mut out = Vec::new();
-        let was_pressed = std::mem::replace(&mut self.pressed, false);
+        if !std::mem::replace(&mut self.pressed, false) {
+            return out;
+        }
         self.hover = inside;
-        if was_pressed && inside {
+        if inside {
             out.push(HitEvent::Click);
         }
         self.report(&mut out);
@@ -151,6 +154,6 @@ mod tests {
         p.entered();
         p.down();
         p.reset();
-        assert_eq!(p.up(true), [look(true, false)], "no click after the hide");
+        assert_eq!(p.up(true), [], "no click and no hover after the hide");
     }
 }
