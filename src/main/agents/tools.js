@@ -2349,7 +2349,7 @@ function markLine(k) {
     case 'monitor':
       return `${at} [The screen recording moved to ${line(k.label) || 'another monitor'}]`;
     case 'silent':
-      return `${at} [Only silence on ${where} from here while another app played sound: the computer may not let Rukoo Voice record it]`;
+      return `${at} [No sound on ${where} from here while another app had its audio output open; if people were talking, the computer may not have let Rukoo Voice record it]`;
     case 'screen_mode':
       return `${at} [Screen recording ${k.label === 'off' ? 'off' : k.label === 'video' ? 'on: video and frames' : 'on: frames'}]`;
     case 'screen_gap': {

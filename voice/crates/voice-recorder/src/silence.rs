@@ -2,26 +2,31 @@
 //! let Voice record it?
 //!
 //! On macOS the call track is a Core Audio process tap. Without the System Audio Recording grant,
-//! or with a grant that went stale after an update, the tap opens without an error and delivers
-//! blocks of exact zeros (spike S2). A working tap delivers exact zeros too, whenever nothing
-//! plays. So zeros alone prove nothing, and the check pairs them with what can be known:
+//! or with a grant that went stale after an update, the tap opens without an error and the track
+//! holds only exact zeros (spike S2). A working tap gives the same while nothing plays: it
+//! delivers nothing and the track is padded with zeros. So zeros alone prove nothing, and the
+//! check pairs them with what can be known:
 //!
 //! - **Any sample that isn't exactly zero** proves the grant: the tap records what the Mac plays.
 //!   From then on the check stays quiet for the rest of the session, and a notice it gave ends.
-//! - **Another app plays sound** (Core Audio's process list says some other process runs
-//!   output) while the tap has delivered only exact zeros since its first block. After
-//!   [`DEFAULT_THRESHOLD_MS`] of that, the check says the call is silent.
-//! - **Nobody can tell** whether anything plays (the process list didn't answer): it waits four
-//!   times as long.
-//! - **Nothing plays**: zeros are what a working tap gives, so they count for nothing.
+//! - **Another app has its audio output open** (Core Audio's process list says some other
+//!   process runs output) while the track has held only exact zeros since it started. After
+//!   [`DEFAULT_THRESHOLD_MS`] of that in a row, the check says the call is silent. A moment with
+//!   no app's output open starts the count again.
+//! - **Nobody can tell** whether an app's output is open (the process list didn't answer): it
+//!   waits four times as long.
+//! - **No app's output is open**: zeros are what a working tap gives, so they count for nothing.
 //!
-//! What it can't tell: a denied grant from a call app that plays exact digital silence for the
-//! whole threshold while nobody speaks (it then says so too early, and takes it back at the first
-//! sound), and a grant switched off in the middle of a meeting after sound was heard (the check is
-//! over by then). It never stops or changes the recording; it only reports.
+//! An open output isn't sound. The check can't tell a denied grant from a call app that keeps
+//! its output open and plays exact silence for a minute, as when you wait alone in a call or
+//! everyone is muted, or from a browser tab that holds its output open during a meeting in the
+//! room. So what it says is a hint: the call is silent and the permission may be why. It takes
+//! that back at the first sound. It misses a grant switched off in the middle of a meeting after
+//! sound was heard (the check is over by then). It never stops or changes the recording.
 
-/// Exact zeros while another app plays this long before the check says the call is silent.
-pub const DEFAULT_THRESHOLD_MS: u64 = 30_000;
+/// Exact zeros while another app's output is open, this long in a row, before the check says
+/// the call is silent.
+pub const DEFAULT_THRESHOLD_MS: u64 = 60_000;
 /// When nobody can tell whether anything plays, the check waits this many times as long.
 pub const UNKNOWN_FACTOR: u64 = 4;
 
@@ -73,7 +78,11 @@ impl SilenceCheck {
         let since = *self.since.get_or_insert(at.saturating_sub(ms));
         match playing {
             Some(true) => self.playing_ms += ms,
-            Some(false) => {}
+            // Zeros while no app's output is open are what a working tap gives: start again.
+            Some(false) => {
+                self.playing_ms = 0;
+                self.unknown_ms = 0;
+            }
             None => self.unknown_ms += ms,
         }
         let long_enough = self.playing_ms >= self.threshold_ms
@@ -126,8 +135,8 @@ mod tests {
     #[test]
     fn zeros_from_the_start_while_another_app_plays_are_reported_once() {
         let mut check = SilenceCheck::new(DEFAULT_THRESHOLD_MS);
-        let verdicts = run(&mut check, 1_000, 60, true, Some(true));
-        assert_eq!(verdicts, vec![(31_000, Verdict::Silent { since: 1_000 })]);
+        let verdicts = run(&mut check, 1_000, 90, true, Some(true));
+        assert_eq!(verdicts, vec![(61_000, Verdict::Silent { since: 1_000 })]);
         assert!(check.silent() && !check.heard());
     }
 
@@ -141,8 +150,8 @@ mod tests {
     #[test]
     fn without_knowing_what_plays_it_waits_four_times_as_long() {
         let mut check = SilenceCheck::new(DEFAULT_THRESHOLD_MS);
-        let verdicts = run(&mut check, 0, 200, true, None);
-        assert_eq!(verdicts, vec![(120_000, Verdict::Silent { since: 0 })]);
+        let verdicts = run(&mut check, 0, 300, true, None);
+        assert_eq!(verdicts, vec![(240_000, Verdict::Silent { since: 0 })]);
     }
 
     #[test]
@@ -179,16 +188,22 @@ mod tests {
     }
 
     #[test]
-    fn only_the_time_something_played_counts() {
+    fn only_time_in_a_row_with_an_output_open_counts() {
         let mut check = SilenceCheck::new(1_000);
-        // Half a second playing, ten seconds not, half a second playing: 1 s in all.
+        // Nothing open, then half a second open: not enough.
         assert!(run(&mut check, 0, 1, true, Some(false)).is_empty());
         for n in 1..=50 {
             assert_eq!(check.feed(true, 10, 1_000 + n * 10, Some(true)), None);
         }
+        // Ten seconds with no output open start the count again.
         assert!(run(&mut check, 1_500, 10, true, Some(false)).is_empty());
-        let verdicts = run(&mut check, 11_500, 1, true, Some(true));
-        assert_eq!(verdicts, vec![(12_000, Verdict::Silent { since: 0 })]);
+        assert!(run(&mut check, 11_500, 0, true, Some(true)).is_empty());
+        for n in 1..=50 {
+            assert_eq!(check.feed(true, 10, 11_500 + n * 10, Some(true)), None);
+        }
+        // A full second in a row says it.
+        let verdicts = run(&mut check, 12_000, 1, true, Some(true));
+        assert_eq!(verdicts, vec![(12_500, Verdict::Silent { since: 0 })]);
     }
 
     #[test]

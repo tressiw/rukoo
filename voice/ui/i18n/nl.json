@@ -76,7 +76,7 @@
   "app.notify.settings": "Rukoo Voice-instellingen",
   "app.notify.welcome": "Welkom bij Rukoo Voice",
   "app.notify.sync": "Synchroniseren met je bucket",
-  "app.notify.callSilent": "Voice hoort alleen stilte van het gesprek, terwijl een andere app geluid afspeelt. Heeft het gesprek geluid, dan laat macOS Voice het misschien niet opnemen: verwijder Rukoo Voice in Systeeminstellingen > Privacy en beveiliging > Scherm- en systeemaudio-opname, onder Alleen systeemaudio-opname, met de minknop en voeg het opnieuw toe. De opname gaat door.",
+  "app.notify.callSilent": "Voice hoort al een minuut geen geluid van het gesprek, terwijl een andere app zijn audio-uitvoer open had. Praten de mensen in het gesprek, dan laat macOS Voice het misschien niet opnemen. Kijk in Systeeminstellingen > Privacy en beveiliging > Scherm- en systeemaudio-opname of Rukoo Voice aanstaat onder Alleen systeemaudio-opname. Staat het aan en blijft het gesprek na een update van Voice stil, verwijder Rukoo Voice daar dan met de minknop en voeg het opnieuw toe. De opname gaat door.",
   "app.notify.screenPermission": "Schermopname staat uit voor Rukoo Voice, dus Voice neemt in deze vergadering geen scherm op. Het geluid wordt wel opgenomen. Zet het aan in Systeeminstellingen > Privacy en beveiliging > Scherm- en systeemaudio-opname en start daarna een nieuwe vergadering.",
   "settings.title": "Rukoo Voice-instellingen",
   "settings.main.title": "Rukoo Voice",

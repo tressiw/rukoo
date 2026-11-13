@@ -430,8 +430,9 @@ fn a_silent_call_says_so_once_and_settings_learns_it() {
     assert_eq!(pill_meeting_state(&h).as_deref(), Some("recording"));
     let state = engine.settings_state();
     if cfg!(target_os = "macos") {
+        // Only a hint, so the row doesn't claim macOS refused.
         assert_eq!(
-            state["permissions"]["systemAudio"], "denied",
+            state["permissions"]["systemAudio"], "unknown",
             "{}",
             state["permissions"]
         );

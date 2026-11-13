@@ -2403,7 +2403,7 @@
   "meeting.mark.droppedCrash": "Schermopname gestopt: de schermopname viel te vaak uit",
   "meeting.mark.droppedDevice": "Schermopname gestopt om de audio te blijven opnemen: de videokaart kon niet opnieuw starten",
   "meeting.mark.monitor": "Schermopname verplaatst naar {name}",
-  "meeting.mark.silent": "{track}: vanaf hier alleen stilte, terwijl een andere app geluid afspeelde. Had het gesprek geluid, dan laat macOS Rukoo Voice het misschien niet opnemen: verwijder Rukoo Voice in Systeeminstellingen › Privacy en beveiliging › Scherm- en systeemaudio-opname, onder Alleen systeemaudio-opname, met de minknop en voeg het opnieuw toe.",
+  "meeting.mark.silent": "{track}: vanaf hier geen geluid, terwijl een andere app zijn audio-uitvoer open had. Werd er gepraat, dan liet macOS Rukoo Voice het misschien niet opnemen: kijk of Rukoo Voice aanstaat onder Systeeminstellingen › Privacy en beveiliging › Scherm- en systeemaudio-opname › Alleen systeemaudio-opname.",
   "meeting.mark.monitorLost": "Het opgenomen beeldscherm verdween; schermopname verplaatst naar {name}",
   "meeting.mark.gapScreen": "Scherm: {length} niet opgenomen",
   "meeting.mark.gapScreenCrash": "Scherm: {length} niet opgenomen terwijl de schermopname opnieuw startte",

@@ -221,7 +221,7 @@ Something that happened at a moment in the meeting.
 | `video_dropped` | Voice stopped the screen video, to keep recording audio; the frames go on | `null` | `disk`, `encoder` or `device` |
 | `screen_gap` | The screen has no frames | end of the gap | `locked`, `crash`, `device` or `monitor` |
 | `monitor` | Voice moved the screen recording to another monitor; `label` is its name | `null` | `user` or `lost` |
-| `silent` | The call track has recorded only exact silence since `at` while another app played sound: the computer may not let Voice record its audio. On a Mac that means System Audio Recording is off for Voice, or its grant went stale after an update | `null` | `null` |
+| `silent` | The call track has recorded only exact silence since `at`, for a minute while another app had its audio output open. A hint: the computer may not let Voice record its audio (on a Mac, System Audio Recording is off for Voice or its grant went stale after an update), or nobody talked | `null` | `null` |
 
 - `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting. `dropped`, `video_dropped`, `screen_gap` and `monitor` come with `screen`; `gap` never does.
 - `label` is the text the user gave a `user` mark, the device name of a `device` mark or the monitor name of a `monitor` mark.

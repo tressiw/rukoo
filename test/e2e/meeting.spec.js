@@ -1533,13 +1533,13 @@ test('a silent call mark says where to switch System Audio Recording back on', a
   voice.append('mark', id, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null });
   await openMeetings();
   await expect(view().locator('.mt-mark.is-silent .mt-line')).toHaveText(
-    'Call audio: only silence from here while another app played sound. If the call had sound, macOS may not let Rukoo Voice record it: in System Settings › Privacy & Security › Screen & System Audio Recording, under System Audio Recording Only, remove Rukoo Voice with the minus button and add it again.'
+    'Call audio: no sound from here while another app had its audio output open. If people were talking, macOS may not have let Rukoo Voice record it: check that Rukoo Voice is switched on under System Settings › Privacy & Security › Screen & System Audio Recording › System Audio Recording Only.'
   );
   await expect(view().locator('.mt-mark.is-silent svg')).toHaveCount(1);
   await shot('silent-call-light-en');
   await setLanguage('nl');
   await setTheme('dark');
-  await expect(view().locator('.mt-mark.is-silent .mt-line')).toHaveText(/^Gespreksaudio: vanaf hier alleen stilte/);
+  await expect(view().locator('.mt-mark.is-silent .mt-line')).toHaveText(/^Gespreksaudio: vanaf hier geen geluid/);
   await shot('silent-call-dark-nl');
 });
 

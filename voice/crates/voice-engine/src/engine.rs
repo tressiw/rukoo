@@ -490,8 +490,9 @@ impl Core {
     pub fn system_audio_learned(&self) -> Option<PermissionState> {
         match lock(&self.call_sound).as_ref()?.1 {
             CallSound::Heard => Some(PermissionState::Granted),
-            CallSound::Silent => Some(PermissionState::Denied),
-            CallSound::Unknown => None,
+            // A silent call is only a hint (voice-recorder `silence.rs`): the row stays unknown
+            // rather than saying macOS refused.
+            CallSound::Silent | CallSound::Unknown => None,
         }
     }
 
@@ -801,7 +802,7 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
 /// (voice/ui/i18n `app.notify.screenPermission`), and its English text for a catalog without it.
 pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
 pub const NOTIFY_CALL_SILENT: &str = "app.notify.callSilent";
-const CALL_SILENT_TEXT: &str = "Voice hears only silence from the call while another app plays sound. If the call has sound, macOS may not let Voice record it: in System Settings > Privacy & Security > Screen & System Audio Recording, under System Audio Recording Only, remove Rukoo Voice with the minus button and add it again. The recording goes on.";
+const CALL_SILENT_TEXT: &str = "Voice has heard no sound from the call for a minute while another app had its audio output open. If people in the call are talking, macOS may not be letting Voice record it. Check System Settings > Privacy & Security > Screen & System Audio Recording: Rukoo Voice should be switched on under System Audio Recording Only. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice there with the minus button and add it again. The recording goes on.";
 const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
 
 /// The pill notice for a part of the screen recording that stopped.

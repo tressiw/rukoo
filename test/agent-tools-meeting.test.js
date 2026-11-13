@@ -752,7 +752,7 @@ test('the transcript says when the call held only silence while another app play
   ]);
   const res = data(await call('read_meeting_transcript', { meeting_id: M }));
   assert.deepEqual(untag(res.transcript).trim().split('\n'), [
-    '[00:00:00] [Only silence on the call audio from here while another app played sound: the computer may not let Rukoo Voice record it]'
+    '[00:00:00] [No sound on the call audio from here while another app had its audio output open; if people were talking, the computer may not have let Rukoo Voice record it]'
   ]);
 });
 
