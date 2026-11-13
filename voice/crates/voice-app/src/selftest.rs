@@ -208,6 +208,13 @@ fn panel_clicks(app: &AppHandle) -> Result<Value, String> {
                 }
             }),
         )?;
+        // AppKit drops mouse events sent to a window that isn't ordered in, so the panel is ordered
+        // in, as the real ones are, far off every display where nobody sees it.
+        let far = crate::pill::place::Frame::new(-20_000.0, -20_000.0, 40.0, 40.0);
+        panel.show_at(crate::pill::hit_mac::PanelFrame {
+            hit: far,
+            button: Some(far),
+        });
         for inside in [true, false, true] {
             panel.click_for_test(inside)?;
         }
