@@ -214,21 +214,34 @@ pub fn screen_at(screens: &[Screen], point: (f64, f64)) -> Option<usize> {
     screens.iter().position(|s| s.frame.contains(point))
 }
 
-/// The display the user works on: the one with the front window's centre, else the pointer's, else
-/// the primary display (the first `NSScreen`, the one with the menu bar).
+/// The display the user works on: the one the front window overlaps most (or the nearest, for a
+/// window off every display), else the pointer's, else the primary display (the first `NSScreen`, the
+/// one with the menu bar).
 #[cfg(any(target_os = "macos", test))]
 pub fn choose_screen(
     screens: &[Screen],
-    front: Option<(f64, f64)>,
+    front: Option<Frame>,
     mouse: Option<(f64, f64)>,
 ) -> Option<usize> {
     if screens.is_empty() {
         return None;
     }
     front
-        .and_then(|p| screen_at(screens, p))
+        .and_then(|f| screen_for_frame(screens, &f))
         .or_else(|| mouse.and_then(|p| screen_at(screens, p)))
         .or(Some(0))
+}
+
+/// The smallest window the front-window lookup takes for the one the user works in, in points:
+/// smaller ones are an app's helper windows (a drag image, a tracking overlay).
+#[cfg(any(target_os = "macos", test))]
+pub const MIN_FRONT_WINDOW: f64 = 40.0;
+
+/// Whether a window-list entry can be the window the user works in: not fully transparent
+/// (`kCGWindowAlpha` 0, missing counts as opaque) and not tiny.
+#[cfg(any(target_os = "macos", test))]
+pub fn is_user_window(alpha: Option<f64>, frame: &Frame) -> bool {
+    alpha.is_none_or(|a| a > 0.0) && frame.w >= MIN_FRONT_WINDOW && frame.h >= MIN_FRONT_WINDOW
 }
 
 /// The screen a window is on: the one it overlaps most, else (its display is gone, or it sits in a
@@ -583,15 +596,23 @@ mod tests {
             safe_bottom: 0.0,
         };
         let screens = [mac_display(1, 0.0, 0.0), left];
+        let on_left = Frame::new(-1400.0, 0.0, 800.0, 600.0);
         assert_eq!(
-            choose_screen(&screens, Some((-1000.0, 200.0)), Some((10.0, 10.0))),
+            choose_screen(&screens, Some(on_left), Some((10.0, 10.0))),
             Some(1)
         );
-        assert_eq!(choose_screen(&screens, None, Some((-5.0, 0.0))), Some(1));
-        // A front window in the gap between displays (never on screen) falls to the pointer.
+        // Straddling both: the display with most of it, wherever its centre is.
+        let straddling = Frame::new(-300.0, 100.0, 1000.0, 600.0);
         assert_eq!(
-            choose_screen(&screens, Some((100.0, 5000.0)), Some((100.0, 100.0))),
+            choose_screen(&screens, Some(straddling), Some((-5.0, 0.0))),
             Some(0)
+        );
+        assert_eq!(choose_screen(&screens, None, Some((-5.0, 0.0))), Some(1));
+        // A front window off every display goes to the nearest one, not the pointer's.
+        let above_left = Frame::new(-2000.0, 1300.0, 400.0, 300.0);
+        assert_eq!(
+            choose_screen(&screens, Some(above_left), Some((100.0, 100.0))),
+            Some(1)
         );
         assert_eq!(choose_screen(&screens, None, None), Some(0));
         assert_eq!(choose_screen(&[], None, None), None);
@@ -625,6 +646,24 @@ mod tests {
             Some(1)
         );
         assert_eq!(screen_for_frame(&[], &straddling), None);
+    }
+
+    #[test]
+    fn mac_transparent_and_tiny_windows_are_not_the_front_window() {
+        let window = Frame::new(0.0, 0.0, 800.0, 600.0);
+        assert!(is_user_window(Some(1.0), &window));
+        assert!(is_user_window(None, &window));
+        assert!(is_user_window(Some(0.5), &window));
+        assert!(!is_user_window(Some(0.0), &window));
+        assert!(!is_user_window(
+            Some(1.0),
+            &Frame::new(0.0, 0.0, 20.0, 600.0)
+        ));
+        assert!(!is_user_window(
+            Some(1.0),
+            &Frame::new(0.0, 0.0, 800.0, 1.0)
+        ));
+        assert!(is_user_window(Some(1.0), &Frame::new(0.0, 0.0, 40.0, 40.0)));
     }
 
     #[test]

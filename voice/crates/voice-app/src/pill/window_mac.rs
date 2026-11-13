@@ -364,13 +364,13 @@ fn screens(mtm: MainThreadMarker) -> Vec<Screen> {
         .collect()
 }
 
-/// The centre of the front app's front window, in AppKit's space.
+/// The front app's front window, in AppKit's space.
 ///
-/// `CGWindowListCopyWindowInfo` is window information, not pixels: bounds, owner and layer need no
-/// Screen Recording permission (only window names do). The list runs front to back; the frontmost
-/// app's first window on layer 0 is its front window. The Finder's desktop sits on a lower layer, so
-/// an app with no windows falls back to the pointer.
-fn front_window_centre(screens: &[Screen]) -> Option<(f64, f64)> {
+/// `CGWindowListCopyWindowInfo` is window information, not pixels: bounds, owner, layer and alpha
+/// need no Screen Recording permission (only window names do). The list runs front to back; the
+/// frontmost app's first window on layer 0 that is neither transparent nor tiny is its front window.
+/// The Finder's desktop sits on a lower layer, so an app with no windows falls back to the pointer.
+fn front_window(screens: &[Screen]) -> Option<Frame> {
     let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
     let pid = front.processIdentifier();
     let primary_height = screens.first()?.frame.h;
@@ -407,7 +407,9 @@ fn front_window_centre(screens: &[Screen]) -> Option<(f64, f64)> {
             number(&bounds, "Width")?,
             number(&bounds, "Height")?,
         );
-        return Some(frame.centre());
+        if place::is_user_window(number(&info, "kCGWindowAlpha"), &frame) {
+            return Some(frame);
+        }
     }
     None
 }
@@ -419,7 +421,7 @@ pub fn target_monitor() -> Monitor {
     };
     let all = screens(mtm);
     let mouse = NSEvent::mouseLocation();
-    place::choose_screen(&all, front_window_centre(&all), Some((mouse.x, mouse.y)))
+    place::choose_screen(&all, front_window(&all), Some((mouse.x, mouse.y)))
         .map_or(0, |i| all[i].id as Monitor)
 }
 
