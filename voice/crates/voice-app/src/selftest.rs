@@ -1,9 +1,10 @@
 //! `--self-test <folder>`, development only and always with `--fake-engine`: drives the real windows
-//! through a meeting, records what the platform reports about them (Windows' window styles today), and
-//! captures the pill and Settings pages in both themes into `<folder>`. It never sends input and never
-//! reads the screen; the captures come from the web view rendering the app's own pages. The report is
-//! `<folder>/self-test.json`. The app keeps running afterwards, so whoever started it stops it by its
-//! process id.
+//! through a meeting, records what the platform reports about them (Windows' window styles, macOS'
+//! window recipe and front app), and captures the pill and Settings pages in both themes into
+//! `<folder>`. It never sends input and never reads the screen; the captures come from the web view
+//! rendering the app's own pages. On macOS it gives up the front once at the start, since `open` put
+//! Voice there. The report is `<folder>/self-test.json`. The app keeps running afterwards, so whoever
+//! started it stops it by its process id.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -149,9 +150,42 @@ fn foreground() -> Value {
     }
 }
 
-#[cfg(not(windows))]
+/// The front app's process. A pill that activates Voice shows up here as Voice's pid.
+#[cfg(target_os = "macos")]
+fn foreground() -> Value {
+    match objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication() {
+        Some(front) => json!({
+            "pid": front.processIdentifier(),
+            "bundle": front.bundleIdentifier().map(|id| id.to_string()),
+        }),
+        None => json!({ "pid": null }),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn foreground() -> Value {
     Value::Null
+}
+
+/// `open` makes a freshly started Voice the front app. Give the front back before the first look,
+/// so the comparison afterwards is about the pill and Settings, not the launch.
+#[cfg(target_os = "macos")]
+fn yield_front(app: &AppHandle) -> Result<(), String> {
+    on_main(app, || {
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            if ns_app.isActive() {
+                ns_app.deactivate();
+            }
+        }
+    })?;
+    thread::sleep(Duration::from_millis(500));
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn yield_front(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, String> {
@@ -165,6 +199,11 @@ fn pill_styles(app: &AppHandle, pill: &std::sync::Arc<Pill>) -> Result<Value, St
         #[cfg(any(windows, target_os = "macos"))]
         {
             styles["stopWindow"] = json!(pill.hit_styles());
+        }
+        // macOS: the recipe as AppKit reports it, `isKey` and `canHide` included.
+        #[cfg(target_os = "macos")]
+        {
+            styles["native"] = pill.native_status();
         }
         styles
     })
@@ -208,10 +247,33 @@ fn capture(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
 #[cfg(any(windows, target_os = "macos"))]
 fn styles_ok(styles: &Value) -> bool {
     let p = &styles["pill"];
+    // The stop window is made with the pill; when it's there it never activates either.
+    let stop = &styles["stopWindow"];
+    let stop_ok = stop.is_null() || (stop["noactivate"] == true && stop["topmost"] == true);
     p["toolwindow"] == true
         && p["noactivate"] == true
         && p["topmost"] == true
         && p["appwindow"] == false
+        && stop_ok
+        && native_ok(&styles["native"])
+}
+
+/// macOS: neither the pill nor the stop panel is ever the key window, neither hides with the app, and
+/// both sit at the pill's level.
+#[cfg(target_os = "macos")]
+fn native_ok(native: &Value) -> bool {
+    let window_ok = |w: &Value| {
+        w["isKey"] == false
+            && w["canBecomeKey"] == false
+            && w["canHide"] == false
+            && w["level"] == json!(crate::pill::window::LEVEL)
+    };
+    window_ok(&native["pill"]) && window_ok(&native["stopPanel"])
+}
+
+#[cfg(windows)]
+fn native_ok(_native: &Value) -> bool {
+    true
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -228,6 +290,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     wait("the pill page to load", Duration::from_secs(60), || {
         pill.status().page_loaded
     })?;
+    yield_front(app)?;
     let before = foreground();
 
     // 1. A meeting: the pill shows with its stop button.
@@ -335,7 +398,8 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     let end = foreground();
     steps.push("hidden and shown again");
 
-    let same = |a: &Value, b: &Value| a["hwnd"] == b["hwnd"];
+    // Windows compares the foreground window, macOS the front app (`hwnd` is null there).
+    let same = |a: &Value, b: &Value| a["hwnd"] == b["hwnd"] && a["pid"] == b["pid"];
     let unchanged =
         same(&before, &after_pill) && same(&before, &after_settings) && same(&before, &end);
     let ours = [&after_pill, &after_settings, &end]
