@@ -1,5 +1,5 @@
-//! Win32 for the pill window (pill-settings-design.md 3.2 and 3.3). Everything here runs on the event loop
-//! thread, which owns the window.
+//! The pill window's native side (pill-settings-design.md 3.2 and 3.3): Win32 here, AppKit in
+//! `window_mac.rs`. Everything runs on the event loop thread, which owns the window.
 //!
 //! tao rewrites `GWL_EXSTYLE` from its own flags on every show, hide and flag change, and it has no flag
 //! for `WS_EX_TOOLWINDOW`, so only this module shows or hides the pill and it reapplies the styles after
@@ -10,16 +10,20 @@ use std::sync::OnceLock;
 use tauri::WebviewWindow;
 use voice_engine::Edge;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub use imp::*;
+
+#[cfg(target_os = "macos")]
+#[path = "window_mac.rs"]
+mod imp;
 
 /// What the pill reacts to while it runs: a display change (after it settles) and another app coming to
 /// the foreground (to stay above other topmost windows).
 ///
-/// `main.rs` registers these on every platform; the Windows window hooks are their only callers today,
-/// and the macOS ones will be. Gating them to Windows would gate that registration and the pill's two
-/// handlers with it, so they stay where they are and only their dead-code check is Windows'.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// `main.rs` registers these on every platform; the Windows window hooks and the macOS notification
+/// observers call them. Gating them would gate that registration and the pill's two handlers with it,
+/// so they stay where they are and only their dead-code check is those platforms'.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub struct Callbacks {
     pub display_changed: Box<dyn Fn() + Send + Sync>,
     pub foreground_changed: Box<dyn Fn() + Send + Sync>,
@@ -31,7 +35,7 @@ pub fn set_callbacks(callbacks: Callbacks) {
     let _ = CALLBACKS.set(callbacks);
 }
 
-/// A monitor handle as a plain integer, so it can cross threads.
+/// A monitor handle (Windows) or display id (macOS) as a plain integer, so it can cross threads.
 pub type Monitor = isize;
 
 /// The window's extended styles, decoded for logs and the self-test.
@@ -384,7 +388,7 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     //! Other platforms get a plain always-on-top window; their non-activating panels are later work
     //! (pill-settings-design.md 3.10).
@@ -422,5 +426,5 @@ mod imp {
     pub fn foreground_hook(_on: bool) {}
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use imp::*;
