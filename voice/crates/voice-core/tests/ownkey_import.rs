@@ -177,9 +177,10 @@ fn development_mode_never_imports_hotkeys() {
     let dir = TempDir::new("ownkey-dev");
     let path = write_ownkey(&dir, &full_ownkey_config());
     let mut cfg = Config::defaults(true);
+    let (hotkey, rewrite_hotkey) = (cfg.hotkey.clone(), cfg.rewrite_hotkey.clone());
     let report = import(&path).unwrap().apply(&mut cfg, true);
-    assert_eq!(cfg.hotkey, "f13");
-    assert_eq!(cfg.rewrite_hotkey, "f14");
+    assert_eq!(cfg.hotkey, hotkey);
+    assert_eq!(cfg.rewrite_hotkey, rewrite_hotkey);
     let hotkeys = report.item("hotkeys").unwrap();
     assert!(!hotkeys.imported);
     assert_eq!(

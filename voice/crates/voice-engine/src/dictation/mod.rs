@@ -142,7 +142,11 @@ impl Selection {
 
 /// The keys from Settings. An unknown dictation key falls back to the default.
 pub fn hotkeys(cfg: &Config, dev_mode: bool) -> (HotkeyConfig, Option<Key>) {
-    let fallback = if dev_mode { Key::F13 } else { Key::RightAlt };
+    let fallback = if dev_mode && !cfg!(target_os = "macos") {
+        Key::F13
+    } else {
+        Key::RightAlt
+    };
     let dictate = Key::parse(&cfg.hotkey).unwrap_or(fallback);
     let rewrite = Key::parse(&cfg.rewrite_hotkey).filter(|k| *k != dictate);
     let stop = Key::parse(&cfg.meetings_stop_key).filter(|k| *k != dictate && Some(*k) != rewrite);
@@ -1164,6 +1168,9 @@ mod tests {
     #[test]
     fn hotkeys_come_from_settings_with_ownkeys_fallbacks() {
         let mut cfg = Config::defaults(true);
+        // Pinned, so the test reads the same on a Mac, whose development copy has other defaults.
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         let (keys, stop) = hotkeys(&cfg, true);
         assert_eq!(
             (keys.dictate, keys.rewrite, stop),
@@ -1173,9 +1180,15 @@ mod tests {
         cfg.rewrite_hotkey = "off".into();
         cfg.meetings_stop_key = "f15".into();
         let (keys, stop) = hotkeys(&cfg, true);
+        // An unknown key falls back to F13, or to Right Option on a Mac.
+        let fallback = if cfg!(target_os = "macos") {
+            Key::RightAlt
+        } else {
+            Key::F13
+        };
         assert_eq!(
             (keys.dictate, keys.rewrite, stop),
-            (Key::F13, None, Some(Key::F15))
+            (fallback, None, Some(Key::F15))
         );
         let (keys, _) = hotkeys(&cfg, false);
         assert_eq!(keys.dictate, Key::RightAlt);

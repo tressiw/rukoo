@@ -407,6 +407,8 @@ mod tests {
     #[test]
     fn only_keys_this_keyboard_has_can_be_chosen() {
         let mut cfg = Config::defaults(true);
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         if cfg!(target_os = "macos") {
             for key in ["pause", "scroll lock"] {
                 assert_eq!(
@@ -435,6 +437,8 @@ mod tests {
     #[test]
     fn a_key_can_only_have_one_role() {
         let mut cfg = Config::defaults(true);
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         assert_eq!(
             set(&mut cfg, "dictation.hotkey", json!("f14"))
                 .unwrap_err()

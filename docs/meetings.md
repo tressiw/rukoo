@@ -10,19 +10,19 @@ There are three ways to start a recording:
 
 - **Record a meeting** at the top of the sidebar in meeting mode.
 - **Record with Rukoo Voice** on a calendar event's card, from 15 minutes before the event until it ends, while Voice is connected and nothing records yet. The meeting takes the event's title and is linked to it.
-- Voice's own pill or tray. Rukoo opens the meeting as soon as Voice tells it, and links the calendar event that overlaps its start when exactly one fits.
+- Voice's own recording indicator or tray. Rukoo opens the meeting as soon as Voice tells it, and links the calendar event that overlaps its start when exactly one fits.
 
 ### The screen
 
 Voice can record the screen with the audio. Its Settings (Meetings, Screen recording) set the default: off, frames or video. Frames are still images, saved when the screen changes, with the text Windows reads on them on this computer. Video adds a video of the screen, made by the computer's hardware video encoder; without one, Voice records frames only.
 
-Record in the sidebar, Record in the empty meeting view and Record with Rukoo Voice on a calendar card use Voice's default. The arrow beside each of them chooses for this meeting: Voice's default (the menu says which), Audio only, Audio and screen frames, or Audio and screen video. A meeting started from Voice's pill or tray uses Voice's default.
+Record in the sidebar, Record in the empty meeting view and Record with Rukoo Voice on a calendar card use Voice's default. The arrow beside each of them chooses for this meeting: Voice's default (the menu says which), Audio only, Audio and screen frames, or Audio and screen video. A meeting started from Voice's recording indicator or tray uses Voice's default.
 
-Voice records one monitor: the one with the window you're working in, which skips Rukoo while Rukoo is hidden from screen recordings. In a recording meeting, **Screen** in the header lists the monitors and moves the recording to another one; Voice's pill has a button for the next monitor too. A move shows in the transcript.
+Voice records one monitor: the one with the window you're working in, which skips Rukoo while Rukoo is hidden from screen recordings. In a recording meeting, **Screen** in the header lists the monitors and moves the recording to another one; Voice's recording indicator has a button for the next monitor too. A move shows in the transcript.
 
 When Voice starts a meeting itself, it waits up to half a second for Rukoo to hide its windows before it captures the first frame. Windows draws a coloured border around the recorded monitor while Voice captures it.
 
-While a meeting records, a red dot and the meeting's clock sit in the title bar in every mode. A click opens the meeting. Its header has Mark, Pause or Resume, and Stop, and Screen when the meeting records the screen. Stop asks once more ("Stop recording?") before it stops, as Voice's pill does, because a meeting can't be recorded again.
+While a meeting records, a red dot and the meeting's clock sit in the title bar in every mode. A click opens the meeting. Its header has Mark, Pause or Resume, and Stop, and Screen when the meeting records the screen. Stop asks once more ("Stop recording?") before it stops, as Voice's recording indicator does, because a meeting can't be recorded again.
 
 Voice keeps recording when Rukoo quits or loses the connection. When Rukoo comes back, it asks Voice for everything it missed.
 
@@ -32,7 +32,7 @@ Use the edit button beside the title, or **Rename meeting** in the sidebar's rig
 
 The header menu and sidebar offer **Delete meeting** once recording and processing have finished. The confirmation names the data being removed: audio, screen recordings, transcript, notes, speaker names and corrections. Deletion is permanent on this computer. Voice queues a bucket index tombstone, including while offline, so the meeting cannot be restored after the next connection; encrypted objects remain subject to the bucket's lifecycle rules. Chats stay and show **Meeting deleted**. An older Voice needs an update before it can delete a meeting.
 
-While recording or paused, **Screen** in the header and the pill's screen button offer **Off**, **Frames**, **Video** and a monitor. These choices affect the current meeting. Off stops screen capture while audio continues; selecting Frames or Video starts it again, including in a meeting that began with audio only. The transcript marks each change. Before capture starts, every connected Rukoo must confirm its windows are protected. A failed confirmation leaves the previous mode unchanged. Live mode controls require the updated Voice; older Voice keeps the existing recording behavior.
+While recording or paused, **Screen** in the header and the recording indicator's screen button offer **Off**, **Frames**, **Video** and a monitor. These choices affect the current meeting. Off stops screen capture while audio continues; selecting Frames or Video starts it again, including in a meeting that began with audio only. The transcript marks each change. Before capture starts, every connected Rukoo must confirm its windows are protected. A failed confirmation leaves the previous mode unchanged. Live mode controls require the updated Voice; older Voice keeps the existing recording behavior.
 
 The transcript fills the view. Each line has its meeting time in the margin, and the voice's name shows once per stretch. Lines you dictated into another app during the meeting are greyed out and tagged Dictation: the call heard them, but they weren't part of the conversation. Gaps in the audio, a device that came back and your marks sit between the lines.
 
@@ -89,7 +89,7 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Rukoo doesn't play a meeting's video. Agents can get a clip or a link to it (see [the meeting tools](agents.md#rukoos-tools)).
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.
 - Other apps' notifications and pop-ups on the recorded monitor end up in the frames. Rukoo holds back only its own.
-- With Rukoo's hide switch off, a meeting started from Rukoo records Rukoo's monitor, because Rukoo is the window you're working in. Move it with Screen in the header or with the pill's monitor button.
+- With Rukoo's hide switch off, a meeting started from Rukoo records Rukoo's monitor, because Rukoo is the window you're working in. Move it with Screen in the header or with the recording indicator's monitor button.
 - When Windows doesn't hide a Rukoo window, the meeting's header says "Visible in screen recordings" and Rukoo tries again every second. Until a try works, Rukoo can show in the frames: a meeting Voice starts gets no confirmation from Rukoo and starts its frames after half a second.
 - A Rukoo that isn't connected to Voice when a meeting starts from Voice can show in that meeting's first frames. Voice waits up to 5 seconds only for a Rukoo it has seen since Voice started, so right after Voice restarts it doesn't wait at all.
 - Native file dialogs and system notifications can't be hidden from screen capture.
