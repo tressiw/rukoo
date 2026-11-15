@@ -95,6 +95,7 @@ function baseState() {
     platform: 'windows',
     // macOS permissions, from the preflight calls; other platforms have none (API.md).
     permissions: null,
+    callSound: null,
     features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',

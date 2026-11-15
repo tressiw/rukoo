@@ -145,7 +145,9 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
     let permissions = read_permissions
-        .then(|| crate::permissions::view(&*core.svc.permissions))
+        .then(|| {
+            crate::permissions::view_learning(&*core.svc.permissions, core.system_audio_learned())
+        })
         .flatten();
     json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
@@ -162,6 +164,9 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
         "permissions": permissions,
+        // What the last meeting's call track showed while Voice runs, in every state, also one
+        // built while Settings is closed (voice/ui/API.md).
+        "callSound": core.call_sound_view(),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),

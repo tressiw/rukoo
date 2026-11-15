@@ -667,7 +667,11 @@ fn event_key(event: &str, data: &Value) -> Option<String> {
         }
         events::SPEAKER => format!("speaker:{}", text("id")?),
         events::PASSAGE => passage_key(text("id")?, data["revision"].as_u64()?),
-        events::MARK => mark_key(text("id")?),
+        events::MARK => mark_key(
+            text("id")?,
+            text("kind").unwrap_or_default(),
+            data["until"].as_u64(),
+        ),
         events::FRAME => format!("frame:{}", text("id")?),
         _ => return None,
     })
@@ -1843,6 +1847,11 @@ mod tests {
         assert_eq!(
             event_key("mark", &serde_json::json!({"id":"k-1"})).as_deref(),
             Some("mark:k-1")
+        );
+        let ended = serde_json::json!({"id":"silent-call-30","kind":"silent","until":41000});
+        assert_eq!(
+            event_key("mark", &ended).as_deref(),
+            Some("mark:silent-call-30:until:41000")
         );
         assert_eq!(
             event_key("frame", &serde_json::json!({"id":"f-000412000"})).as_deref(),

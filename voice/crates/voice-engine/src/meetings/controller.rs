@@ -86,11 +86,14 @@ pub enum Change {
         id: String,
         at_ms: u64,
     },
-    /// The recorder's clock and microphone, about once a second.
+    /// The recorder's clock, microphone and call, about once a second.
     Clock {
         id: String,
         at_ms: u64,
         mic_ok: bool,
+        /// What the recorder's silence check knows of the call track (voice-recorder
+        /// `silence.rs`).
+        call: CallSound,
     },
     /// The recorder died and a new one took over with `--resume`.
     Restarted {
@@ -181,6 +184,7 @@ struct Live {
     at_ms: u64,
     at_when: Instant,
     mic_ok: bool,
+    call: CallSound,
     restarting: bool,
     stopping: bool,
     restarts: u32,
@@ -191,6 +195,32 @@ struct Live {
 impl Live {
     fn clock(&self) -> u64 {
         self.at_ms + self.at_when.elapsed().as_millis() as u64
+    }
+}
+
+/// What the recorder's silence check says about the call track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CallSound {
+    /// Nothing either way yet, or the meeting records no call track.
+    #[default]
+    Unknown,
+    /// The track delivered sound: the system lets Voice record it.
+    Heard,
+    /// Only exact zeros while another app played sound: on a Mac, System Audio Recording is
+    /// probably off for Voice or went stale.
+    Silent,
+}
+
+impl CallSound {
+    /// From a track in the recorder's `status` reply.
+    pub fn of(track: &Value) -> CallSound {
+        if track["silent"] == true {
+            CallSound::Silent
+        } else if track["heard"] == true {
+            CallSound::Heard
+        } else {
+            CallSound::Unknown
+        }
     }
 }
 
@@ -316,6 +346,7 @@ impl Controller {
                     at_ms,
                     at_when: Instant::now(),
                     mic_ok: true,
+                    call: CallSound::Unknown,
                     restarting: false,
                     stopping: false,
                     restarts: 0,
@@ -395,6 +426,7 @@ impl Controller {
                     at_ms: 0,
                     at_when: now,
                     mic_ok: true,
+                    call: CallSound::Unknown,
                     restarting: false,
                     stopping: false,
                     restarts: 0,
@@ -483,6 +515,16 @@ impl Controller {
             let deadline = Instant::now() + Duration::from_secs(5);
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
+            }
+            // It answered `stop` after syncing its last line, so nothing is lost: a recorder
+            // still running holds only a device open that never finished.
+            if matches!(child.try_wait(), Ok(None)) {
+                log::warn!(
+                    "meeting {}: the recorder didn't exit after its stop; ending it",
+                    live.id
+                );
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
         let id = live.id.clone();
@@ -676,6 +718,7 @@ impl Controller {
             }
             live.paused = status["state"] == "paused";
             live.mic_ok = status["tracks"]["mic"]["ok"] != false;
+            live.call = CallSound::of(&status["tracks"]["call"]);
             if live.restarts > 0 && live.alive_since.elapsed() >= self.timing.stable_after {
                 live.restarts = 0;
             }
@@ -683,6 +726,7 @@ impl Controller {
                 id: live.id.clone(),
                 at_ms: live.at_ms,
                 mic_ok: live.mic_ok,
+                call: live.call,
             };
             drop(inner);
             self.emit(change);

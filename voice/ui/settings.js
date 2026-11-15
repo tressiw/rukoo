@@ -390,9 +390,11 @@ function permissionsCard() {
           ? t('settings.permissions.denied', { name: t(name) })
           : value === 'notAsked'
             ? t('settings.permissions.notAskedHelp')
-            : id === 'systemAudio' && value === 'unknown'
-              ? t('settings.permissions.systemAudioUnknown')
-              : '';
+            : id === 'systemAudio' && value !== 'granted' && state.callSound === 'silent'
+              ? t('settings.permissions.systemAudioSilent')
+              : id === 'systemAudio' && value === 'unknown'
+                ? t('settings.permissions.systemAudioUnknown')
+                : '';
       return row({
         title: t(name),
         desc: t(why),

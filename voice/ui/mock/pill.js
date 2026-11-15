@@ -60,6 +60,7 @@ export const STATES = {
   'meeting-screen-failed': { phase: 'meeting', notice: 'pill.screenFailed', meeting: meeting({ screen: 'frames' }) },
   'meeting-screen-permission': { phase: 'meeting', notice: 'pill.screenPermission', meeting: meeting({ screen: 'off' }) },
   'meeting-screen-stopped': { phase: 'meeting', notice: 'pill.screenStopped', meeting: meeting({ screen: 'off' }) },
+  'meeting-call-silent': { phase: 'meeting', notice: 'pill.callSilent', meeting: meeting() },
   'meeting-screen-moved': { phase: 'meeting', notice: 'pill.screenMoved', args: { name: 'DELL U2720Q' }, meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-screen-button': { phase: 'meeting', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-screen-off': { phase: 'meeting', meeting: meeting({ screen: 'off', screenSwitch: true }) },

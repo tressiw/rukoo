@@ -153,16 +153,20 @@ mod tests {
     fn the_notification_bodies_with_a_catalog_string_are_in_both_catalogs() {
         let catalog = Catalog::embedded();
         let api = include_str!("../../../ui/API.md");
-        let key = voice_engine::NOTIFY_SCREEN_PERMISSION;
-        for text in [catalog.en.get(key), catalog.nl.get(key)] {
-            let text = text.unwrap_or_else(|| panic!("a catalog lacks {key}"));
-            // The message names the setting, so the user knows where to switch it on.
-            assert!(text.contains("Screen") || text.contains("Scherm"), "{text}");
+        for key in [
+            voice_engine::NOTIFY_SCREEN_PERMISSION,
+            voice_engine::NOTIFY_CALL_SILENT,
+        ] {
+            for text in [catalog.en.get(key), catalog.nl.get(key)] {
+                let text = text.unwrap_or_else(|| panic!("a catalog lacks {key}"));
+                // The message names the setting, so the user knows where to switch it on.
+                assert!(text.contains("Screen") || text.contains("Scherm"), "{text}");
+            }
+            assert!(
+                api.contains(&format!("`{key}`")),
+                "API.md doesn't list {key}"
+            );
         }
-        assert!(
-            api.contains(&format!("`{key}`")),
-            "API.md doesn't list {key}"
-        );
     }
 
     #[test]

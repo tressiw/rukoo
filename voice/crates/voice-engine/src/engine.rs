@@ -23,9 +23,10 @@ use crate::api::{
 };
 use crate::dictation::Dictation;
 use crate::media::MediaService;
-use crate::meetings::controller::{Change, NOTIFY_MEETING};
+use crate::meetings::controller::{CallSound, Change, NOTIFY_MEETING};
 use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
+use crate::permissions::PermissionState;
 use crate::pill::{notices, Looks, MeetingPhase, PillDriver, ACTION_HOLD, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::{Services, Speech};
@@ -54,6 +55,9 @@ pub(crate) struct Core {
     rukoo: Mutex<Value>,
     /// What Settings > Speaker labels last showed about running meetings.
     labels: Mutex<Value>,
+    /// The last meeting's call track as the recorder's silence check saw it, and that meeting's
+    /// id: Settings' System Audio Recording row shows it, and a change to silent is told once.
+    call_sound: Mutex<Option<(String, CallSound)>>,
     pub settings_seq: AtomicU64,
     /// Whether the Settings window exists. Its states read the privacy permissions; nothing else
     /// does, so starting Voice doesn't call TCC before anyone opens Settings.
@@ -100,6 +104,7 @@ impl Core {
             last_chime: Mutex::new(None),
             rukoo: Mutex::new(Value::Null),
             labels: Mutex::new(Value::Null),
+            call_sound: Mutex::new(None),
             settings_seq: AtomicU64::new(1),
             settings_open: AtomicBool::new(false),
             emitting: Mutex::new(()),
@@ -412,11 +417,17 @@ impl Core {
                 self.screen_paused(&id, false);
                 self.meeting_changed();
             }
-            Change::Clock { at_ms, mic_ok, .. } => {
+            Change::Clock {
+                id,
+                at_ms,
+                mic_ok,
+                call,
+            } => {
                 self.pill.update(|p, now| {
                     p.meeting_clock(at_ms, now);
                     p.meeting_mic(mic_ok, now);
                 });
+                self.call_sound(&id, call);
                 self.rukoo_changed();
             }
             Change::Restarted { .. } => {}
@@ -446,6 +457,55 @@ impl Core {
                 );
             }
             Change::Notify { title_key, body } => self.notify(title_key, body),
+        }
+    }
+
+    /// What the recorder's silence check says about the call. A call that turns silent while
+    /// another app plays sound gets a pill notice and a notification once per meeting; the
+    /// recording goes on. Rukoo hears of it through the timeline's `silent` mark. What the
+    /// check learned stays for Settings' System Audio Recording row.
+    fn call_sound(&self, id: &str, call: CallSound) {
+        let previous = {
+            let mut last = lock(&self.call_sound);
+            let previous = last
+                .as_ref()
+                .filter(|(last_id, _)| last_id == id)
+                .map(|(_, sound)| *sound);
+            // Unknown teaches nothing: a new meeting, or a recorder that restarted and checks
+            // again, keeps what was learned until it knows more.
+            if call == CallSound::Unknown || previous == Some(call) {
+                return;
+            }
+            *last = Some((id.to_string(), call));
+            previous
+        };
+        if self.meetings.controller.current().map(|r| r.id).as_deref() == Some(id) {
+            let silent = call == CallSound::Silent;
+            self.pill
+                .update(|p, now| p.meeting_call_silent(silent, now));
+        }
+        if call == CallSound::Silent && previous != Some(CallSound::Silent) {
+            self.notify_keyed(NOTIFY_MEETING, NOTIFY_CALL_SILENT, CALL_SILENT_TEXT);
+        }
+        self.settings_changed();
+    }
+
+    /// `SettingsState.callSound`: `heard`, `silent` or `null`.
+    pub fn call_sound_view(&self) -> Value {
+        match lock(&self.call_sound).as_ref().map(|(_, sound)| *sound) {
+            Some(CallSound::Heard) => Value::from("heard"),
+            Some(CallSound::Silent) => Value::from("silent"),
+            _ => Value::Null,
+        }
+    }
+
+    /// What the last meeting learned about System Audio Recording, for Settings.
+    pub fn system_audio_learned(&self) -> Option<PermissionState> {
+        match lock(&self.call_sound).as_ref()?.1 {
+            CallSound::Heard => Some(PermissionState::Granted),
+            // A silent call is only a hint (voice-recorder `silence.rs`): the row stays unknown
+            // rather than saying macOS refused.
+            CallSound::Silent | CallSound::Unknown => None,
         }
     }
 
@@ -771,6 +831,8 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
 /// The body of the notification when macOS doesn't let Voice record the screen
 /// (voice/ui/i18n `app.notify.screenPermission`), and its English text for a catalog without it.
 pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
+pub const NOTIFY_CALL_SILENT: &str = "app.notify.callSilent";
+const CALL_SILENT_TEXT: &str = "Voice has heard no sound from the call for a minute while another app had its audio output open. If people in the call are talking, macOS may not be letting Voice record it. Check System Settings > Privacy & Security > Screen & System Audio Recording: Rukoo Voice should be switched on under System Audio Recording Only. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice there with the minus button and add it again. The recording goes on.";
 const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
 
 /// The body of the notification when the user stopped the screen capture from macOS' own
