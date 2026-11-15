@@ -109,6 +109,15 @@ pub fn apply_to_window(window: &tauri::WebviewWindow, ui: &UiOptions) {
     apply(&WindowChrome(window), plan(Platform::CURRENT, ui));
 }
 
+/// Gives a native window of Voice's own that isn't a Tauri window (the pill's button panels) the
+/// appearance `ui` asks for. Main thread only.
+#[cfg(target_os = "macos")]
+pub fn apply_to_ns_window(window: &objc2_app_kit::NSWindow, ui: &UiOptions) {
+    use objc2_app_kit::NSAppearanceCustomization;
+    let wanted = plan(Platform::Mac, ui).window.and_then(mac::appearance);
+    window.setAppearance(wanted.as_deref());
+}
+
 /// Writes how the window and the app stand to the log: what was asked, and what AppKit says
 /// results (`effectiveAppearance`), so a title bar that disagrees with its page shows up there.
 pub fn log_state(window: &tauri::WebviewWindow, why: &'static str) {
@@ -156,7 +165,7 @@ mod mac {
 
     const NOTIFICATION: &str = "AppleInterfaceThemeChangedNotification";
 
-    fn appearance(theme: Theme) -> Option<Retained<NSAppearance>> {
+    pub(super) fn appearance(theme: Theme) -> Option<Retained<NSAppearance>> {
         let name = match theme {
             Theme::Dark => "NSAppearanceNameDarkAqua",
             Theme::Light => "NSAppearanceNameAqua",
