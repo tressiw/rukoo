@@ -6,6 +6,7 @@
 //! optionally rewrite, then insert. The newest recording owns the pill.
 
 pub mod capture;
+pub mod dump;
 pub mod errors;
 pub mod level;
 
@@ -313,6 +314,7 @@ impl Dictation {
                 recording.mode,
                 recording.pressed.elapsed(),
                 audio_of(&pcm),
+                level::peak_dbfs(&pcm),
                 Ending::Dropped(Drop::Cancelled),
             );
         }
@@ -538,6 +540,7 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 mode,
                 pressed.elapsed(),
                 Duration::ZERO,
+                level::SILENT_DBFS,
                 Ending::Failed(errors::MIC),
             );
         }
@@ -900,6 +903,7 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     core.pill
         .update(|p, _| p.working(recording.id, phase, activity, None));
     let audio = audio_of(&pcm);
+    let peak = level::peak_dbfs(&pcm);
     let job = Job {
         id: recording.id,
         mode: recording.mode,
@@ -917,6 +921,7 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
             recording.mode,
             held,
             audio,
+            peak,
             Ending::Dropped(Drop::Cancelled),
         );
     }
@@ -947,20 +952,35 @@ fn take_audio(recording: &mut Recording) -> (Vec<i16>, bool, LevelMeter) {
 /// another key went down during the hold, and when the session went away under it.
 fn drop_recording(core: &Core, id: u64, mode: Mode, held: Duration, pcm: &[i16], why: Drop) {
     core.pill.update(|p, _| p.dropped(id));
-    report(id, mode, held, audio_of(pcm), Ending::Dropped(why));
+    report(
+        id,
+        mode,
+        held,
+        audio_of(pcm),
+        level::peak_dbfs(pcm),
+        Ending::Dropped(why),
+    );
 }
 
 /// The one info line a dictation or a rewrite leaves in the log when it ends, so "nothing heard",
 /// an empty transcript, a dropped hold and a failed insert can be told apart. It holds counts,
-/// durations and error codes only: never the text, the selection or any part of them.
-fn report(id: u64, mode: Mode, hold: Duration, audio: Duration, ending: Ending) {
+/// durations, the clip's peak level and error codes only: never the text, the selection or any
+/// part of them.
+fn report(id: u64, mode: Mode, hold: Duration, audio: Duration, peak: f32, ending: Ending) {
     log::info!(
         "dictation: {}",
-        outcome_line(id, mode, hold, audio, &ending)
+        outcome_line(id, mode, hold, audio, peak, &ending)
     );
 }
 
-fn outcome_line(id: u64, mode: Mode, hold: Duration, audio: Duration, ending: &Ending) -> String {
+fn outcome_line(
+    id: u64,
+    mode: Mode,
+    hold: Duration,
+    audio: Duration,
+    peak: f32,
+    ending: &Ending,
+) -> String {
     let what = match mode {
         Mode::Dictate => "dictation",
         Mode::Rewrite => "rewrite",
@@ -979,7 +999,7 @@ fn outcome_line(id: u64, mode: Mode, hold: Duration, audio: Duration, ending: &E
         Ending::Failed(code) => format!("failed ({code})"),
     };
     format!(
-        "{what} {id} ended: {how} ({:.1} s held, {:.1} s of audio)",
+        "{what} {id} ended: {how} ({:.1} s held, {:.1} s of audio, peak {peak:.0} dBFS)",
         hold.as_secs_f64(),
         audio.as_secs_f64()
     )
@@ -1021,6 +1041,7 @@ fn work(core: Weak<Core>, jobs: Receiver<Job>) {
 fn finish(core: &Core, job: &Job, outcome: Outcome) {
     let id = job.id;
     let ending = ending_of(&outcome);
+    let nothing = matches!(outcome, Outcome::NothingHeard(_));
     match outcome {
         Outcome::Inserted {
             words, no_text_box, ..
@@ -1078,7 +1099,34 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
         }
         Outcome::Quiet => {}
     }
-    report(id, job.mode, job.hold, audio_of(&job.pcm), ending);
+    if nothing {
+        keep_audio(core, job);
+    }
+    report(
+        id,
+        job.mode,
+        job.hold,
+        audio_of(&job.pcm),
+        level::peak_dbfs(&job.pcm),
+        ending,
+    );
+}
+
+/// With the development switch on, keeps the audio of a recording that inserted nothing, so a
+/// miss can be looked into. Off in every normal run, and compiled out of a release build; see
+/// [`dump`] for what the file holds and how private it is.
+fn keep_audio(core: &Core, job: &Job) {
+    if !core.opts.dump_empty_dictation {
+        return;
+    }
+    match dump::save(&core.opts.data_dir, job.id, &job.pcm) {
+        Ok(path) => log::warn!(
+            "dictation: kept the audio of {} in {}",
+            job.id,
+            path.display()
+        ),
+        Err(error) => log::warn!("dictation: couldn't keep the audio of {}: {error}", job.id),
+    }
 }
 
 /// How an outcome reads in the log, which is the only place some of them differ.
@@ -1565,28 +1613,29 @@ mod tests {
     fn every_ending_gets_one_line() {
         let hold = Duration::from_millis(2400);
         let audio = Duration::from_millis(2300);
-        let line = |ending: Ending| outcome_line(4, Mode::Dictate, hold, audio, &ending);
+        let peak = -31.0;
+        let line = |ending: Ending| outcome_line(4, Mode::Dictate, hold, audio, peak, &ending);
         assert_eq!(
             line(Ending::Inserted {
                 method: InsertMode::Paste,
                 chars: 24
             }),
-            "dictation 4 ended: inserted 24 characters by pasting (2.4 s held, 2.3 s of audio)"
+            "dictation 4 ended: inserted 24 characters by pasting (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
         assert_eq!(
             line(Ending::Inserted {
                 method: InsertMode::Type,
                 chars: 8
             }),
-            "dictation 4 ended: inserted 8 characters by typing (2.4 s held, 2.3 s of audio)"
+            "dictation 4 ended: inserted 8 characters by typing (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
         assert_eq!(
             line(Ending::NothingHeard),
-            "dictation 4 ended: nothing heard (2.4 s held, 2.3 s of audio)"
+            "dictation 4 ended: nothing heard (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
         assert_eq!(
             line(Ending::EmptyTranscript),
-            "dictation 4 ended: empty transcript (2.4 s held, 2.3 s of audio)"
+            "dictation 4 ended: empty transcript (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
         for (nothing, why) in [
             (Nothing::NoAudio, "nothing heard"),
@@ -1595,7 +1644,7 @@ mod tests {
         ] {
             assert_eq!(
                 line(nothing.ending()),
-                format!("dictation 4 ended: {why} (2.4 s held, 2.3 s of audio)")
+                format!("dictation 4 ended: {why} (2.4 s held, 2.3 s of audio, peak -31 dBFS)")
             );
         }
         for (why, text) in [
@@ -1606,20 +1655,49 @@ mod tests {
         ] {
             assert_eq!(
                 line(Ending::Dropped(why)),
-                format!("dictation 4 ended: dropped ({text}) (2.4 s held, 2.3 s of audio)")
+                format!(
+                    "dictation 4 ended: dropped ({text}) (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
+                )
             );
         }
         assert_eq!(
             line(Ending::Failed(errors::AUTH)),
-            "dictation 4 ended: failed (pill.error.auth) (2.4 s held, 2.3 s of audio)"
+            "dictation 4 ended: failed (pill.error.auth) (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
         assert_eq!(
-            outcome_line(9, Mode::Rewrite, hold, audio, &Ending::EmptyTranscript),
-            "rewrite 9 ended: empty transcript (2.4 s held, 2.3 s of audio)"
+            outcome_line(
+                9,
+                Mode::Rewrite,
+                hold,
+                audio,
+                peak,
+                &Ending::EmptyTranscript
+            ),
+            "rewrite 9 ended: empty transcript (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
         );
     }
 
-    /// The line carries counts and durations only: the text and the selection never reach it.
+    /// A capture that delivered only digital silence says so in the line, so it reads as the
+    /// microphone's fault rather than as a recognizer that heard words and returned none.
+    #[test]
+    fn an_empty_line_says_when_nothing_but_silence_arrived() {
+        let silence = vec![0i16; 16_000 * 10];
+        let line = outcome_line(
+            5,
+            Mode::Dictate,
+            Duration::from_millis(10_400),
+            audio_of(&silence),
+            level::peak_dbfs(&silence),
+            &Ending::EmptyTranscript,
+        );
+        assert_eq!(
+            line,
+            "dictation 5 ended: empty transcript (10.4 s held, 10.0 s of audio, peak -96 dBFS)"
+        );
+    }
+
+    /// The line carries counts, durations and a level only: the text and the selection never
+    /// reach it.
     #[test]
     fn the_outcome_line_holds_no_text() {
         let text = "a secret sentence";
@@ -1628,6 +1706,7 @@ mod tests {
             Mode::Dictate,
             Duration::from_secs(1),
             Duration::from_secs(1),
+            -42.0,
             &Ending::Inserted {
                 method: InsertMode::Paste,
                 chars: text.chars().count(),

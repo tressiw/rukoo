@@ -1630,6 +1630,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
@@ -1655,6 +1656,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
