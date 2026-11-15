@@ -3,6 +3,7 @@
 
 mod support;
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -213,6 +214,55 @@ fn an_empty_transcript_also_shows_nothing_heard() {
     h.hold(Key::F13);
     h.sink.wait_phase(PillPhase::NothingHeard);
     assert!(h.input.texts().is_empty(), "a filler alone inserts nothing");
+    engine.shutdown();
+}
+
+/// With the development switch on, the audio of a dictation that inserted nothing is kept, so a
+/// miss can be looked into afterwards. Without it nothing is written.
+#[test]
+fn the_audio_of_a_dictation_that_inserted_nothing_is_kept_only_when_asked() {
+    let h = Harness::new("kept-audio");
+    h.config(json!({}));
+    h.dump_empty_dictation.store(true, Ordering::SeqCst);
+    let engine = h.start();
+    h.speech.say("  um  ");
+    h.hold(Key::F13);
+    h.sink.wait_phase(PillPhase::NothingHeard);
+    let folder = h.data().join("dictation-dumps");
+    wait_for("the kept audio", || {
+        std::fs::read_dir(&folder).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    let kept: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .map(|entries| entries.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let (pcm, rate) = voice_audio::read_wav_i16(&kept[0]).unwrap();
+    assert_eq!(rate, 16_000);
+    assert!(!pcm.is_empty(), "the capture's audio is in the file");
+    engine.shutdown();
+
+    let off = Harness::new("not-kept-audio");
+    off.config(json!({}));
+    let engine = off.start();
+    off.speech.say("  um  ");
+    off.hold(Key::F13);
+    off.sink.wait_phase(PillPhase::NothingHeard);
+    assert!(!off.data().join("dictation-dumps").exists());
+    engine.shutdown();
+}
+
+/// A full sentence that the model returns as nothing keeps its audio too, and one that inserts
+/// text keeps none.
+#[test]
+fn only_a_dictation_that_inserted_nothing_keeps_its_audio() {
+    let h = Harness::new("kept-once");
+    h.config(json!({}));
+    h.dump_empty_dictation.store(true, Ordering::SeqCst);
+    let engine = h.start();
+    h.speech.say("hello");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert!(!h.data().join("dictation-dumps").exists());
     engine.shutdown();
 }
 

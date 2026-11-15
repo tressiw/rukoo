@@ -834,6 +834,9 @@ pub struct Harness {
     pub protector: Arc<dyn Protector>,
     pub test_screen: Option<String>,
     pub test_monitor: Option<String>,
+    /// Whether this engine keeps the audio of a dictation that inserted nothing; off unless a
+    /// test turns it on, as a development copy does with its environment variable.
+    pub dump_empty_dictation: AtomicBool,
 }
 
 impl Harness {
@@ -878,6 +881,7 @@ impl Harness {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: AtomicBool::new(false),
         }
     }
 
@@ -964,6 +968,7 @@ impl Harness {
             test_sources: self.test_sources.clone(),
             test_screen: self.test_screen.clone(),
             test_monitor: self.test_monitor.clone(),
+            dump_empty_dictation: self.dump_empty_dictation.load(Ordering::SeqCst),
             import_ownkey_from: self.import_from.clone(),
             version: "0.1.0-test".into(),
         }
