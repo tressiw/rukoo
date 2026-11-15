@@ -124,7 +124,7 @@ What the page shows:
 - `button` is `null` when no stop button is drawn: no meeting, `stopEnabled` false, the pill hidden or leaving. Hide the stop window then.
 - `screenButton` is `null` when no monitor button is drawn: `screenSwitch` false or missing, no meeting that records or is paused, the pill hidden or leaving. Hide the monitor window then. An app from before the monitor button ignores it.
 - `pill` is `null` while nothing is drawn.
-- `seq` is the snapshot the layout was measured for. Ignore a layout whose `seq` is older than the newest snapshot that has a stop button.
+- `seq` is the snapshot the layout was measured for. A layout replaces the one the app holds unless it is older than that one; it is not compared with the newest snapshot, which the app can have and the page not yet: the page only sends a layout when the rectangles change, so a refused layout would leave the native windows where the pill no longer draws its buttons.
 - The page reports after every change: a new snapshot, the end of the entry animation, every frame of a width transition (the label sliding to 0 when the pill compacts, the button widening to "Stop?") and when Inter finishes loading. It never sends the same layout twice in a row.
 
 ### Strings the app reads from the catalogs

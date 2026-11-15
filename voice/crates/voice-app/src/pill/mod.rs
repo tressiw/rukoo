@@ -79,8 +79,6 @@ struct Inner {
     hide_gen: u64,
     watch_gen: u64,
     repair_gen: u64,
-    /// The newest snapshot that draws a stop or screen button; older layouts are stale.
-    stop_seq: u64,
     layout: Option<Layout>,
     ui: UiOptions,
     last_raise: Option<Instant>,
@@ -188,6 +186,19 @@ type ButtonRect = place::Rect;
 #[cfg(target_os = "macos")]
 type ButtonRect = hit_mac::PanelFrame;
 
+/// The layout the page just sent, when it replaces the one held. The page sends them in its own
+/// order, so a late message from an older snapshot leaves the held layout alone. Its `seq` is the
+/// snapshot the page last drew, which can be older than the newest snapshot here: the page applies
+/// one at a time and only sends a layout when the rectangles change, so refusing an "older" layout
+/// would leave the panels where the pill no longer draws its buttons (a pill that just compacted,
+/// for instance) until the next change.
+fn newer_layout(held: Option<&Layout>, layout: Layout) -> Option<Layout> {
+    match held {
+        Some(held) if held.seq > layout.seq => None,
+        _ => Some(layout),
+    }
+}
+
 #[cfg(windows)]
 fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
     let css = match target {
@@ -219,6 +230,19 @@ fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
 #[cfg(target_os = "macos")]
 fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
     button.set_capture_excluded(excluded);
+}
+
+/// "Hide pill from capture" on the pill's own window. macOS sets it on the window at once, so a
+/// capture or the `status` hook never sees the previous value; elsewhere tauri's call is the only
+/// way to do it.
+#[cfg(target_os = "macos")]
+fn exclude_pill_from_capture(win: &WebviewWindow, excluded: bool) {
+    window::set_capture_excluded(win, excluded);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exclude_pill_from_capture(win: &WebviewWindow, excluded: bool) {
+    let _ = win.set_content_protected(excluded);
 }
 
 /// Which monitor a show uses.
@@ -273,7 +297,6 @@ impl Pill {
                 hide_gen: 0,
                 watch_gen: 0,
                 repair_gen: 0,
-                stop_seq: 0,
                 layout: None,
                 ui,
                 last_raise: None,
@@ -516,9 +539,6 @@ impl Pill {
                 return;
             }
             let prev_phase = i.snapshot.as_ref().map(|p| p.phase);
-            if has_stop(&s) || has_screen(&s) {
-                i.stop_seq = i.stop_seq.max(s.seq);
-            }
             let action = if s.visible {
                 // A visible snapshot cancels a pending hide, like Ownkey's show().
                 i.hide_gen += 1;
@@ -649,10 +669,10 @@ impl Pill {
     pub fn layout(self: &Arc<Self>, layout: Layout) {
         {
             let mut i = self.lock();
-            if layout.seq < i.stop_seq {
+            let Some(next) = newer_layout(i.layout.as_ref(), layout) else {
                 return;
-            }
-            i.layout = Some(layout);
+            };
+            i.layout = Some(next);
         }
         self.on_main(|p| p.update_hit());
     }
@@ -689,7 +709,7 @@ impl Pill {
             window::place(&win, monitor, edge);
             self.lock().monitor = Some(monitor);
         }
-        let _ = win.set_content_protected(excluded);
+        exclude_pill_from_capture(&win, excluded);
         window::show(&win);
         window::raise(&win);
         self.update_hit();
@@ -762,7 +782,7 @@ impl Pill {
         if let Some(win) = self.window() {
             // Hide from capture takes effect at once, shown or not, so a hidden pill doesn't show up
             // in a capture during its first frames after the next show.
-            let _ = win.set_content_protected(ui.hide_pill_from_capture);
+            exclude_pill_from_capture(&win, ui.hide_pill_from_capture);
             #[cfg(target_os = "macos")]
             crate::appearance::apply_to_window(&win, &ui);
             if self.lock().shown {
@@ -1203,6 +1223,34 @@ mod tests {
         let old: Layout =
             serde_json::from_str(r#"{ "seq": 3, "pill": null, "button": null }"#).unwrap();
         assert!(old.screen_button.is_none());
+    }
+
+    #[test]
+    fn a_layout_from_the_page_replaces_an_older_one() {
+        let wide: Layout = serde_json::from_str(
+            r#"{ "seq": 11, "pill": { "x": 70, "y": 24, "width": 244, "height": 36 },
+                 "button": { "x": 285, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        let compact: Layout = serde_json::from_str(
+            r#"{ "seq": 12, "pill": { "x": 106, "y": 24, "width": 172, "height": 36 },
+                 "button": { "x": 248, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        // The pill compacted: the page's newer rectangles count, and the panels follow the buttons
+        // the page draws now instead of the ones it drew a moment ago.
+        assert_eq!(
+            newer_layout(Some(&wide), compact.clone()),
+            Some(compact.clone())
+        );
+        assert_eq!(newer_layout(None, compact.clone()), Some(compact.clone()));
+        // A message from before that one doesn't move the panels back.
+        assert_eq!(newer_layout(Some(&compact), wide.clone()), None);
+        // The same sequence number again is the page's answer to a rebuild, and it counts.
+        assert_eq!(
+            newer_layout(Some(&compact), compact.clone()),
+            Some(compact.clone())
+        );
     }
 
     #[test]
