@@ -284,13 +284,15 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
 
 /// The key-up can be lost when the session goes away: a fast user switch, the
 /// lock screen, or the Mac sleeping. The app hears those from the system and
-/// calls this, which treats the held hotkey as released and stops the
-/// dictation. A key-up that arrives later changes nothing.
+/// calls this, which drops the held recording: the person who held the key isn't
+/// at this console any more, so nothing they said is transcribed, sent to a
+/// provider or inserted, and the clipboard isn't touched. A key-up that arrives
+/// later changes nothing.
 ///
 /// The release runs on the hotkey handler's thread, after the presses and
 /// releases already queued there, so push-to-talk changes on one thread only.
 /// A release that came in while a press was still opening the microphone
-/// therefore stops the recording that press stored, instead of finding nothing
+/// therefore drops the recording that press stored, instead of finding nothing
 /// to stop and leaving the microphone on. Returns once the release was
 /// handled, or after [`RELEASE_WAIT`].
 pub(crate) fn release_all(core: &Arc<Core>) {
@@ -316,14 +318,21 @@ pub(crate) fn release_all(core: &Arc<Core>) {
     }
 }
 
-/// [`release_all`] on the hotkey handler's thread.
+/// [`release_all`] on the hotkey handler's thread. Unlike a key-up, this ends the recording
+/// without a word: the session went away, so there is nobody at this console to insert it for.
 fn release_now(core: &Arc<Core>) {
     if core.shutting_down() {
         return;
     }
-    if lock(&core.dictation.ptt).release_all() {
-        stop_recording(core);
+    // Push-to-talk lets go of its key; whether a recording was running is what matters here.
+    if !lock(&core.dictation.ptt).release_all() {
+        return;
     }
+    let Some(mut recording) = lock(&core.dictation.recording).take() else {
+        return;
+    };
+    close_recording(core, &mut recording);
+    drop_recording(core, recording.id);
 }
 
 fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
@@ -759,25 +768,13 @@ fn stop_recording(core: &Arc<Core>) {
 /// Closes a recording taken out of its slot and queues it for the worker.
 fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     let this = &core.dictation;
-    // Closing the stream first, so no audio arrives after the release is handled.
-    drop(recording.stream.take());
-    if let Some(file) = recording.marked.take() {
-        let _ = tap::dictation(&file, "end");
-    }
-    core.meetings.set_dictating(false);
-    let (pcm, heard, meter) = {
-        let mut c = lock(&recording.captured);
-        c.closed = true;
-        (std::mem::take(&mut c.pcm), c.heard, c.meter.clone())
-    };
-    // Keeps the meter calibrated to this microphone for the next press.
-    *lock(&this.meter) = meter;
+    let (pcm, heard) = close_recording(core, &mut recording);
     let held = recording.pressed.elapsed();
     if !recording.posted_keys && typed_during(recording.key, held, (core.svc.key_activity)()) {
         // Right Option with a letter types é or @, and Right Command with one is a shortcut:
         // the key was held to type, not to talk.
         log::info!("dictation: another key went down during the hold; dropped");
-        core.pill.update(|p, _| p.dropped(recording.id));
+        drop_recording(core, recording.id);
         return;
     }
     let phase = match recording.mode {
@@ -798,6 +795,33 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     if let Some(queue) = lock(&this.queue).as_ref() {
         let _ = queue.send(job);
     }
+}
+
+/// Closes the microphone and the meeting's stretch of a recording taken out of its slot, and
+/// takes its audio. Closing the stream first means no audio arrives after the release is handled.
+fn close_recording(core: &Core, recording: &mut Recording) -> (Vec<i16>, bool) {
+    drop(recording.stream.take());
+    if let Some(file) = recording.marked.take() {
+        let _ = tap::dictation(&file, "end");
+    }
+    core.meetings.set_dictating(false);
+    let (pcm, heard, meter) = take_audio(recording);
+    // Keeps the meter calibrated to this microphone for the next press.
+    *lock(&core.dictation.meter) = meter;
+    (pcm, heard)
+}
+
+/// Takes a recording's audio, closing its capture against further blocks.
+fn take_audio(recording: &mut Recording) -> (Vec<i16>, bool, LevelMeter) {
+    let mut c = lock(&recording.captured);
+    c.closed = true;
+    (std::mem::take(&mut c.pcm), c.heard, c.meter.clone())
+}
+
+/// Drops a recording without sending it anywhere: the pill goes. Used when another key went down
+/// during the hold, and when the session went away under it.
+fn drop_recording(core: &Core, id: u64) {
+    core.pill.update(|p, _| p.dropped(id));
 }
 
 /// Whether a key that isn't a modifier went down while `key` was held for `held`, from how long
