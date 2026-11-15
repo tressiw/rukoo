@@ -124,6 +124,10 @@ fn main() {
             screen_select_answers_by_its_deadline_when_the_screen_is_slow,
         ),
         ("drops_reach_the_pill", drops_reach_the_pill),
+        (
+            "a_stopped_screen_stands_on_the_pill",
+            a_stopped_screen_stands_on_the_pill,
+        ),
         ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
         (
             "pill_screen_menu_changes_modes_and_monitors",
@@ -1390,6 +1394,55 @@ fn drops_reach_the_pill() {
         std::fs::metadata(&timeline).unwrap().len() > before
     });
     assert_eq!(engine.tray_state().meeting.as_deref(), Some("recording"));
+    engine.stop_meeting(voice_engine::StopReason::User).unwrap();
+    engine.shutdown();
+}
+
+/// A meeting that recorded the screen and then lost it says so for the rest of the meeting: the
+/// audio goes on, and with notifications off the pill is the only place that says the screen
+/// doesn't. The screen button agrees, showing that nothing is recorded.
+fn a_stopped_screen_stands_on_the_pill() {
+    let h = engine_harness("screen-stands", SCREEN.to_string());
+    h.config(json!({"meetings_screen": "frames"}));
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    let dir = h.data().join("meetings").join(&id);
+    wait_for("a frame", || {
+        journal_has(&dir, |l| matches!(l, Line::Frame { .. }))
+    });
+    wait_for("the pill's screen", || {
+        h.sink
+            .last_pill()
+            .and_then(|p| p.meeting)
+            .is_some_and(|m| m.screen == "frames")
+    });
+    // macOS' screen sharing control stopped the stream, which the screen process journals and the
+    // supervisor reports as this change.
+    engine.on_screen(ScreenChange::StoppedByUser { id: id.clone() });
+    let notice = wait_notice(&h, "pill.screenStopped");
+    let meeting = notice.meeting.unwrap();
+    assert_eq!(
+        (meeting.screen.as_str(), meeting.screen_switch),
+        ("off", false),
+        "the notice and the screen button agree"
+    );
+    let note = h.sink.wait_note("app.notify.meeting");
+    assert!(
+        note.body.contains("screen sharing control"),
+        "{}",
+        note.body
+    );
+    // The audio goes on.
+    let timeline = dir.join("timeline.jsonl");
+    let before = std::fs::metadata(&timeline).unwrap().len();
+    wait_for("the recorder to go on", || {
+        std::fs::metadata(&timeline).unwrap().len() > before
+    });
+    // The screen records again in this meeting: the stop is over and its notice goes.
+    engine.on_screen(ScreenChange::Mode { id: id.clone() });
+    wait_for("the notice to go", || {
+        h.sink.last_pill().is_some_and(|p| p.notice.is_none())
+    });
     engine.stop_meeting(voice_engine::StopReason::User).unwrap();
     engine.shutdown();
 }

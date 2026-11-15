@@ -204,11 +204,11 @@
   },
   "pill.screenPermission": {
     "message": "Screen Recording is off",
-    "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
+    "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A meeting that was recording the screen keeps this notice for the rest of the meeting. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
   },
   "pill.screenStopped": {
     "message": "Screen recording stopped",
-    "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. A notification says the same. voice/ui/pill.js (meetingView)."
+    "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. It stays for the rest of the meeting, until the screen records again or the meeting ends. A notification says the same. voice/ui/pill.js (meetingView)."
   },
   "pill.callSilent": {
     "message": "No sound from the call",

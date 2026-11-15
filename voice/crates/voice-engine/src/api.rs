@@ -316,6 +316,11 @@ pub trait EngineApi: Send + Sync + 'static {
     fn meeting_control(&self) -> Option<Arc<dyn voice_bridge::MeetingControl>> {
         None
     }
+
+    /// For tests: a change the screen supervisor reported, delivered as the app's own wiring
+    /// delivers it. Nothing in the tests can make macOS stop a real capture.
+    #[doc(hidden)]
+    fn on_screen(&self, _change: crate::meetings::screen::ScreenChange) {}
 }
 
 /// Shared handle the app keeps.

@@ -140,6 +140,9 @@ pub enum ScreenChange {
         /// The screen process refused to start for the grant, as opposed to a grant that went
         /// while it recorded.
         refused: bool,
+        /// The meeting had recorded screen content, so the screen is gone for the rest of it.
+        /// A refusal at the very start of a meeting leaves this false.
+        was_recording: bool,
     },
     /// The user stopped the screen capture from the system's own control, such as macOS' menu
     /// bar button for screen sharing. The screen isn't recorded any more; the audio goes on.
@@ -284,6 +287,8 @@ impl ScreenLive {
                             changes.push(ScreenChange::NoPermission {
                                 id: self.id.clone(),
                                 refused: false,
+                                // Only a screen process that ran writes this line.
+                                was_recording: true,
                             });
                         }
                     }
@@ -943,7 +948,8 @@ impl ScreenSupervisor {
         drop(slot);
         self.changed.notify_all();
         log::warn!("screen: {id}: the screen process won't start without permission: {message}");
-        if journal_has_content(dir) {
+        let was_recording = journal_has_content(dir);
+        if was_recording {
             if let Err(e) = self.finalize(id, dir, "failed") {
                 log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
             }
@@ -951,6 +957,7 @@ impl ScreenSupervisor {
         self.emit(ScreenChange::NoPermission {
             id: id.to_string(),
             refused: true,
+            was_recording,
         });
     }
 
@@ -2037,7 +2044,7 @@ mod tests {
             .unwrap();
         let changes = live.read_journal(true);
         assert!(
-            matches!(changes.as_slice(), [ScreenChange::NoPermission { id, refused: false }] if id == "m-1"),
+            matches!(changes.as_slice(), [ScreenChange::NoPermission { id, refused: false, was_recording: true }] if id == "m-1"),
             "{changes:?}"
         );
         assert!(live.no_permission);

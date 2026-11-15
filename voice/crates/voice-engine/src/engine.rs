@@ -529,11 +529,14 @@ impl Core {
     }
 
     /// What the screen supervisor reports: drops and give-ups become pill notices and tray
-    /// notifications, a move shows the monitor's name.
-    pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
+    /// notifications, a move shows the monitor's name, and a screen recording that stopped for
+    /// good keeps its notice for the rest of the meeting.
+    pub fn on_screen(&self, change: ScreenChange) {
         match change {
             ScreenChange::Mode { id } => {
                 self.pill_screen(&id);
+                // The screen records again, so a stop's standing notice is over.
+                self.screen_standing(&id, None);
                 self.settings_changed();
             }
             ScreenChange::Dropped { id, what, reason } => {
@@ -544,17 +547,27 @@ impl Core {
                 self.pill_screen(&id);
                 self.settings_changed();
             }
-            ScreenChange::NoPermission { id, refused } => {
+            ScreenChange::NoPermission {
+                id,
+                refused,
+                was_recording,
+            } => {
                 // At the start of a meeting or in the middle of one: either way the screen is
                 // gone and the audio goes on. The notice names the setting, because retrying
-                // can't help, and stays longer than a drop's: with notifications off it is the
-                // only trace on screen.
-                self.screen_notice(
-                    &id,
-                    Some(notices::SCREEN_PERMISSION),
-                    Map::new(),
-                    ACTION_HOLD,
-                );
+                // can't help. A meeting that recorded the screen keeps the notice for the rest
+                // of the meeting; one that never got to has it for a while, long enough to read
+                // because with notifications off it is the only trace on screen.
+                self.pill_screen(&id);
+                if was_recording {
+                    self.screen_standing(&id, Some(notices::SCREEN_PERMISSION));
+                } else {
+                    self.screen_notice(
+                        &id,
+                        Some(notices::SCREEN_PERMISSION),
+                        Map::new(),
+                        ACTION_HOLD,
+                    );
+                }
                 // A screen process that refused to start: the app asks macOS once, which puts
                 // Voice in the Screen Recording list for the user to switch on.
                 if refused {
@@ -565,13 +578,14 @@ impl Core {
                     NOTIFY_SCREEN_PERMISSION,
                     SCREEN_PERMISSION_TEXT,
                 );
-                self.pill_screen(&id);
                 self.settings_changed();
             }
             ScreenChange::StoppedByUser { id } => {
-                self.screen_notice(&id, Some(notices::SCREEN_STOPPED), Map::new(), ACTION_HOLD);
+                // Only a running screen process writes this, so the meeting was recording the
+                // screen and its stop stands for the rest of the meeting.
                 self.notify_keyed(NOTIFY_MEETING, NOTIFY_SCREEN_STOPPED, SCREEN_STOPPED_TEXT);
                 self.pill_screen(&id);
+                self.screen_standing(&id, Some(notices::SCREEN_STOPPED));
                 self.settings_changed();
             }
             ScreenChange::GaveUp { id } => {
@@ -615,6 +629,16 @@ impl Core {
         }
         self.pill
             .update(|p, now| p.meeting_notice(key, args, hold, now));
+    }
+
+    /// A screen notice that stands for the rest of the meeting, or `None` once the screen records
+    /// again.
+    fn screen_standing(&self, id: &str, key: Option<&'static str>) {
+        if self.meetings.controller.current().map(|r| r.id).as_deref() != Some(id) {
+            return;
+        }
+        self.pill
+            .update(|p, now| p.meeting_screen_stopped(key, now));
     }
 
     /// The pill's screen button opens a menu without changing the recording.
@@ -1241,6 +1265,10 @@ impl EngineApi for EngineImpl {
             .meetings
             .control()
             .map(|control| control as Arc<dyn voice_bridge::MeetingControl>)
+    }
+
+    fn on_screen(&self, change: ScreenChange) {
+        self.0.on_screen(change);
     }
 }
 
