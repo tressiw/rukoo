@@ -327,8 +327,14 @@ impl LocalEngine {
             if reply.get("ok") != Some(&Value::Bool(true)) {
                 return Err(worker_error(&reply, "Orukeet couldn't transcribe this recording"));
             }
+            // A worker that says it transcribed but sends no text has an answer Voice can't read;
+            // treating it as "nothing was said" would hide a broken worker behind a silent pill.
+            let Some(text) = reply.get("text").and_then(Value::as_str) else {
+                kill(slot);
+                return Err(protocol_error());
+            };
             Ok(Timed {
-                text: reply.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string(),
+                text: text.trim().to_string(),
                 tokens: reply
                     .get("tokens")
                     .and_then(Value::as_array)

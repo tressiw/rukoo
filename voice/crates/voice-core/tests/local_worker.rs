@@ -112,6 +112,9 @@ fn fake_worker() {
                     Some(_) if magic("__fail__") => {
                         json!({"ok": false, "id": id, "kind": "failed", "error": "decode failed on purpose"})
                     }
+                    // Says it transcribed, but names no text: a worker whose answers Voice can't
+                    // read. It must not read as "nothing was said".
+                    Some(_) if magic("__notext__") => json!({"ok": true, "id": id}),
                     Some((_, threads)) => json!({
                         "ok": true,
                         "id": id,
@@ -393,6 +396,23 @@ fn a_failed_decode_keeps_the_worker() {
     let after = echo(&engine, &Hints::default());
     assert_eq!(after[3], before[3]);
     assert_eq!(after[2], "loads 1");
+}
+
+/// An answer that names no text is a broken worker, not a person who said nothing.
+fn an_answer_without_text_is_an_error() {
+    let (_data, engine) = engine_with_model("notext");
+    let before = echo(&engine, &Hints::default());
+    let error = engine
+        .transcribe(&pcm(1600), &words(&["__notext__"]))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Provider);
+    assert_eq!(
+        error.message,
+        "Voice's local speech worker sent an answer Voice couldn't read. Try again."
+    );
+    // Like every answer Voice can't read, it ends the worker instead of trusting it further.
+    let after = echo(&engine, &Hints::default());
+    assert_ne!(after[3], before[3]);
 }
 
 fn garbage_from_the_worker_replaces_it() {
@@ -783,6 +803,10 @@ fn run_tests() {
         (
             "a_failed_decode_keeps_the_worker",
             a_failed_decode_keeps_the_worker,
+        ),
+        (
+            "an_answer_without_text_is_an_error",
+            an_answer_without_text_is_an_error,
         ),
         (
             "garbage_from_the_worker_replaces_it",

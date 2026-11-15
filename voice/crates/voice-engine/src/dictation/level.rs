@@ -21,6 +21,23 @@ pub const ACTIVITY_LEVEL: f32 = 0.05;
 pub const NO_AUDIO_AFTER: Duration = Duration::from_secs(5);
 /// At most 50 level ticks a second.
 pub const PUSH_INTERVAL: Duration = Duration::from_millis(20);
+/// The floor a peak reading is reported against, so digital silence reads as one number instead
+/// of minus infinity. Speech at a normal distance is 20 to 40 dB above it.
+pub const SILENT_DBFS: f32 = -96.0;
+
+/// The loudest sample in a block as dBFS, so a recording can say how loud it was at all. A block
+/// of digital silence, or no block, reads [`SILENT_DBFS`] instead of minus infinity.
+///
+/// This is the one number that tells a microphone that delivered nothing from a recognizer that
+/// heard words and returned none, without keeping any of the words.
+pub fn peak_dbfs(block: &[i16]) -> f32 {
+    let peak = block
+        .iter()
+        .map(|&sample| f32::from(sample.unsigned_abs()))
+        .fold(0.0, f32::max);
+    let floor = 10f32.powf(SILENT_DBFS / 20.0);
+    20.0 * (peak / 32_768.0).max(floor).log10()
+}
 
 /// dBFS of a block of 16-bit samples.
 pub fn dbfs(block: &[i16]) -> f32 {
@@ -129,6 +146,18 @@ mod tests {
         }
         let (_, heard) = meter.feed(&tone(8000.0, 160));
         assert!(heard);
+    }
+
+    #[test]
+    fn the_peak_is_what_tells_silence_from_sound() {
+        // Digital silence reads as the floor, so it prints as one number.
+        assert_eq!(peak_dbfs(&[]), SILENT_DBFS);
+        assert_eq!(peak_dbfs(&[0; 16_000]), SILENT_DBFS);
+        // A single loud sample is the peak, wherever it sits.
+        assert!((peak_dbfs(&[0, 0, 16_384, 0]) - -6.0).abs() < 0.1);
+        assert!(peak_dbfs(&[32_767]) > -0.01);
+        // -40 dBFS peak, a quiet headset's normal level.
+        assert!((peak_dbfs(&[328; 400]) - -40.0).abs() < 0.05);
     }
 
     #[test]

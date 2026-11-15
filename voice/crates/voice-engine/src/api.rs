@@ -28,6 +28,10 @@ pub struct EngineOptions {
     /// Development only: `RUKOO_VOICE_TEST_MONITOR`, the monitor every screen process records,
     /// e.g. `\\.\DISPLAY2`.
     pub test_monitor: Option<String>,
+    /// Development only, and never in a release build: `RUKOO_VOICE_DUMP_EMPTY_DICTATION=1`
+    /// keeps the audio of a dictation that inserted nothing under `dictation-dumps` in the data
+    /// folder, because that file holds what the person said (see `dictation::dump`).
+    pub dump_empty_dictation: bool,
     /// `--import-ownkey <copy>`: the only way a development copy imports Ownkey's settings.
     pub import_ownkey_from: Option<PathBuf>,
     /// Voice's version, `CARGO_PKG_VERSION` of the app.
