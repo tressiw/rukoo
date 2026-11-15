@@ -113,7 +113,8 @@ impl PushToTalk {
     /// Treats the held hotkey as released: its key-up may never arrive, for
     /// example when the Mac's session resigns, the screen locks or the Mac
     /// sleeps. A key-up that does arrive later is ignored. Returns whether a
-    /// recording was running, which the caller then stops.
+    /// recording was running, which the caller then ends: the session release
+    /// drops it, while the watchdog ends it as a key-up would.
     pub fn release_all(&mut self) -> bool {
         self.down = false;
         self.recording.take().is_some()
