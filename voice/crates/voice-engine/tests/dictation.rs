@@ -21,7 +21,9 @@ fn a_dictation_is_transcribed_cleaned_and_inserted() {
     h.hold(Key::F13);
     let inserted = h.sink.wait_phase(PillPhase::Inserted);
     assert_eq!(inserted.words, Some(2));
-    assert_eq!(h.input.texts(), ["Hello world."]);
+    // A dictation that ends a sentence gets one trailing space, so the next one doesn't run
+    // into it.
+    assert_eq!(h.input.texts(), ["Hello world. "]);
     assert_eq!(lock(&h.input.inserted)[0].mode, InsertMode::Paste);
     let phases = h.sink.phases();
     let expected = [
@@ -64,6 +66,7 @@ fn typing_mode_and_a_second_dictation_work_the_same_way() {
     h.speech.say("second");
     h.hold(Key::F13);
     wait_for("the second insertion", || h.input.texts().len() == 2);
+    // A word on its own ends no sentence, so it gets no trailing space.
     assert_eq!(h.input.texts(), ["first", "second"]);
     assert!(lock(&h.input.inserted)
         .iter()
@@ -73,8 +76,8 @@ fn typing_mode_and_a_second_dictation_work_the_same_way() {
 
 /// The recognizer's text is trimmed before it is cleaned and inserted, so a model that pads its
 /// transcript (Orukeet does) never starts a dictation with a space. Both platforms share this
-/// path; the space an insertion shows in a field comes from the field or from a dictionary
-/// correction, not from that padding.
+/// path. A fragment keeps the trim and gets no trailing space; a sentence gets exactly one,
+/// after its full stop, and not the padding the model put around it.
 #[test]
 fn a_padded_transcript_is_inserted_without_its_padding() {
     let h = Harness::new("padded");
@@ -84,6 +87,10 @@ fn a_padded_transcript_is_inserted_without_its_padding() {
     h.hold(Key::F13);
     wait_for("the insertion", || h.input.texts().len() == 1);
     assert_eq!(h.input.texts(), ["padded"]);
+    h.speech.say("  A whole sentence.  ");
+    h.hold(Key::F13);
+    wait_for("the sentence", || h.input.texts().len() == 2);
+    assert_eq!(h.input.texts(), ["padded", "A whole sentence. "]);
     engine.shutdown();
 }
 
@@ -97,6 +104,8 @@ fn a_spoken_edit_rewrites_the_selection() {
     h.speech.say("fix the spelling");
     h.hold(Key::F14);
     h.sink.wait_phase(PillPhase::Rewrote);
+    // A rewrite replaces a selection and has to fit what stood there, so it gets no trailing
+    // space, even though its text ends a sentence.
     assert_eq!(h.input.texts(), ["The draft."]);
     let requests = lock(&h.speech.rewrite_requests).clone();
     assert_eq!(requests.len(), 1);
@@ -160,7 +169,8 @@ fn auto_rewrite_polishes_and_falls_back_to_the_transcript() {
     h.speech.say("second try");
     h.hold(Key::F13);
     wait_for("the raw text", || h.input.texts().len() == 2);
-    assert_eq!(h.input.texts(), ["Hello there, Anna.", "second try"]);
+    // The polished sentence ends a sentence and gets its space; the raw fragment doesn't.
+    assert_eq!(h.input.texts(), ["Hello there, Anna. ", "second try"]);
     let note = h.sink.wait_note("app.notify.rewriteFailed");
     assert_eq!(
         note.body,

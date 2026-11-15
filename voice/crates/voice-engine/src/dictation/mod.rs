@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use voice_core::cleanup::SENTENCE_END;
 use voice_core::config::Config;
 use voice_core::providers::provider_requires_key;
 use voice_core::{cleanup, prompts, RewriteRequest};
@@ -1219,12 +1220,14 @@ fn dictate(core: &Core, job: &Job) -> Outcome {
             "No text box selected. Click a text field and try again.".to_string(),
         );
     }
-    let chars = text.chars().count();
-    if let Err(outcome) = insert(core, cfg, &text) {
+    let words = text.split_whitespace().count() as u32;
+    let inserted = inserted_text(&text);
+    let chars = inserted.chars().count();
+    if let Err(outcome) = insert(core, cfg, &inserted) {
         return outcome;
     }
     Outcome::Inserted {
-        words: text.split_whitespace().count() as u32,
+        words,
         chars,
         method: insertion_mode(cfg),
         no_text_box,
@@ -1362,6 +1365,31 @@ fn wait_for_release(core: &Core, held: &[Key]) -> Result<(), InputError> {
     Ok(())
 }
 
+/// The closing quotes and brackets a sentence's full stop can be followed by.
+const SENTENCE_CLOSERS: [char; 7] = ['"', '\'', '\u{201d}', '\u{2019}', ')', ']', '\u{bb}'];
+
+/// The text a dictation inserts: the transcript, plus one trailing space when it ends a
+/// sentence. Two dictations in a row then read "One sentence. The next one." instead of running
+/// together. A fragment gets none, and neither does a text that ends in a newline or already in
+/// whitespace, so no second space is ever added. A CJK full stop gets none either: those scripts
+/// put no space after a sentence. The caller's text is already trimmed, and every reader of the
+/// transcript before this point, the pill's word count included, keeps the text without the
+/// space. A rewrite doesn't come here: it replaces a selection and fits what stood there.
+fn inserted_text(text: &str) -> String {
+    let ends_sentence = text
+        .trim_end_matches(SENTENCE_CLOSERS)
+        .chars()
+        .next_back()
+        .is_some_and(|last| SENTENCE_END.contains(&last));
+    if !ends_sentence {
+        return text.to_string();
+    }
+    let mut inserted = String::with_capacity(text.len() + 1);
+    inserted.push_str(text);
+    inserted.push(' ');
+    inserted
+}
+
 /// Inserts with no hotkey held. Keys go to whatever has focus, with the keys the user holds:
 /// pasting while Right Alt is held for the next dictation turns Ctrl+V into AltGr+V, which Ownkey
 /// did (ownkey-dictation.md 17.7). Voice waits for the release instead, on purpose, right before
@@ -1479,6 +1507,56 @@ mod tests {
     fn the_micro_tap_gate_matches_ownkey() {
         assert_eq!(MIN_SAMPLES, 378);
         assert_eq!(MIN_SAMPLES_WITHOUT_ACTIVITY, 1600);
+    }
+
+    /// A dictation that ends a sentence is inserted with one space after it, so the next one
+    /// doesn't run into it. Closing quotes and brackets can follow the full stop.
+    #[test]
+    fn a_dictation_that_ends_a_sentence_gets_one_trailing_space() {
+        for text in [
+            "Done.",
+            "Done!",
+            "Done?",
+            "Done\u{2026}",
+            "Really?!",
+            "He said \u{201c}done.\u{201d}",
+            "She said 'done.'",
+            "He said \"done.\"",
+            "(Done.)",
+            "[Done.]",
+            "\u{ab}Done.\u{bb}",
+        ] {
+            let inserted = inserted_text(text);
+            assert_eq!(inserted, format!("{text} "), "{text}");
+            assert_eq!(
+                inserted.matches(' ').count(),
+                text.matches(' ').count() + 1,
+                "exactly one space for {text}"
+            );
+        }
+    }
+
+    /// Nothing else gets one: a word or a fragment, a sentence that ends in a comma or a colon,
+    /// a text that ends in a newline or already in whitespace, and a CJK full stop.
+    #[test]
+    fn a_fragment_a_newline_and_cjk_get_no_trailing_space() {
+        for text in [
+            "",
+            "word",
+            "a fragment",
+            "ends in a comma,",
+            "ends in a colon:",
+            "ends in a semicolon;",
+            "Done.\n",
+            "Done. ",
+            // Chinese and Japanese end a sentence without a space, so a full stop there gets
+            // none.
+            "\u{4f60}\u{597d}\u{3002}",
+            "\u{597d}\u{7684}\u{ff01}",
+            "\u{307b}\u{3093}\u{3068}\u{3046}\u{ff1f}",
+        ] {
+            assert_eq!(inserted_text(text), text, "{text:?}");
+        }
     }
 
     /// Every kind of ending has its own words, so a check at the keyboard can tell a missing
