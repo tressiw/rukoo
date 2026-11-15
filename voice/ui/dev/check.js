@@ -342,6 +342,21 @@ check('every reason labels are off shows its text on the Speaker labels page', a
   assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. New meetings label each voice on the call\.[\s\S]*Nemotron on this computer/);
 });
 
+check('a Mac mock shows Mac folders and no Ownkey', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
+  const windows = await page.locator('[data-section="model"]').innerText();
+  assert.match(windows, /C:\\Users\\you\\AppData\\Local\\Ownkey\\models\\nemotron-3-diarization/);
+  assert.match(windows, /Shared with Ownkey\. Remove it in Ownkey\./);
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready&platform=macos');
+  const mac = await page.locator('[data-section="model"]').innerText();
+  assert.match(mac, /\/Users\/you\/Library\/Application Support\/Rukoo Voice\/models\/nemotron-3-diarization/);
+  assert.doesNotMatch(mac, /Ownkey/);
+  assert.match(mac, /Remove download/);
+  // The rest of the Mac page follows: a Mac's meetings folder, and no Ownkey anywhere.
+  await open('settings.html?mock=1&lang=en&page=storage&platform=macos');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Ownkey/);
+});
+
 check('the switch stays usable without the model and applies to new meetings', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=speakers&speakers=model');
   const toggle = page.locator('[data-a="toggle:meetings.liveSpeakers"]');

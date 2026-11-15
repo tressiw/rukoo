@@ -459,6 +459,20 @@ function speakersState(state, forced) {
   };
 }
 
+// The folders a Mac shows: Voice's own data folder, and no Ownkey anywhere. Only a model that sat in Ownkey's
+// folder moves, so one that is missing stays missing.
+const MAC_DATA = '/Users/you/Library/Application Support/Rukoo Voice';
+function macosFolders(state) {
+  for (const model of Object.values(state.models)) {
+    if (model.location !== 'ownkey') continue;
+    model.location = 'voice';
+    model.removable = true;
+    model.path = `${MAC_DATA}/models/${model.id === 'nemotron' ? 'nemotron-3-diarization' : 'orukeet-onnx-int8'}`;
+  }
+  state.storage.folder = `${MAC_DATA}/meetings`;
+  state.rukoo.discoveryPath = `${MAC_DATA}/bridge.json`;
+}
+
 export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
@@ -492,6 +506,8 @@ export function createMock(params) {
     state.features.speakers = true;
   }
   state.speakers = speakersState(state, forcedSpeakers);
+  // A Mac has never run Ownkey: the models are in Voice's own folder, and nothing there is shared with Ownkey.
+  if (state.platform === 'macos') macosFolders(state);
   if (params.has('sync')) state.features.sync = true;
   state.sync.available = state.features.sync;
   let ownUploads = params.has('sync') ? (SYNC_SCENARIOS[params.get('sync')] || SYNC_SCENARIOS.fresh)(state) : false;
