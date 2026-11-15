@@ -98,6 +98,8 @@ struct Captured {
 struct Job {
     id: u64,
     mode: Mode,
+    /// How long the key was held, for the outcome line.
+    hold: Duration,
     cfg: Arc<Config>,
     pcm: Vec<i16>,
     heard: bool,
@@ -157,10 +159,17 @@ pub fn hotkeys(cfg: &Config, dev_mode: bool) -> (HotkeyConfig, Option<Key>) {
 enum Outcome {
     Inserted {
         words: u32,
+        chars: usize,
+        method: InsertMode,
         no_text_box: bool,
     },
-    Rewrote,
-    NothingHeard,
+    Rewrote {
+        chars: usize,
+        method: InsertMode,
+    },
+    /// Nothing to insert. The pill says nothing was heard for all of these; which of them it was
+    /// only reaches the log, so a missing insertion can be told from a silent one.
+    NothingHeard(Nothing),
     Failed {
         notice: &'static str,
         title: &'static str,
@@ -168,6 +177,64 @@ enum Outcome {
     },
     /// Voice is quitting: nothing more happens, nothing is inserted.
     Quiet,
+}
+
+/// Why a recording had no text to insert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nothing {
+    /// No audio arrived, or none with sound in it in a clip too short to send.
+    NoAudio,
+    /// An audible clip under the micro-tap gate: under 0.10 s of audio.
+    TooShort,
+    /// The transcript was empty after cleanup.
+    EmptyTranscript,
+}
+
+impl Nothing {
+    fn ending(self) -> Ending {
+        match self {
+            Nothing::NoAudio => Ending::NothingHeard,
+            Nothing::TooShort => Ending::Dropped(Drop::TooShort),
+            Nothing::EmptyTranscript => Ending::EmptyTranscript,
+        }
+    }
+}
+
+/// Why a recording was dropped rather than sent anywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drop {
+    /// A key that isn't the hotkey went down during the hold: the user typed.
+    AnotherKey,
+    /// The session went away under the held key: lock, user switch, sleep or session resign.
+    Session,
+    /// There was less than 0.10 s of audio to send.
+    TooShort,
+    /// Voice is quitting.
+    Cancelled,
+}
+
+impl Drop {
+    fn description(self) -> &'static str {
+        match self {
+            Drop::AnotherKey => "another key went down during the hold",
+            Drop::Session => "the session went away",
+            Drop::TooShort => "too short",
+            Drop::Cancelled => "Voice is quitting",
+        }
+    }
+}
+
+/// How a dictation or a rewrite ended, for the one line the log gets for it.
+enum Ending {
+    Inserted {
+        method: InsertMode,
+        chars: usize,
+    },
+    NothingHeard,
+    EmptyTranscript,
+    Dropped(Drop),
+    /// The error code the pill showed, such as `pill.error.auth`.
+    Failed(&'static str),
 }
 
 impl Dictation {
@@ -239,6 +306,14 @@ impl Dictation {
         }
         if let Some(mut recording) = lock(&self.recording).take() {
             recording.stream.take();
+            let (pcm, _, _) = take_audio(&mut recording);
+            report(
+                recording.id,
+                recording.mode,
+                recording.pressed.elapsed(),
+                audio_of(&pcm),
+                Ending::Dropped(Drop::Cancelled),
+            );
         }
         // The worker ends after the job it is on; a cloud request can't be cancelled, so it
         // isn't waited for. It inserts nothing once Voice is quitting.
@@ -344,8 +419,16 @@ fn release_now(core: &Arc<Core>) {
     let Some(mut recording) = lock(&core.dictation.recording).take() else {
         return;
     };
-    close_recording(core, &mut recording);
-    drop_recording(core, recording.id);
+    let (pcm, _) = close_recording(core, &mut recording);
+    let held = recording.pressed.elapsed();
+    drop_recording(
+        core,
+        recording.id,
+        recording.mode,
+        held,
+        &pcm,
+        Drop::Session,
+    );
 }
 
 fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
@@ -444,6 +527,13 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             if first_failure {
                 core.settings_changed();
             }
+            report(
+                id,
+                mode,
+                pressed.elapsed(),
+                Duration::ZERO,
+                Ending::Failed(errors::MIC),
+            );
         }
     }
 }
@@ -786,8 +876,14 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     if !recording.posted_keys && typed_during(recording.key, held, (core.svc.key_activity)()) {
         // Right Option with a letter types é or @, and Right Command with one is a shortcut:
         // the key was held to type, not to talk.
-        log::info!("dictation: another key went down during the hold; dropped");
-        drop_recording(core, recording.id);
+        drop_recording(
+            core,
+            recording.id,
+            recording.mode,
+            held,
+            &pcm,
+            Drop::AnotherKey,
+        );
         return;
     }
     let phase = match recording.mode {
@@ -797,16 +893,26 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     let activity = activity_of(recording.mode);
     core.pill
         .update(|p, _| p.working(recording.id, phase, activity, None));
+    let audio = audio_of(&pcm);
     let job = Job {
         id: recording.id,
         mode: recording.mode,
+        hold: held,
         cfg: recording.cfg,
         pcm,
         heard,
         selection: recording.selection,
     };
-    if let Some(queue) = lock(&this.queue).as_ref() {
-        let _ = queue.send(job);
+    let sent = lock(&this.queue).as_ref().map(|queue| queue.send(job));
+    if sent.is_none_or(|sent| sent.is_err()) {
+        // Voice is quitting: the worker is gone and nothing will process this recording.
+        report(
+            recording.id,
+            recording.mode,
+            held,
+            audio,
+            Ending::Dropped(Drop::Cancelled),
+        );
     }
 }
 
@@ -831,10 +937,51 @@ fn take_audio(recording: &mut Recording) -> (Vec<i16>, bool, LevelMeter) {
     (std::mem::take(&mut c.pcm), c.heard, c.meter.clone())
 }
 
-/// Drops a recording without sending it anywhere: the pill goes. Used when another key went down
-/// during the hold, and when the session went away under it.
-fn drop_recording(core: &Core, id: u64) {
+/// Drops a recording without sending it anywhere: the pill goes and the log says why. Used when
+/// another key went down during the hold, and when the session went away under it.
+fn drop_recording(core: &Core, id: u64, mode: Mode, held: Duration, pcm: &[i16], why: Drop) {
     core.pill.update(|p, _| p.dropped(id));
+    report(id, mode, held, audio_of(pcm), Ending::Dropped(why));
+}
+
+/// The one info line a dictation or a rewrite leaves in the log when it ends, so "nothing heard",
+/// an empty transcript, a dropped hold and a failed insert can be told apart. It holds counts,
+/// durations and error codes only: never the text, the selection or any part of them.
+fn report(id: u64, mode: Mode, hold: Duration, audio: Duration, ending: Ending) {
+    log::info!(
+        "dictation: {}",
+        outcome_line(id, mode, hold, audio, &ending)
+    );
+}
+
+fn outcome_line(id: u64, mode: Mode, hold: Duration, audio: Duration, ending: &Ending) -> String {
+    let what = match mode {
+        Mode::Dictate => "dictation",
+        Mode::Rewrite => "rewrite",
+    };
+    let how = match ending {
+        Ending::Inserted { method, chars } => {
+            let method = match method {
+                InsertMode::Paste => "pasting",
+                InsertMode::Type => "typing",
+            };
+            format!("inserted {chars} characters by {method}")
+        }
+        Ending::NothingHeard => "nothing heard".to_string(),
+        Ending::EmptyTranscript => "empty transcript".to_string(),
+        Ending::Dropped(why) => format!("dropped ({})", why.description()),
+        Ending::Failed(code) => format!("failed ({code})"),
+    };
+    format!(
+        "{what} {id} ended: {how} ({:.1} s held, {:.1} s of audio)",
+        hold.as_secs_f64(),
+        audio.as_secs_f64()
+    )
+}
+
+/// How much audio a recording holds. Every capture delivers 16 kHz mono samples.
+fn audio_of(pcm: &[i16]) -> Duration {
+    Duration::from_secs_f64(pcm.len() as f64 / f64::from(voice_audio::SAMPLE_RATE))
 }
 
 /// Whether a key that isn't a modifier went down while `key` was held for `held`, from how long
@@ -854,18 +1001,24 @@ fn work(core: Weak<Core>, jobs: Receiver<Job>) {
         let Some(core) = core.upgrade() else {
             return;
         };
-        if core.shutting_down() {
-            return;
-        }
-        let outcome = process(&core, &job);
+        // A job queued just before Voice began quitting still gets its outcome line, so no
+        // recording ends without a word in the log.
+        let outcome = if core.shutting_down() {
+            Outcome::Quiet
+        } else {
+            process(&core, &job)
+        };
         finish(&core, &job, outcome);
     }
 }
 
 fn finish(core: &Core, job: &Job, outcome: Outcome) {
     let id = job.id;
+    let ending = ending_of(&outcome);
     match outcome {
-        Outcome::Inserted { words, no_text_box } => core.pill.update(|p, now| {
+        Outcome::Inserted {
+            words, no_text_box, ..
+        } => core.pill.update(|p, now| {
             if no_text_box {
                 p.finished(
                     id,
@@ -886,11 +1039,11 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
                 );
             }
         }),
-        Outcome::Rewrote => core.pill.update(|p, now| {
+        Outcome::Rewrote { .. } => core.pill.update(|p, now| {
             p.finished(id, PillPhase::Rewrote, None, None, pill::INSERTED_HOLD, now)
         }),
         // Differs from Ownkey on purpose: an empty capture showed the green "Done" check.
-        Outcome::NothingHeard => core.pill.update(|p, now| {
+        Outcome::NothingHeard(_) => core.pill.update(|p, now| {
             p.finished(
                 id,
                 PillPhase::NothingHeard,
@@ -919,6 +1072,24 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
         }
         Outcome::Quiet => {}
     }
+    report(id, job.mode, job.hold, audio_of(&job.pcm), ending);
+}
+
+/// How an outcome reads in the log, which is the only place some of them differ.
+fn ending_of(outcome: &Outcome) -> Ending {
+    match outcome {
+        Outcome::Inserted { chars, method, .. } => Ending::Inserted {
+            method: *method,
+            chars: *chars,
+        },
+        Outcome::Rewrote { chars, method } => Ending::Inserted {
+            method: *method,
+            chars: *chars,
+        },
+        Outcome::NothingHeard(nothing) => nothing.ending(),
+        Outcome::Failed { notice, .. } => Ending::Failed(notice),
+        Outcome::Quiet => Ending::Dropped(Drop::Cancelled),
+    }
 }
 
 fn failed(notice: &'static str, title: &'static str, body: impl Into<String>) -> Outcome {
@@ -943,8 +1114,17 @@ fn provider_failed(error: &voice_core::ProviderError, step: Step) -> Outcome {
 
 fn process(core: &Core, job: &Job) -> Outcome {
     let samples = job.pcm.len();
-    if samples < MIN_SAMPLES || (!job.heard && samples < MIN_SAMPLES_WITHOUT_ACTIVITY) {
-        return Outcome::NothingHeard;
+    if samples < MIN_SAMPLES {
+        // No audio at all is "nothing heard"; an audible blip under the micro-tap gate is a
+        // hold too short to send anywhere.
+        return Outcome::NothingHeard(if samples == 0 {
+            Nothing::NoAudio
+        } else {
+            Nothing::TooShort
+        });
+    }
+    if !job.heard && samples < MIN_SAMPLES_WITHOUT_ACTIVITY {
+        return Outcome::NothingHeard(Nothing::NoAudio);
     }
     let audio = job.cfg.dictation_audio();
     if provider_requires_key(&audio.provider, &audio.endpoint) && audio.api_key.trim().is_empty() {
@@ -1020,7 +1200,7 @@ fn dictate(core: &Core, job: &Job) -> Outcome {
         }
     }
     if text.is_empty() {
-        return Outcome::NothingHeard;
+        return Outcome::NothingHeard(Nothing::EmptyTranscript);
     }
     thread::sleep(DICTATION_SETTLE);
     if core.shutting_down() {
@@ -1034,11 +1214,14 @@ fn dictate(core: &Core, job: &Job) -> Outcome {
             "No text box selected. Click a text field and try again.".to_string(),
         );
     }
+    let chars = text.chars().count();
     if let Err(outcome) = insert(core, cfg, &text) {
         return outcome;
     }
     Outcome::Inserted {
         words: text.split_whitespace().count() as u32,
+        chars,
+        method: insertion_mode(cfg),
         no_text_box,
     }
 }
@@ -1095,7 +1278,7 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
         return Outcome::Quiet;
     }
     if instruction.is_empty() {
-        return Outcome::NothingHeard;
+        return Outcome::NothingHeard(Nothing::EmptyTranscript);
     }
     core.pill
         .update(|p, _| p.working(job.id, PillPhase::Rewriting, Activity::Rewrite, None));
@@ -1131,8 +1314,13 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
     if core.shutting_down() {
         return Outcome::Quiet;
     }
-    match insert(core, cfg, result.trim()) {
-        Ok(()) => Outcome::Rewrote,
+    let written = result.trim();
+    let chars = written.chars().count();
+    match insert(core, cfg, written) {
+        Ok(()) => Outcome::Rewrote {
+            chars,
+            method: insertion_mode(cfg),
+        },
         Err(outcome) => outcome,
     }
 }
@@ -1177,11 +1365,7 @@ fn wait_for_release(core: &Core, held: &[Key]) -> Result<(), InputError> {
 fn insert(core: &Core, cfg: &Config, text: &str) -> Result<(), Outcome> {
     let held = hotkeys_of(core, cfg);
     let mut released = || wait_for_release(core, &held);
-    let mode = if cfg.paste_mode {
-        InsertMode::Paste
-    } else {
-        InsertMode::Type
-    };
+    let mode = insertion_mode(cfg);
     core.svc
         .input
         .insert(text, mode, &mut released)
@@ -1201,6 +1385,15 @@ fn activity_of(mode: Mode) -> Activity {
     match mode {
         Mode::Dictate => Activity::Dictate,
         Mode::Rewrite => Activity::Rewrite,
+    }
+}
+
+/// How this recording puts text in, which the outcome line names.
+fn insertion_mode(cfg: &Config) -> InsertMode {
+    if cfg.paste_mode {
+        InsertMode::Paste
+    } else {
+        InsertMode::Type
     }
 }
 
@@ -1281,5 +1474,83 @@ mod tests {
     fn the_micro_tap_gate_matches_ownkey() {
         assert_eq!(MIN_SAMPLES, 378);
         assert_eq!(MIN_SAMPLES_WITHOUT_ACTIVITY, 1600);
+    }
+
+    /// Every kind of ending has its own words, so a check at the keyboard can tell a missing
+    /// insertion from a silent one, and a rewrite from a dictation.
+    #[test]
+    fn every_ending_gets_one_line() {
+        let hold = Duration::from_millis(2400);
+        let audio = Duration::from_millis(2300);
+        let line = |ending: Ending| outcome_line(4, Mode::Dictate, hold, audio, &ending);
+        assert_eq!(
+            line(Ending::Inserted {
+                method: InsertMode::Paste,
+                chars: 24
+            }),
+            "dictation 4 ended: inserted 24 characters by pasting (2.4 s held, 2.3 s of audio)"
+        );
+        assert_eq!(
+            line(Ending::Inserted {
+                method: InsertMode::Type,
+                chars: 8
+            }),
+            "dictation 4 ended: inserted 8 characters by typing (2.4 s held, 2.3 s of audio)"
+        );
+        assert_eq!(
+            line(Ending::NothingHeard),
+            "dictation 4 ended: nothing heard (2.4 s held, 2.3 s of audio)"
+        );
+        assert_eq!(
+            line(Ending::EmptyTranscript),
+            "dictation 4 ended: empty transcript (2.4 s held, 2.3 s of audio)"
+        );
+        for (nothing, why) in [
+            (Nothing::NoAudio, "nothing heard"),
+            (Nothing::TooShort, "dropped (too short)"),
+            (Nothing::EmptyTranscript, "empty transcript"),
+        ] {
+            assert_eq!(
+                line(nothing.ending()),
+                format!("dictation 4 ended: {why} (2.4 s held, 2.3 s of audio)")
+            );
+        }
+        for (why, text) in [
+            (Drop::AnotherKey, "another key went down during the hold"),
+            (Drop::Session, "the session went away"),
+            (Drop::TooShort, "too short"),
+            (Drop::Cancelled, "Voice is quitting"),
+        ] {
+            assert_eq!(
+                line(Ending::Dropped(why)),
+                format!("dictation 4 ended: dropped ({text}) (2.4 s held, 2.3 s of audio)")
+            );
+        }
+        assert_eq!(
+            line(Ending::Failed(errors::AUTH)),
+            "dictation 4 ended: failed (pill.error.auth) (2.4 s held, 2.3 s of audio)"
+        );
+        assert_eq!(
+            outcome_line(9, Mode::Rewrite, hold, audio, &Ending::EmptyTranscript),
+            "rewrite 9 ended: empty transcript (2.4 s held, 2.3 s of audio)"
+        );
+    }
+
+    /// The line carries counts and durations only: the text and the selection never reach it.
+    #[test]
+    fn the_outcome_line_holds_no_text() {
+        let text = "a secret sentence";
+        let line = outcome_line(
+            3,
+            Mode::Dictate,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            &Ending::Inserted {
+                method: InsertMode::Paste,
+                chars: text.chars().count(),
+            },
+        );
+        assert!(!line.contains("secret"), "{line}");
+        assert!(line.contains("17 characters"), "{line}");
     }
 }
