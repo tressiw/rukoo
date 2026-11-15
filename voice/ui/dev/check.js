@@ -776,6 +776,18 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
     return page.locator('[data-section="sync"]').innerText();
   };
   assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
+  // Only a manifest still to go: nothing waits, so the chip isn't an orange "0 files waiting".
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 0 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('Everything is in the bucket'));
+  const uploading = page.locator('[data-section="sync"] .sync-status');
+  assert.doesNotMatch(await uploading.innerText(), /0 files waiting/);
+  assert.equal(await uploading.locator('.status[data-tone="busy"]').count(), 0, 'no warning tone');
+  assert.equal(await uploading.locator('.status[data-tone="ok"]').count(), 1, 'neutral and fine');
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 2 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('2 files waiting'));
+  assert.equal(await page.locator('[data-section="sync"] .status[data-tone="busy"]').count(), 1, 'a real queue is busy');
   assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
   const retrying = await statusOf('retrying');
   assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);

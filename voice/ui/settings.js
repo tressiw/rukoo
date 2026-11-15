@@ -977,7 +977,14 @@ function syncStatus() {
         if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
         break;
       case 'uploading':
-        parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        // A manifest or the index still to go while no file waits: the chip would say "0 files
+        // waiting" in a warning tone. An empty queue is the good news `idle` gives.
+        if (s.waiting > 0) {
+          parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        } else {
+          parts.push(status('ok', t('settings.sync.upToDate')));
+          if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
+        }
         break;
       case 'live':
         parts.push(status('busy', t('settings.sync.live')), note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
