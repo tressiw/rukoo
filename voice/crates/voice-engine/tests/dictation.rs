@@ -71,6 +71,22 @@ fn typing_mode_and_a_second_dictation_work_the_same_way() {
     engine.shutdown();
 }
 
+/// The recognizer's text is trimmed before it is cleaned and inserted, so a model that pads its
+/// transcript (Orukeet does) never starts a dictation with a space. Both platforms share this
+/// path; the space an insertion shows in a field comes from the field or from a dictionary
+/// correction, not from that padding.
+#[test]
+fn a_padded_transcript_is_inserted_without_its_padding() {
+    let h = Harness::new("padded");
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("  padded  ");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert_eq!(h.input.texts(), ["padded"]);
+    engine.shutdown();
+}
+
 #[test]
 fn a_spoken_edit_rewrites_the_selection() {
     let h = Harness::new("rewrite");
