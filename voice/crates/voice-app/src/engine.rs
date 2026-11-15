@@ -42,9 +42,17 @@ pub fn options(
         test_sources: dev_var("RUKOO_VOICE_TEST_SOURCES"),
         test_screen: dev_var("RUKOO_VOICE_TEST_SCREEN"),
         test_monitor: dev_var("RUKOO_VOICE_TEST_MONITOR"),
+        dump_empty_dictation: keep_empty_dictation(&dev_var),
         import_ownkey_from,
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
+}
+
+/// Whether a development copy asked Voice to keep the audio of a dictation that inserted nothing.
+/// A release build never does, whatever the variable says: that file holds what someone said.
+fn keep_empty_dictation(dev_var: &dyn Fn(&str) -> Option<String>) -> bool {
+    cfg!(debug_assertions)
+        && dev_var("RUKOO_VOICE_DUMP_EMPTY_DICTATION").is_some_and(|value| value == "1")
 }
 
 /// What to tell the user when the engine doesn't start.
@@ -119,7 +127,25 @@ mod tests {
         assert_eq!(opts.test_sources, None);
         assert_eq!(opts.test_screen, None);
         assert_eq!(opts.test_monitor, None);
+        assert!(!opts.dump_empty_dictation);
         assert!(!opts.dev_mode);
         assert_eq!(opts.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The dump that holds what someone said needs the switch exactly `1`, and a build that keeps
+    /// debug assertions: a release build that found the variable keeps nothing.
+    #[test]
+    fn keeping_an_empty_dictation_needs_the_switch_and_a_debug_build() {
+        let with = |value: Option<&'static str>| {
+            move |_: &str| value.map(str::to_string) as Option<String>
+        };
+        assert_eq!(
+            keep_empty_dictation(&with(Some("1"))),
+            cfg!(debug_assertions)
+        );
+        for other in ["0", "true", "yes", " "] {
+            assert!(!keep_empty_dictation(&with(Some(other))), "{other}");
+        }
+        assert!(!keep_empty_dictation(&with(None)));
     }
 }
