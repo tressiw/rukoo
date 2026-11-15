@@ -2102,6 +2102,8 @@ function go(name, { anchor } = {}) {
   if (name !== current()) stack.push(name);
   dictionary.error = '';
   render({ full: true });
+  // Storage's free-space figure is a reading, not a setting: read it when the page opens.
+  if (name === 'storage') refreshStorage();
   page.classList.remove('entering');
   void page.offsetWidth;
   page.classList.add('entering');
@@ -2260,7 +2262,27 @@ async function refreshPermissions() {
     // Settings keeps what it showed; the next state or focus tries again.
   }
 }
-window.addEventListener('focus', refreshPermissions);
+
+// The recordings drive's free space and the size the meetings use change while Settings is open,
+// and the app only sends a state when something of its own changes. Reading them again when the
+// window gets the focus or the Storage page opens keeps the figure from being the one the page was
+// built with, which is what makes it disagree with the disk.
+async function refreshStorage() {
+  if (!state) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.storage || !state || next.seq < state.seq) return;
+    if (JSON.stringify(next.storage) === JSON.stringify(state.storage)) return;
+    state.storage = next.storage;
+    if (current() === 'storage' || current() === 'main') render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+window.addEventListener('focus', () => {
+  refreshPermissions();
+  refreshStorage();
+});
 
 async function start() {
   await connect('settings');

@@ -812,6 +812,21 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
   assert.doesNotMatch(await dialogText(page), /The test failed/);
 });
 
+check('the free space on the Storage page is read again when the window gets the focus', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage');
+  const usage = () => page.locator('[data-section="local"]').innerText();
+  assert.match(await usage(), /free on this drive/);
+  // The disk changed while Settings sat open, and the app sends no state for that.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.storage.freeBytes = 12_340_000_000), { emit: false }));
+  assert.doesNotMatch(await usage(), /12 GB/, 'nothing is pushed');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelector('[data-section="local"]').innerText.includes('12 GB'));
+  // The same reading shows on the top page's Storage row.
+  await page.click('[data-a="back"], .back');
+  await page.waitForSelector('[data-a="go:storage"]');
+  assert.match(await page.locator('[data-a="go:storage"]').innerText(), /12 GB free/);
+});
+
 check('Show key says what went wrong when the app can\'t give the key', async ({ open, page }) => {
   // A key that exists but can't be opened, which the page hasn't heard about yet.
   await open('settings.html?mock=1&lang=en&page=storage&sync=on');

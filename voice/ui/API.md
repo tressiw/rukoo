@@ -153,7 +153,7 @@ The page can open at a page or a group: `settings.html?page=<page>`, where `<pag
 
 ### Command `settings_state`
 
-`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it once on load.
+`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it on load, and again when its window gains the focus or the Storage page opens, for the parts that change without the app: the macOS permissions and `storage`'s free space.
 
 ### Event `settings://state`
 
@@ -237,7 +237,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. The free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows; Settings reads it again when the Storage page opens or the window gains the focus, because nothing of the app changes when another program fills the disk. |
 | `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: Windows can capture the screen (Windows 10 2004 or later); `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the text recognition languages Windows has, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
