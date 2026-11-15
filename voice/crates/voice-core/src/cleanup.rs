@@ -42,7 +42,9 @@ pub const DEFAULT_FILLER_LANGUAGES: [&str; 2] = ["en", "nl"];
 pub const FILLER_SAMPLE: &str =
     "Um, I think, uh, we should ehm ship it on Tuesday. Er is nog \u{e9}\u{e9}n ding.";
 
-const SENTENCE_END: [char; 4] = ['.', '!', '?', '\u{2026}'];
+/// The punctuation that ends a sentence: cleanup keeps it after a removed filler, and dictation
+/// reuses it to decide on a trailing space.
+pub const SENTENCE_END: [char; 4] = ['.', '!', '?', '\u{2026}'];
 const POST_PUNCTUATION: [char; 7] = [',', ';', ':', '.', '!', '?', '\u{2026}'];
 const MARK: char = '\u{0}';
 
