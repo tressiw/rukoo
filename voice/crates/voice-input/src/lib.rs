@@ -231,6 +231,17 @@ pub fn is_key_down(key: Key) -> bool {
     sys::is_key_down(key)
 }
 
+/// Forgets which right-hand modifiers were seen held, for a moment where a
+/// key-up can be lost: a session switch, the lock screen or sleep. Call it
+/// where the app treats a held hotkey as released, so a key let go of while the
+/// Mac slept doesn't keep reading down through the shared code of its pair. A
+/// key still held is read down, and remembered again, on the next read. Only
+/// the macOS backend keeps such a memory; elsewhere this does nothing.
+pub fn forget_held_modifiers() {
+    #[cfg(target_os = "macos")]
+    mac::forget_held_modifiers();
+}
+
 /// How long ago any key that isn't a modifier went down, anywhere in the
 /// session. Dictation uses it to tell a held Right Option that types a
 /// character from one held to speak. `None` where the platform doesn't say,
