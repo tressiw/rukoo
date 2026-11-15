@@ -255,8 +255,14 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
     if let HotkeyEvent::Pressed(key) = event {
         // A locked screen or a session switched out: whoever pressed the key isn't the user at
         // this session, and nothing they say should be recorded, sent or inserted.
+        //
+        // The poller reads every known key, so only a configured hotkey is worth a line here:
+        // at the lock screen every key of a password would otherwise be logged with its time.
+        let hotkey = configured_hotkey(lock(&this.ptt).config(), key);
         if !(core.svc.at_console)() {
-            log::info!("dictation: {key} pressed away from the console; ignored");
+            if hotkey {
+                log::info!("dictation: {key} pressed away from the console; ignored");
+            }
             return;
         }
         if *lock(&this.stop_key) == Some(key) {
@@ -280,6 +286,13 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
         Some(voice_input::Action::Stop) => stop_recording(core),
         None => {}
     }
+}
+
+/// Whether a key press is one of the configured hotkeys: the only presses worth a line while
+/// nobody is at the console. The poller reads every key it knows, so logging the others would
+/// record, for example, each key of a password typed at the lock screen.
+fn configured_hotkey(keys: HotkeyConfig, key: Key) -> bool {
+    keys.mode_for(key).is_some()
 }
 
 /// The key-up can be lost when the session goes away: a fast user switch, the
@@ -1242,6 +1255,26 @@ mod tests {
         // An F key's own press is a key-down; a platform that can't say drops nothing.
         assert!(!typed_during(Key::F13, held, ago(1000)));
         assert!(!typed_during(Key::RightAlt, held, None));
+    }
+
+    #[test]
+    fn only_configured_hotkeys_count_away_from_the_console() {
+        let keys = HotkeyConfig {
+            dictate: Key::RightAlt,
+            rewrite: Some(Key::RightCommand),
+        };
+        assert!(configured_hotkey(keys, Key::RightAlt));
+        assert!(configured_hotkey(keys, Key::RightCommand));
+        // Right Shift is what typed a password at the lock screen: it isn't a hotkey, so the
+        // "away from the console" line must not name it.
+        assert!(!configured_hotkey(keys, Key::RightShift));
+        assert!(!configured_hotkey(keys, Key::F13));
+        let rewrite_off = HotkeyConfig {
+            dictate: Key::F13,
+            rewrite: None,
+        };
+        assert!(configured_hotkey(rewrite_off, Key::F13));
+        assert!(!configured_hotkey(rewrite_off, Key::RightCommand));
     }
 
     #[test]
