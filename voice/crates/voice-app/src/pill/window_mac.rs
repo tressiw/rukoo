@@ -191,6 +191,11 @@ pub fn recipe(window: &WebviewWindow) -> Option<Recipe> {
     with_ns(window, |ns, _| recipe_of(ns))
 }
 
+/// The window's own sharing type, as AppKit reports it, for the capture log.
+pub fn sharing_of(window: &WebviewWindow) -> Option<&'static str> {
+    with_ns(window, |ns, _| sharing_name(ns.sharingType()))
+}
+
 fn to_frame(r: NSRect) -> Frame {
     Frame::new(r.origin.x, r.origin.y, r.size.width, r.size.height)
 }
