@@ -3,8 +3,8 @@
 //! window recipe and front app), and captures the pill and Settings pages in both themes into
 //! `<folder>`. It never sends input and never reads the screen; the captures come from the web view
 //! rendering the app's own pages. On macOS it gives up the front once at the start, since `open` put
-//! Voice there. The report is `<folder>/self-test.json`. The app keeps running afterwards, so whoever
-//! started it stops it by its process id.
+//! Voice there. The report is `<folder>/self-test.json`. The app then quits, with 0 when the report
+//! says `ok` and 1 otherwise, unless `RUKOO_VOICE_SELF_TEST_KEEP_RUNNING` is set.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,8 +50,17 @@ pub fn spawn(app: AppHandle, out: PathBuf) {
                 log::error!("self-test: could not write {}", path.display());
             }
             log::info!("self-test: report in {}", path.display());
+            // Done: the app quits, with 0 for a passing report and 1 otherwise. A test that reads
+            // the windows from outside afterwards (Windows' `tests/launch.rs`) keeps it running.
+            if std::env::var_os(KEEP_RUNNING).is_none() {
+                let code = if report["ok"] == true { 0 } else { 1 };
+                app.exit(code);
+            }
         });
 }
+
+/// Set (to anything) to keep the app running after the self-test wrote its report.
+pub const KEEP_RUNNING: &str = "RUKOO_VOICE_SELF_TEST_KEEP_RUNNING";
 
 fn on_main<T: Send + 'static>(
     app: &AppHandle,
@@ -208,6 +217,13 @@ fn panel_clicks(app: &AppHandle) -> Result<Value, String> {
                 }
             }),
         )?;
+        // AppKit drops mouse events sent to a window that isn't ordered in, so the panel is ordered
+        // in, as the real ones are, far off every display where nobody sees it.
+        let far = crate::pill::place::Frame::new(-20_000.0, -20_000.0, 40.0, 40.0);
+        panel.show_at(crate::pill::hit_mac::PanelFrame {
+            hit: far,
+            button: Some(far),
+        });
         for inside in [true, false, true] {
             panel.click_for_test(inside)?;
         }
@@ -357,8 +373,11 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     yield_front(app)?;
     let before = foreground();
 
-    // 1. A meeting: the pill shows with its stop button.
-    engine.start_meeting().map_err(|e| e.to_string())?;
+    // 1. A meeting: the pill shows with its stop button. `--fake-engine=meeting` starts with one
+    // already recording; the self-test then takes that one.
+    if engine.tray_state().meeting.is_none() {
+        engine.start_meeting().map_err(|e| e.to_string())?;
+    }
     let seq = engine.pill_snapshot().seq;
     await_paint(
         "the meeting pill to paint",

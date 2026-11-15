@@ -52,6 +52,8 @@ fn start(data: &Path, args: &[&std::ffi::OsStr]) -> App {
         .args(args)
         .env("RUKOO_VOICE_DATA_DIR", data)
         .env("RUKOO_VOICE_BRIDGE", data.join("bridge.json"))
+        // The self-test's windows are read from outside after its report, so it stays up.
+        .env("RUKOO_VOICE_SELF_TEST_KEEP_RUNNING", "1")
         .env_remove("RUKOO_VOICE_TEST_SOURCES")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
