@@ -71,6 +71,22 @@ fn typing_mode_and_a_second_dictation_work_the_same_way() {
     engine.shutdown();
 }
 
+/// The recognizer's text is trimmed before it is cleaned and inserted, so a model that pads its
+/// transcript (Orukeet does) never starts a dictation with a space. Both platforms share this
+/// path; the space an insertion shows in a field comes from the field or from a dictionary
+/// correction, not from that padding.
+#[test]
+fn a_padded_transcript_is_inserted_without_its_padding() {
+    let h = Harness::new("padded");
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("  padded  ");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert_eq!(h.input.texts(), ["padded"]);
+    engine.shutdown();
+}
+
 #[test]
 fn a_spoken_edit_rewrites_the_selection() {
     let h = Harness::new("rewrite");
@@ -485,40 +501,66 @@ fn the_copy_after_the_release_waits_for_the_next_key_too() {
 }
 
 /// The session resigned, the screen locked or the Mac slept while the key was held. The app hears
-/// that from the system and releases the hotkey, so the recording stops although the key-up never
-/// arrived. When the real release does arrive, it stops nothing a second time. This release comes
-/// once audio arrived; `a_release_while_the_microphone_opens_stops_the_recording` covers one that
-/// comes while the microphone is still opening.
+/// that from the system and drops the held recording: nothing is transcribed, sent to a provider
+/// or inserted, and the pill goes, because nobody at this console could have meant it. When the
+/// real release does arrive, it ends nothing a second time. This release comes once audio
+/// arrived; `a_release_while_the_microphone_opens_stops_the_recording` covers one that comes while
+/// the microphone is still opening.
 #[test]
-fn a_lost_key_up_stops_the_recording_once() {
+fn a_session_release_drops_the_held_recording() {
     let h = Harness::new("session-release");
     h.config(json!({}));
     let engine = h.start();
     engine.release_hotkeys(); // nothing held: nothing happens
-    h.speech.say("spoken");
     h.keys.down(Key::F13);
     wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
     engine.release_hotkeys();
-    h.sink.wait_phase(PillPhase::Transcribing);
-    // The key-up reaches the poller after the session comes back.
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    // The key-up reaches the poller after the session comes back: it stops nothing.
     h.keys.up(Key::F13);
-    wait_for("the insertion", || h.input.texts() == ["spoken"]);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        h.speech.heard().is_empty(),
+        "nothing was sent to a transcription provider"
+    );
+    assert!(h.input.texts().is_empty(), "nothing was inserted");
     assert_eq!(
-        h.speech.heard().len(),
-        1,
-        "one recording, one transcription"
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
     );
     // The debounce was cleared, so the next hold dictates again.
     h.speech.say("again");
     h.hold(Key::F13);
-    wait_for("the second insertion", || {
-        h.input.texts() == ["spoken", "again"]
-    });
+    wait_for("the insertion", || h.input.texts() == ["again"]);
+    engine.shutdown();
+}
+
+/// A lock in the middle of a rewrite hold sends the selection nowhere: the recording is dropped
+/// before the worker could read the selection or ask a rewrite provider.
+#[test]
+fn a_session_release_drops_a_held_rewrite() {
+    let h = Harness::new("session-release-rewrite");
+    h.config(json!({"rewrite_api_key": "k"}));
+    *lock(&h.input.selection) = Some("private draft".into());
+    let engine = h.start();
+    h.keys.down(Key::F14);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    engine.release_hotkeys();
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    h.keys.up(Key::F14);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        lock(&h.speech.rewrite_requests).is_empty(),
+        "the selection went nowhere"
+    );
+    assert!(h.speech.heard().is_empty(), "the instruction was not sent");
+    assert!(h.input.texts().is_empty());
     engine.shutdown();
 }
 
 /// The screen locks while the microphone is still opening, which takes a Bluetooth headset a second
-/// or more. The release has to stop the recording once the microphone is open: if it ran before the
+/// or more. The release has to drop the recording once the microphone is open: if it ran before the
 /// recording existed, it would find nothing to stop, the real key-up would be ignored and the
 /// microphone would stay open with the pill on Listening.
 #[test]
@@ -547,6 +589,11 @@ fn a_release_while_the_microphone_opens_stops_the_recording() {
     }
     std::thread::sleep(Duration::from_millis(100));
     assert_ne!(h.sink.last_pill().unwrap().phase, PillPhase::Listening);
+    assert!(
+        h.speech.heard().is_empty(),
+        "the locked hold was not transcribed"
+    );
+    assert!(h.input.texts().is_empty(), "and nothing was inserted");
     // Push-to-talk let go of the key, so the next hold dictates.
     *lock(&h.mic.open_delay) = Duration::ZERO;
     h.speech.say("next");
