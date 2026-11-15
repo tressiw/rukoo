@@ -122,6 +122,7 @@ const SPEAKER_REASONS = {
   platform: 'settings.speakers.reason.platform',
   cpu: 'settings.speakers.reason.cpu',
   runtime: 'settings.speakers.reason.runtime',
+  notPublished: 'settings.speakers.reason.notPublished',
   runtimeFailed: 'settings.speakers.reason.runtimeFailed',
   model: 'settings.speakers.reason.model',
   modelDamaged: 'settings.speakers.reason.modelDamaged',

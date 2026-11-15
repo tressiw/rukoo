@@ -398,6 +398,11 @@ const SPEAKER_SCENARIOS = {
   runtime: (s, forced) => {
     forced.reason = 'runtime';
   },
+  // macOS has no published NeMo runtime: no folder to look for, so no reinstall either.
+  notPublished: (s, forced) => {
+    s.platform = 'macos';
+    forced.reason = 'notPublished';
+  },
   runtimeFailed: (s, forced) => {
     forced.reason = 'runtimeFailed';
     forced.detail = 'LoadLibraryExW failed for C:\\Users\\you\\AppData\\Local\\Programs\\Rukoo Voice\\nemo_speech\\nemo_speech_asr_c.dll: The specified module could not be found. (os error 126)';

@@ -98,6 +98,7 @@ const SCENARIOS = [
   ['speakers-model', 'page=speakers&speakers=model'],
   ['speakers-modelDamaged', 'page=speakers&speakers=modelDamaged'],
   ['speakers-runtime', 'page=speakers&speakers=runtime'],
+  ['speakers-notPublished', 'page=speakers&speakers=notPublished'],
   ['speakers-runtimeFailed', 'page=speakers&speakers=runtimeFailed'],
   ['speakers-platform', 'page=speakers&speakers=platform'],
   ['speakers-key', 'page=speakers&speakers=key'],

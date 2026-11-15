@@ -317,6 +317,7 @@
   "settings.speakers.reason.platform": "Sprekerlabels vragen Windows op een Intel- of AMD-pc, of een Mac met Apple Silicon.",
   "settings.speakers.reason.cpu": "Deze processor mist {missing}, en dat is nodig voor sprekerlabels. Vergaderingen labelen het hele gesprek als één spreker.",
   "settings.speakers.reason.runtime": "De runtime voor sprekerlabels ontbreekt in deze installatie. Installeer Rukoo Voice opnieuw.",
+  "settings.speakers.reason.notPublished": "Sprekerlabels zijn nog niet beschikbaar op macOS. Vergaderingen labelen het hele gesprek als één spreker.",
   "settings.speakers.reason.runtimeFailed": "De runtime voor sprekerlabels kon niet starten. Voice probeert het opnieuw na een herstart.",
   "settings.speakers.reason.model": "Download het sprekermodel om sprekers te labelen.",
   "settings.speakers.reason.modelDamaged": "Het sprekermodel is beschadigd. Verwijder het en download het opnieuw.",

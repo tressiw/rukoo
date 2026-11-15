@@ -1220,6 +1220,10 @@
     "message": "The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.",
     "description": "Settings > Speaker labels and the Meetings row: the NeMo runtime files next to Voice are missing or don't match. voice/ui/settings.js (speakersReason)."
   },
+  "settings.speakers.reason.notPublished": {
+    "message": "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
+    "description": "Settings > Speaker labels and the Meetings row: this platform's NeMo runtime isn't published yet, which is macOS today. Not an installation problem, so it doesn't ask for a reinstall. voice/ui/settings.js (speakersReason)."
+  },
   "settings.speakers.reason.runtimeFailed": {
     "message": "The speaker label runtime couldn't start. Voice tries again after a restart.",
     "description": "Settings > Speaker labels and the Meetings row: the speaker worker failed to load since Voice started; Error details shows why. voice/ui/settings.js (speakersReason, speakersPage)."

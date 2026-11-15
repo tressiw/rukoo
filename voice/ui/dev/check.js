@@ -296,6 +296,7 @@ const SPEAKER_TEXT = {
   platform: 'Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.',
   cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
   runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
+  notPublished: "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
   runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",
   model: 'Download the speaker model to label speakers.',
   modelDamaged: 'The speaker model is damaged. Remove it and download it again.',
