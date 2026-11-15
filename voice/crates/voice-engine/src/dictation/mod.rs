@@ -107,14 +107,16 @@ struct Job {
     selection: Arc<Selection>,
 }
 
-/// The selection copied at the press, for keys that can copy while held.
+/// The selection copied at the press, for keys that can copy while held. A copy that failed keeps
+/// its error, so a missing Accessibility grant is reported as itself rather than as an empty
+/// selection.
 struct Selection {
-    result: Mutex<Option<Option<String>>>,
+    result: Mutex<Option<Result<Option<String>, InputError>>>,
     done: Condvar,
 }
 
 impl Selection {
-    fn ready(result: Option<String>) -> Arc<Selection> {
+    fn ready(result: Result<Option<String>, InputError>) -> Arc<Selection> {
         Arc::new(Selection {
             result: Mutex::new(Some(result)),
             done: Condvar::new(),
@@ -128,18 +130,19 @@ impl Selection {
         })
     }
 
-    fn set(&self, result: Option<String>) {
+    fn set(&self, result: Result<Option<String>, InputError>) {
         *lock(&self.result) = Some(result);
         self.done.notify_all();
     }
 
-    fn wait(&self, timeout: Duration) -> Option<String> {
+    /// The copy's answer, or `None` when it hadn't finished in time.
+    fn wait(&self, timeout: Duration) -> Option<Result<Option<String>, InputError>> {
         let guard = lock(&self.result);
         let (guard, _) = self
             .done
             .wait_timeout_while(guard, timeout, |r| r.is_none())
             .unwrap_or_else(PoisonError::into_inner);
-        guard.clone().flatten()
+        guard.clone()
     }
 }
 
@@ -455,13 +458,13 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             .spawn(move || {
                 // The rewrite key is down on purpose here; it doesn't change the copy chord.
                 let copied = input.capture_selection(CAPTURE_TIMEOUT, &mut || Ok(()));
-                slot.set(copied.ok().flatten())
+                slot.set(copied)
             });
         pending
     } else {
         // A key that would add a modifier to the copy, such as Right Alt or, on a Mac, Right
         // Control: copy after the release.
-        Selection::ready(None)
+        Selection::ready(Ok(None))
     };
     let activity = activity_of(mode);
     // Whether the focused app takes text comes after the microphone opens: on a Mac it is two
@@ -1249,27 +1252,42 @@ fn auto_rewrite(
 
 fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
     let cfg = &job.cfg;
-    let mut selection = job.selection.wait(PRESS_CAPTURE_WAIT);
-    if selection.as_deref().is_none_or(|s| s.trim().is_empty()) {
-        // This recording's key is up, but the next one may be down by the time Ctrl+C goes out.
-        let held = hotkeys_of(core, cfg);
-        let mut released = || wait_for_release(core, &held);
-        selection = core
-            .svc
-            .input
-            .capture_selection(CAPTURE_TIMEOUT, &mut released)
-            .ok()
-            .flatten();
-    }
+    // The copy taken at the press, or a second try once the key is up. A copy that failed keeps its
+    // error: with macOS's Accessibility grant missing Voice can neither read the selection nor copy
+    // it, and "nothing selected" would send the user looking for a selection that is there.
+    let capture = match job.selection.wait(PRESS_CAPTURE_WAIT) {
+        Some(Ok(selection)) if !selection.as_deref().is_none_or(|s| s.trim().is_empty()) => {
+            Ok(selection)
+        }
+        Some(Err(error)) => Err(error),
+        _ => {
+            // This recording's key is up, but the next one may be down by the time Ctrl+C goes out.
+            let held = hotkeys_of(core, cfg);
+            let mut released = || wait_for_release(core, &held);
+            core.svc
+                .input
+                .capture_selection(CAPTURE_TIMEOUT, &mut released)
+        }
+    };
     if core.shutting_down() {
         return Outcome::Quiet;
     }
-    let Some(selection) = selection.filter(|s| !s.trim().is_empty()) else {
-        return failed(
-            errors::SELECT_TEXT,
-            errors::TITLE_REWRITE,
-            "Nothing selected. Highlight text, then hold the rewrite key and say what should change.",
-        );
+    let selection = match capture {
+        Ok(Some(selection)) if !selection.trim().is_empty() => selection,
+        Ok(_) => {
+            return failed(
+                errors::SELECT_TEXT,
+                errors::TITLE_REWRITE,
+                "Nothing selected. Highlight text, then hold the rewrite key and say what should change.",
+            )
+        }
+        Err(error) => {
+            return failed(
+                errors::input_notice(&error),
+                errors::TITLE_REWRITE,
+                error.to_string(),
+            )
+        }
     };
     if prompts::selection_too_long(&selection) {
         return failed(

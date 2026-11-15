@@ -296,6 +296,8 @@ pub struct FakeInput {
     pub selection: Mutex<Option<String>>,
     /// Ctrl+C sent, with the hotkeys held at that moment.
     pub captures: AtomicUsize,
+    /// A copy that fails, as a missing Accessibility grant makes it on macOS.
+    pub capture_fail: Mutex<Option<InputError>>,
     pub capture_held: Mutex<Vec<Vec<Key>>>,
     pub target: Mutex<TextTarget>,
     /// How long reading the focused app takes, as two Accessibility requests to a busy app can.
@@ -318,6 +320,7 @@ impl FakeInput {
             inserted: Mutex::new(Vec::new()),
             selection: Mutex::new(None),
             captures: AtomicUsize::new(0),
+            capture_fail: Mutex::new(None),
             capture_held: Mutex::new(Vec::new()),
             target: Mutex::new(TextTarget::Selected),
             target_delay: Mutex::new(Duration::ZERO),
@@ -379,6 +382,9 @@ impl TextInput for FakeInput {
         self.before_keys(before_keys)?;
         lock(&self.capture_held).push(self.held());
         self.captures.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = lock(&self.capture_fail).clone() {
+            return Err(error);
+        }
         Ok(lock(&self.selection).clone())
     }
 

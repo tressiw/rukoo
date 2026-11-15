@@ -12,6 +12,7 @@ pub const MIC: &str = "pill.error.mic";
 pub const MODEL: &str = "pill.error.model";
 pub const MODEL_MISSING: &str = "pill.error.modelMissing";
 pub const BLOCKED: &str = "pill.error.blocked";
+pub const ACCESSIBILITY: &str = "pill.error.accessibility";
 pub const SELECT_TEXT: &str = "pill.error.selectText";
 pub const SELECTION_TOO_LONG: &str = "pill.error.selectionTooLong";
 pub const GENERIC: &str = "pill.error.generic";
@@ -65,6 +66,9 @@ pub fn provider_body(error: &ProviderError, step: Step) -> String {
 pub fn input_notice(error: &InputError) -> &'static str {
     match error {
         InputError::Blocked => BLOCKED,
+        // macOS's Accessibility grant is the one input failure that has its own switch to
+        // turn on; the notification's text names the pane.
+        InputError::Accessibility => ACCESSIBILITY,
         _ => GENERIC,
     }
 }
@@ -126,6 +130,7 @@ mod tests {
             assert_eq!(provider_notice(&e), notice, "{}", e.message);
         }
         assert_eq!(input_notice(&InputError::Blocked), BLOCKED);
+        assert_eq!(input_notice(&InputError::Accessibility), ACCESSIBILITY);
         assert_eq!(input_notice(&InputError::ClipboardBusy), GENERIC);
     }
 

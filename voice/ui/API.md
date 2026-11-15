@@ -83,7 +83,7 @@ What the page shows:
 | `inserted` | | green check, "Inserted {words} words" |
 | `rewrote` | | green check, "Rewrote the selection" |
 | `nothingHeard` | | no icon, "Nothing heard" |
-| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
+| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.accessibility`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
 | `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, the monitor button when `screenSwitch`, stop button |
 | `meeting`, `recording` or `paused` | `pill.micLost`, `pill.micBack` | microphone icon in orange or green, the notice, time, stop button |
 | `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed`, `pill.screenPermission`, `pill.screenStopped` | screen icon in orange, the notice: the video, or the whole screen recording, stopped, macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control; the audio goes on. The app holds each for 4000 ms. |
@@ -93,7 +93,7 @@ What the page shows:
 | `meeting`, `processing` | | spinner, "Saving" |
 | `meeting`, `failed` | `pill.meetingFailed` | red x on a red tint, "Couldn't save the meeting" |
 
-`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`.
+`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`, and macOS's missing Accessibility grant, which stops both typing and reading the selection, → `pill.error.accessibility`.
 
 ### Event `pill://level`
 

@@ -146,6 +146,10 @@
     "message": "Can't type into this app",
     "description": "Pill error: Windows blocked typing into an app that runs as administrator. voice/ui/pill.js (viewOf)."
   },
+  "pill.error.accessibility": {
+    "message": "Can't type into other apps",
+    "description": "Pill error: macOS's Accessibility grant is off, so Voice can neither type into another app nor read the selection. Each macOS version names that pane differently; the tray notification says where. voice/ui/pill.js (viewOf)."
+  },
   "pill.error.generic": {
     "message": "Try again",
     "description": "Pill error: any other failure. The full error goes to a tray notification. voice/ui/pill.js (viewOf)."
