@@ -854,6 +854,9 @@ function speakersPage() {
   const on = state.config.meetings.liveSpeakers;
   const mistral = s.engine === 'mistral';
   const ready = Boolean(s.ready);
+  // A platform whose runtime isn't published can't use the model yet, so neither its files nor a download
+  // are offered there: the row would ask for 107 MB the Mac can't run.
+  const usable = s.reason !== 'notPublished';
   const pill = ready
     ? status('ok', t('common.on'))
     : on
@@ -887,7 +890,7 @@ function speakersPage() {
         'model',
         groupTitle('Nemotron 3 Diarization') +
           card(
-            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${modelRows(m)}` +
+            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${usable ? modelRows(m) : ''}` +
               row({ title: t('settings.speakers.live'), desc: t('settings.speakers.liveHelp'), toggle: on, action: 'toggle:meetings.liveSpeakers' }) +
               `<div class="card-foot">${esc(t('settings.speakers.licence'))} <button class="link-btn" data-a="link:nemotron">${icons.link}${esc(t('settings.model.page'))}</button></div>`
           )

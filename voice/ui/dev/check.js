@@ -342,6 +342,22 @@ check('every reason labels are off shows its text on the Speaker labels page', a
   assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. New meetings label each voice on the call\.[\s\S]*Nemotron on this computer/);
 });
 
+check('a platform that cannot run the model is not offered its download', async ({ open, page }) => {
+  // macOS has no published speaker runtime: a download would fetch 107 MB that cannot run here.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=notPublished');
+  const card = page.locator('[data-section="model"]');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /aren't available on macOS yet/);
+  assert.equal(await card.locator('[data-a="model:nemotron:download"]').count(), 0, 'no Download');
+  assert.equal(await card.locator('[data-a="model:nemotron:remove"]').count(), 0);
+  assert.doesNotMatch(await card.innerText(), /Model files/, 'no model row');
+  assert.doesNotMatch(await card.innerText(), /107 MB download/);
+  // The rest of the card stays useful: the switch is there, and it applies to new meetings.
+  assert.equal(await card.locator('[data-a="toggle:meetings.liveSpeakers"]').count(), 1);
+  // A platform where labels can run keeps its download, also when the model is missing.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=model');
+  assert.equal(await page.locator('[data-a="model:nemotron:download"]').count(), 1);
+});
+
 check('a Mac mock shows Mac folders and no Ownkey', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
   const windows = await page.locator('[data-section="model"]').innerText();

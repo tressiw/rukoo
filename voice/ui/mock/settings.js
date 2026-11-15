@@ -402,6 +402,9 @@ const SPEAKER_SCENARIOS = {
   notPublished: (s, forced) => {
     s.platform = 'macos';
     forced.reason = 'notPublished';
+    // A Mac that never ran Ownkey has no model either, which is when the page must not offer to
+    // download one it can't use.
+    Object.assign(s.models.nemotron, { stage: 'missing', location: null, path: null, removable: false });
   },
   runtimeFailed: (s, forced) => {
     forced.reason = 'runtimeFailed';
