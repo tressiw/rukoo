@@ -52,6 +52,12 @@ pub(crate) fn is_key_down(key: Key) -> bool {
     keys::is_key_down(key)
 }
 
+/// Forgets which right-hand modifiers were seen held through their device
+/// bit, for a moment where a key-up can be lost (`keys::forget_held_modifiers`).
+pub(crate) fn forget_held_modifiers() {
+    keys::forget_held_modifiers()
+}
+
 /// How long ago any key that isn't a modifier went down.
 pub(crate) fn since_key_down() -> Option<std::time::Duration> {
     keys::since_key_down()
