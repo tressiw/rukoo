@@ -15,6 +15,13 @@
 //! The events are built here as plain data (`KeyEvent`) so the key codes and
 //! flags can be checked without posting anything; `Keys` is what puts them on
 //! the session.
+//!
+//! Posting at the HID event tap writes the HID system's own flags word too: the
+//! last event of a chord leaves its flags there, so `CGEventSourceFlagsState`
+//! read `0x20000000` for the rest of a Right Command hold after the Cmd+C Voice
+//! posted at the press, while the physical key stayed down. `mac/keys.rs`
+//! remembers the side a wiped word loses; whether posting at the session tap
+//! instead leaves that word alone hasn't been shown at a keyboard.
 
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{

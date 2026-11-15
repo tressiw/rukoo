@@ -297,6 +297,11 @@ pub(crate) fn release_all(core: &Arc<Core>) {
     if core.shutting_down() {
         return;
     }
+    // The memory behind a held right-hand modifier has to let go with the key:
+    // that is what makes a wipe of the flags word survivable, and after sleep
+    // or a session switch a key that was released then must not read down for
+    // as long as its pair's shared code does.
+    voice_input::forget_held_modifiers();
     let in_order = lock(&core.dictation.poller)
         .as_ref()
         .and_then(HotkeyPoller::in_order);
