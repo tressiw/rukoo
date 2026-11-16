@@ -14,7 +14,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -187,9 +187,13 @@ fn run(
                 dirty: spec.dirty.then_some(dirty),
                 generation,
             };
-            dirty = 0.0;
-            if to_main.try_send(Ev::Frame(frame)).is_err() {
-                return;
+            match to_main.try_send(Ev::Frame(frame)) {
+                Ok(()) => dirty = 0.0,
+                // The main thread is behind: drop this frame, as ScreenCaptureKit's source does,
+                // and its changes go with the next one.
+                Err(TrySendError::Full(_)) => {}
+                // The screen process is ending.
+                Err(TrySendError::Disconnected(_)) => return,
             }
             std::thread::sleep(FRAME_GAP);
         } else {
@@ -415,6 +419,40 @@ mod tests {
         assert!((share - 0.000_278).abs() < 0.000_01, "{share}");
         // The next mark is 24 pixels along.
         assert_eq!(canvas.pixels().bgra[(480 * 1280 + 40 + 8) * 4], 0x20);
+    }
+
+    /// A full queue drops frames and the screen keeps sending; a closed queue ends its thread.
+    #[test]
+    fn a_full_queue_drops_frames_and_a_closed_one_ends_the_thread() {
+        let spec = TestSpec {
+            width: 64,
+            height: 48,
+            monitors: 1,
+            idle_every_ms: Some(50),
+            ..TestSpec::default()
+        };
+        let (to_main, from_source) = std::sync::mpsc::sync_channel(1);
+        let mut source = new(to_main, &spec);
+        source.start(&monitors(&spec)[0], 7).unwrap();
+        // The first slide's burst alone is five frames: four of them find the queue full.
+        std::thread::sleep(FRAME_GAP * 8);
+        for _ in 0..2 {
+            let ev = from_source.recv_timeout(Duration::from_secs(2));
+            assert!(
+                matches!(ev, Ok(Ev::Frame(ref frame)) if frame.generation == 7),
+                "the synthetic screen stopped sending after a full queue"
+            );
+        }
+        drop(from_source);
+        let (handle, _) = source.worker.take().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !handle.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the thread runs on with nobody reading"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// The point of the synthetic screen's text: a text reader reads it. Checked where the

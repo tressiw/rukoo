@@ -384,7 +384,11 @@ impl Source for FakeSource {
                         generation,
                     };
                     sent += 1;
-                    if to_main.try_send(Ev::Frame(frame)).is_err() {
+                    // A full queue drops the frame, as the real sources do; only a closed queue
+                    // ends the source.
+                    if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
+                        to_main.try_send(Ev::Frame(frame))
+                    {
                         return;
                     }
                 }
