@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::platform::{VideoError, VideoMaker, VideoWriter, WriterOptions};
+use crate::platform::{ThreadInit, VideoError, VideoMaker, VideoWriter, WriterOptions};
 use crate::record::Ev;
 
 /// Frames waiting for the encoder.
@@ -75,9 +75,11 @@ pub struct VideoThread<W: VideoWriter> {
     pub hardware: bool,
 }
 
-/// Starts the thread and its writer, and waits until the encoder runs.
+/// Starts the thread and its writer, and waits until the encoder runs. The thread runs the
+/// platform's `setup` before it makes the writer.
 pub fn start<W: VideoWriter>(
     spec: VideoStart,
+    setup: Arc<dyn ThreadInit>,
     mut maker: Box<dyn VideoMaker<File = W>>,
     to_main: SyncSender<Ev<W::Picture>>,
 ) -> Result<VideoThread<W>, VideoError> {
@@ -102,6 +104,7 @@ pub fn start<W: VideoWriter>(
     std::thread::Builder::new()
         .name(format!("video-{seq}"))
         .spawn(move || {
+            setup.init_thread();
             let writer = match maker.create(&thread_path, width, height, options) {
                 Ok(writer) => {
                     let (name, hardware) = writer.encoder();

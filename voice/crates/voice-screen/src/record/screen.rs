@@ -1056,7 +1056,12 @@ impl<P: Platform> Screen<P> {
             height: frame.height,
             options,
         };
-        match video_thread::start(start, maker, self.events.clone()) {
+        match video_thread::start(
+            start,
+            self.platform.thread_init(),
+            maker,
+            self.events.clone(),
+        ) {
             Ok(video) => {
                 self.video_seq = seq;
                 log(format_args!(
