@@ -66,11 +66,15 @@ fn the_worker_ends_when_the_app_that_started_it_dies() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while matches!(child.try_wait(), Ok(None)) {
-        assert!(
-            Instant::now() < deadline,
-            "the worker is still running 2 s after Voice was killed: {}",
-            read(stderr)
-        );
+        if Instant::now() >= deadline {
+            // Reading stderr waits for the worker to close it, so stop the worker first.
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "the worker is still running 2 s after Voice was killed: {}",
+                read(stderr)
+            );
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     let status = child.wait().unwrap();
