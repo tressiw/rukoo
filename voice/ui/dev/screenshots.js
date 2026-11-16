@@ -40,6 +40,7 @@ const PILL_STATES = [
   'error-model',
   'error-model-missing',
   'error-blocked',
+  'error-accessibility',
   'error-select-text',
   'error-selection-too-long',
   'error-generic',
@@ -55,9 +56,11 @@ const PILL_STATES = [
   'meeting-mic-back',
   'meeting-video-dropped',
   'meeting-video-dropped-encoder',
+  'meeting-video-dropped-device',
   'meeting-frames-dropped',
   'meeting-screen-failed',
   'meeting-screen-permission',
+  'meeting-screen-stopped',
   'meeting-call-silent',
   'meeting-screen-moved',
   'meeting-screen-button',
@@ -98,6 +101,7 @@ const SCENARIOS = [
   ['speakers-model', 'page=speakers&speakers=model'],
   ['speakers-modelDamaged', 'page=speakers&speakers=modelDamaged'],
   ['speakers-runtime', 'page=speakers&speakers=runtime'],
+  ['speakers-notPublished', 'page=speakers&speakers=notPublished'],
   ['speakers-runtimeFailed', 'page=speakers&speakers=runtimeFailed'],
   ['speakers-platform', 'page=speakers&speakers=platform'],
   ['speakers-key', 'page=speakers&speakers=key'],
@@ -124,9 +128,11 @@ async function main() {
     page.on('pageerror', (e) => problems.push(`${page.url()}: ${e.message}`));
     page.on('console', (m) => m.type() === 'error' && problems.push(`${page.url()}: ${m.text()}`));
     const size = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [w, h]);
-    const shot = async (file) => {
+    // `fullPage` for a page taller than the window: macOS may refuse to make the window as tall as
+    // the content, and a clipped gallery hid the states at its end.
+    const shot = async (file, options = {}) => {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      await page.screenshot({ path: file });
+      await page.screenshot({ path: file, ...options });
       saved.push(file);
     };
 
@@ -146,18 +152,16 @@ async function main() {
             await page.waitForTimeout(700);
             await shot(path.join(out, 'pill', `${theme}-${lang}`, `${state}-hit.png`));
           }
-          await size(1240, 1600);
+          await size(1240, 1000);
           await page.goto(`${base}dev/gallery.html?theme=${theme}&lang=${lang}`);
           await page.waitForTimeout(1800);
-          await fitHeight(page, size, 1240, 'body');
-          await shot(path.join(out, 'pill', `gallery-${theme}-${lang}.png`));
+          await shot(path.join(out, 'pill', `gallery-${theme}-${lang}.png`), { fullPage: true });
         }
-      await size(1240, 1600);
+      await size(1240, 1000);
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.goto(`${base}dev/gallery.html?theme=dark&lang=en`);
       await page.waitForTimeout(1800);
-      await fitHeight(page, size, 1240, 'body');
-      await shot(path.join(out, 'pill', 'gallery-dark-en-reduced-motion.png'));
+      await shot(path.join(out, 'pill', 'gallery-dark-en-reduced-motion.png'), { fullPage: true });
       await page.emulateMedia({ reducedMotion: null });
     }
 

@@ -79,6 +79,14 @@ pub fn sharing_type(excluded: bool) -> NSWindowSharingType {
     }
 }
 
+/// Sets "Hide pill from capture" on the pill's window itself, rather than through tauri's
+/// `set_content_protected`: that queues the change for the event loop, so a capture, or the `status`
+/// hook a script reads right after `settings_set`, could still find the old sharing type. This runs
+/// on the main thread, where the window lives, and AppKit has the new value as it returns.
+pub fn set_capture_excluded(window: &WebviewWindow, excluded: bool) {
+    with_ns(window, |ns, _| ns.setSharingType(sharing_type(excluded)));
+}
+
 fn sharing_name(sharing: NSWindowSharingType) -> &'static str {
     match sharing {
         NSWindowSharingType::None => "none",
@@ -181,6 +189,11 @@ fn with_ns<T>(
 
 pub fn recipe(window: &WebviewWindow) -> Option<Recipe> {
     with_ns(window, |ns, _| recipe_of(ns))
+}
+
+/// The window's own sharing type, as AppKit reports it, for the capture log.
+pub fn sharing_of(window: &WebviewWindow) -> Option<&'static str> {
+    with_ns(window, |ns, _| sharing_name(ns.sharingType()))
 }
 
 fn to_frame(r: NSRect) -> Frame {

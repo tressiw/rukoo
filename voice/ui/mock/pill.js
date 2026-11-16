@@ -40,6 +40,7 @@ export const STATES = {
   'error-model': { phase: 'error', notice: 'pill.error.model' },
   'error-model-missing': { phase: 'error', notice: 'pill.error.modelMissing' },
   'error-blocked': { phase: 'error', notice: 'pill.error.blocked' },
+  'error-accessibility': { phase: 'error', notice: 'pill.error.accessibility' },
   'error-select-text': { phase: 'error', activity: 'rewrite', notice: 'pill.error.selectText' },
   'error-selection-too-long': { phase: 'error', activity: 'rewrite', notice: 'pill.error.selectionTooLong' },
   'error-generic': { phase: 'error', notice: 'pill.error.generic' },

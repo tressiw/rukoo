@@ -146,6 +146,10 @@
     "message": "Can't type into this app",
     "description": "Pill error: Windows blocked typing into an app that runs as administrator. voice/ui/pill.js (viewOf)."
   },
+  "pill.error.accessibility": {
+    "message": "Can't type into other apps",
+    "description": "Pill error: macOS's Accessibility grant is off, so Voice can neither type into another app nor read the selection. Each macOS version names that pane differently; the tray notification says where. voice/ui/pill.js (viewOf)."
+  },
   "pill.error.generic": {
     "message": "Try again",
     "description": "Pill error: any other failure. The full error goes to a tray notification. voice/ui/pill.js (viewOf)."
@@ -200,11 +204,11 @@
   },
   "pill.screenPermission": {
     "message": "Screen Recording is off",
-    "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
+    "description": "Pill notice: macOS doesn't let Voice record the screen, because Screen Recording is switched off for Voice, from the start of the meeting or during it; the audio goes on. A meeting that was recording the screen keeps this notice for the rest of the meeting. A notification explains where to switch it on. voice/ui/pill.js (meetingView)."
   },
   "pill.screenStopped": {
     "message": "Screen recording stopped",
-    "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. A notification says the same. voice/ui/pill.js (meetingView)."
+    "description": "Pill notice: the user stopped Voice's screen recording from macOS' own screen sharing control, such as the button in the menu bar, so Voice no longer records the screen in this meeting; the audio goes on. It stays for the rest of the meeting, until the screen records again or the meeting ends. A notification says the same. voice/ui/pill.js (meetingView)."
   },
   "pill.callSilent": {
     "message": "No sound from the call",
@@ -1215,6 +1219,10 @@
   "settings.speakers.reason.runtime": {
     "message": "The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.",
     "description": "Settings > Speaker labels and the Meetings row: the NeMo runtime files next to Voice are missing or don't match. voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.reason.notPublished": {
+    "message": "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
+    "description": "Settings > Speaker labels and the Meetings row: this platform's NeMo runtime isn't published yet, which is macOS today. Not an installation problem, so it doesn't ask for a reinstall. voice/ui/settings.js (speakersReason)."
   },
   "settings.speakers.reason.runtimeFailed": {
     "message": "The speaker label runtime couldn't start. Voice tries again after a restart.",

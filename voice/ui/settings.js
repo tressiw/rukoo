@@ -122,6 +122,7 @@ const SPEAKER_REASONS = {
   platform: 'settings.speakers.reason.platform',
   cpu: 'settings.speakers.reason.cpu',
   runtime: 'settings.speakers.reason.runtime',
+  notPublished: 'settings.speakers.reason.notPublished',
   runtimeFailed: 'settings.speakers.reason.runtimeFailed',
   model: 'settings.speakers.reason.model',
   modelDamaged: 'settings.speakers.reason.modelDamaged',
@@ -853,6 +854,9 @@ function speakersPage() {
   const on = state.config.meetings.liveSpeakers;
   const mistral = s.engine === 'mistral';
   const ready = Boolean(s.ready);
+  // A platform whose runtime isn't published can't use the model yet, so neither its files nor a download
+  // are offered there: the row would ask for 107 MB the Mac can't run.
+  const usable = s.reason !== 'notPublished';
   const pill = ready
     ? status('ok', t('common.on'))
     : on
@@ -886,7 +890,7 @@ function speakersPage() {
         'model',
         groupTitle('Nemotron 3 Diarization') +
           card(
-            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${modelRows(m)}` +
+            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${usable ? modelRows(m) : ''}` +
               row({ title: t('settings.speakers.live'), desc: t('settings.speakers.liveHelp'), toggle: on, action: 'toggle:meetings.liveSpeakers' }) +
               `<div class="card-foot">${esc(t('settings.speakers.licence'))} <button class="link-btn" data-a="link:nemotron">${icons.link}${esc(t('settings.model.page'))}</button></div>`
           )
@@ -976,7 +980,14 @@ function syncStatus() {
         if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
         break;
       case 'uploading':
-        parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        // A manifest or the index still to go while no file waits: the chip would say "0 files
+        // waiting" in a warning tone. An empty queue is the good news `idle` gives.
+        if (s.waiting > 0) {
+          parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        } else {
+          parts.push(status('ok', t('settings.sync.upToDate')));
+          if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
+        }
         break;
       case 'live':
         parts.push(status('busy', t('settings.sync.live')), note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
@@ -2094,6 +2105,8 @@ function go(name, { anchor } = {}) {
   if (name !== current()) stack.push(name);
   dictionary.error = '';
   render({ full: true });
+  // Storage's free-space figure is a reading, not a setting: read it when the page opens.
+  if (name === 'storage') refreshStorage();
   page.classList.remove('entering');
   void page.offsetWidth;
   page.classList.add('entering');
@@ -2252,7 +2265,27 @@ async function refreshPermissions() {
     // Settings keeps what it showed; the next state or focus tries again.
   }
 }
-window.addEventListener('focus', refreshPermissions);
+
+// The recordings drive's free space and the size the meetings use change while Settings is open,
+// and the app only sends a state when something of its own changes. Reading them again when the
+// window gets the focus or the Storage page opens keeps the figure from being the one the page was
+// built with, which is what makes it disagree with the disk.
+async function refreshStorage() {
+  if (!state) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.storage || !state || next.seq < state.seq) return;
+    if (JSON.stringify(next.storage) === JSON.stringify(state.storage)) return;
+    state.storage = next.storage;
+    if (current() === 'storage' || current() === 'main') render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+window.addEventListener('focus', () => {
+  refreshPermissions();
+  refreshStorage();
+});
 
 async function start() {
   await connect('settings');

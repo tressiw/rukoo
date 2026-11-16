@@ -39,10 +39,15 @@ pub const RESEND: Duration = Duration::from_secs(60);
 pub const ACK_NUDGE: Duration = Duration::from_millis(500);
 pub const ACK_REBUILD: Duration = Duration::from_secs(2);
 
-/// The notice a meeting shows when nothing passing does: a silent call before a lost microphone.
-fn standing(mic_lost: bool, call_silent: bool) -> Option<Notice> {
+/// The notice a meeting shows when nothing passing does: a silent call first, then a screen
+/// recording that stopped for good, then a lost microphone. The silent call and the stopped
+/// screen are conditions the user can't see anywhere else, while a microphone that went away
+/// shows in the room; the silent call goes first because audio is the meeting itself.
+fn standing(mic_lost: bool, call_silent: bool, screen_stopped: Option<&str>) -> Option<Notice> {
     if call_silent {
         Some(notice(notices::CALL_SILENT))
+    } else if let Some(key) = screen_stopped {
+        Some(notice(key))
     } else {
         mic_lost.then(|| notice(notices::MIC_LOST))
     }
@@ -143,6 +148,10 @@ struct Meeting {
     mic_lost: bool,
     /// The call holds only silence (voice-recorder `silence.rs`) until it has sound.
     call_silent: bool,
+    /// The screen recording stopped for good in this meeting, and the notice that says why: it
+    /// stands until the screen records again or the meeting ends. `None` while the screen
+    /// records, and for a meeting that never recorded it.
+    screen_stopped: Option<&'static str>,
     /// What the meeting records of the screen now, and whether the screen button shows.
     screen: String,
     screen_switch: bool,
@@ -373,12 +382,22 @@ impl Pill {
             .filter(|m| {
                 m.id == id && matches!(state, MeetingPhase::Recording | MeetingPhase::Paused)
             })
-            .map(|m| (m.mic_lost, m.call_silent, m.notice.clone(), m.notice_until));
-        let (mic_lost, call_silent, notice, notice_until) = match keep_mic {
-            Some((lost, silent, kept, kept_until)) if lost || silent => {
-                (lost, silent, kept, kept_until)
+            .map(|m| {
+                (
+                    m.mic_lost,
+                    m.call_silent,
+                    m.screen_stopped,
+                    m.notice.clone(),
+                    m.notice_until,
+                )
+            });
+        let (mic_lost, call_silent, screen_stopped, notice, notice_until) = match keep_mic {
+            Some((lost, silent, screen, kept, kept_until))
+                if lost || silent || screen.is_some() =>
+            {
+                (lost, silent, screen, kept, kept_until)
             }
-            _ => (false, false, notice, notice_until),
+            _ => (false, false, None, notice, notice_until),
         };
         let (screen, screen_switch) = self
             .meeting
@@ -396,6 +415,7 @@ impl Pill {
             notice_until,
             mic_lost,
             call_silent,
+            screen_stopped,
             screen,
             screen_switch,
             changed_at: now,
@@ -468,8 +488,8 @@ impl Pill {
         if ok {
             m.notice = Some(notice(notices::MIC_BACK));
             m.notice_until = Some(now + MIC_BACK_HOLD);
-        } else if !m.call_silent {
-            m.notice = Some(notice(notices::MIC_LOST));
+        } else {
+            m.notice = standing(m.mic_lost, m.call_silent, m.screen_stopped);
             m.notice_until = None;
         }
         m.changed_at = now;
@@ -497,7 +517,37 @@ impl Pill {
             m.notice = Some(notice(notices::CALL_SILENT));
             m.notice_until = None;
         } else if showing_silent {
-            m.notice = standing(m.mic_lost, false);
+            m.notice = standing(m.mic_lost, false, m.screen_stopped);
+            m.notice_until = None;
+        }
+        m.changed_at = now;
+    }
+
+    /// The meeting's screen recording stopped for good, with the notice that says why, or records
+    /// again (`None`). The stop stands for the rest of the meeting, like a silent call: the audio
+    /// goes on, and with notifications off the pill is the only place that says the screen doesn't.
+    pub fn meeting_screen_stopped(&mut self, key: Option<&'static str>, now: Instant) {
+        let Some(m) = self.meeting.as_mut() else {
+            return;
+        };
+        if !matches!(m.state, MeetingPhase::Recording | MeetingPhase::Paused)
+            || key == m.screen_stopped
+        {
+            return;
+        }
+        m.screen_stopped = key;
+        let showing_screen = m.notice.as_ref().is_some_and(|n| {
+            n.key == notices::SCREEN_STOPPED || n.key == notices::SCREEN_PERMISSION
+        });
+        if key.is_some() {
+            // The passing screen notice becomes the standing one, which has no end. The screen
+            // button shows nothing recorded, so it agrees with what the notice says.
+            m.screen = "off".to_string();
+            m.screen_switch = false;
+            m.notice = standing(m.mic_lost, m.call_silent, key);
+            m.notice_until = None;
+        } else if showing_screen {
+            m.notice = standing(m.mic_lost, m.call_silent, None);
             m.notice_until = None;
         }
         m.changed_at = now;
@@ -536,8 +586,9 @@ impl Pill {
                 self.meeting = None;
             } else {
                 if m.notice_until.is_some_and(|until| now >= until) {
-                    // A silent call or a lost microphone: its notice comes back.
-                    m.notice = standing(m.mic_lost, m.call_silent);
+                    // A silent call, a screen recording that stopped or a lost microphone: its
+                    // notice comes back.
+                    m.notice = standing(m.mic_lost, m.call_silent, m.screen_stopped);
                     m.notice_until = None;
                     m.changed_at = now;
                 }
@@ -1195,6 +1246,95 @@ mod tests {
             key(&mut pill, t0 + ms(80_100)).as_deref(),
             Some("pill.callSilent")
         );
+    }
+
+    #[test]
+    fn a_stopped_screen_stands_behind_a_silent_call_and_ahead_of_a_lost_microphone() {
+        let (mut pill, t0) = start();
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
+        pill.meeting_screen("frames", true);
+        pill.take(t0);
+        let key = |pill: &mut Pill, at| {
+            pill.take(at);
+            pill.current().notice.map(|n| n.key)
+        };
+        pill.meeting_screen_stopped(Some(notices::SCREEN_STOPPED), t0 + ms(100));
+        assert_eq!(
+            key(&mut pill, t0 + ms(100)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        // Well past the 15 s an action notice holds, it still stands.
+        assert_eq!(
+            key(&mut pill, t0 + ms(16_000)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        assert_eq!(
+            key(&mut pill, t0 + ms(120_000)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        // A passing notice, such as a moved monitor, shows over it and it comes back.
+        pill.meeting_notice(
+            notices::SCREEN_FAILED,
+            Map::new(),
+            DROP_HOLD,
+            t0 + ms(121_000),
+        );
+        assert_eq!(
+            key(&mut pill, t0 + ms(121_000)).as_deref(),
+            Some("pill.screenFailed")
+        );
+        assert_eq!(
+            key(&mut pill, t0 + ms(121_000) + DROP_HOLD).as_deref(),
+            Some("pill.screenStopped")
+        );
+        // A lost microphone stays behind it, and a silent call ahead of it.
+        pill.meeting_mic(false, t0 + ms(130_000));
+        assert_eq!(
+            key(&mut pill, t0 + ms(130_000)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        pill.meeting_call_silent(true, t0 + ms(140_000));
+        assert_eq!(
+            key(&mut pill, t0 + ms(140_000)).as_deref(),
+            Some("pill.callSilent")
+        );
+        pill.meeting_call_silent(false, t0 + ms(150_000));
+        assert_eq!(
+            key(&mut pill, t0 + ms(150_000)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        // A pause keeps it.
+        pill.meeting("m-a", MeetingPhase::Paused, 150_000, t0 + ms(150_100));
+        assert_eq!(
+            key(&mut pill, t0 + ms(150_100)).as_deref(),
+            Some("pill.screenStopped")
+        );
+        // The screen records again: the stop is over and the microphone's notice comes back.
+        pill.meeting_screen_stopped(None, t0 + ms(160_000));
+        assert_eq!(
+            key(&mut pill, t0 + ms(160_000)).as_deref(),
+            Some("pill.micLost")
+        );
+        // Another meeting starts with nothing standing.
+        pill.meeting("m-b", MeetingPhase::Recording, 0, t0 + ms(170_000));
+        let s = pill.take(t0 + ms(170_000)).unwrap();
+        assert_eq!(s.notice, None);
+    }
+
+    #[test]
+    fn saving_hides_a_stopped_screen() {
+        let (mut pill, t0) = start();
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
+        pill.meeting_screen_stopped(Some(notices::SCREEN_PERMISSION), t0);
+        pill.take(t0);
+        assert_eq!(
+            pill.current().notice.map(|n| n.key).as_deref(),
+            Some("pill.screenPermission")
+        );
+        // The meeting ends: the stop goes with it, and so does its notice.
+        pill.meeting("m-a", MeetingPhase::Processing, 9000, t0 + ms(9000));
+        let s = pill.take(t0 + ms(9000)).unwrap();
+        assert_eq!(s.notice, None);
     }
 
     #[test]

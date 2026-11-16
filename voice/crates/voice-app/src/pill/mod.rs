@@ -79,10 +79,11 @@ struct Inner {
     hide_gen: u64,
     watch_gen: u64,
     repair_gen: u64,
-    /// The newest snapshot that draws a stop or screen button; older layouts are stale.
-    stop_seq: u64,
     layout: Option<Layout>,
     ui: UiOptions,
+    /// What "Hide pill from capture" was last applied to the windows as, so a raise or a layout
+    /// that repeats it doesn't log again and a real change says so in the log.
+    capture_applied: Option<bool>,
     last_raise: Option<Instant>,
     raise_queued: bool,
     hit_visible: bool,
@@ -188,6 +189,19 @@ type ButtonRect = place::Rect;
 #[cfg(target_os = "macos")]
 type ButtonRect = hit_mac::PanelFrame;
 
+/// The layout the page just sent, when it replaces the one held. The page sends them in its own
+/// order, so a late message from an older snapshot leaves the held layout alone. Its `seq` is the
+/// snapshot the page last drew, which can be older than the newest snapshot here: the page applies
+/// one at a time and only sends a layout when the rectangles change, so refusing an "older" layout
+/// would leave the panels where the pill no longer draws its buttons (a pill that just compacted,
+/// for instance) until the next change.
+fn newer_layout(held: Option<&Layout>, layout: Layout) -> Option<Layout> {
+    match held {
+        Some(held) if held.seq > layout.seq => None,
+        _ => Some(layout),
+    }
+}
+
 #[cfg(windows)]
 fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
     let css = match target {
@@ -219,6 +233,25 @@ fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
 #[cfg(target_os = "macos")]
 fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
     button.set_capture_excluded(excluded);
+}
+
+/// "Hide pill from capture" on the pill's own window. macOS sets it on the window at once, so a
+/// capture or the `status` hook never sees the previous value; elsewhere tauri's call is the only
+/// way to do it.
+#[cfg(target_os = "macos")]
+fn exclude_pill_from_capture(win: &WebviewWindow, excluded: bool) {
+    window::set_capture_excluded(win, excluded);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exclude_pill_from_capture(win: &WebviewWindow, excluded: bool) {
+    let _ = win.set_content_protected(excluded);
+}
+
+/// Whether "Hide pill from capture" needs applying, given what was applied before: a raise or a
+/// layout repeats the same value many times, and only a change is worth logging.
+fn capture_changed(applied: Option<bool>, hidden: bool) -> bool {
+    applied != Some(hidden)
 }
 
 /// Which monitor a show uses.
@@ -273,9 +306,9 @@ impl Pill {
                 hide_gen: 0,
                 watch_gen: 0,
                 repair_gen: 0,
-                stop_seq: 0,
                 layout: None,
                 ui,
+                capture_applied: None,
                 last_raise: None,
                 raise_queued: false,
                 hit_visible: false,
@@ -451,6 +484,9 @@ impl Pill {
         let this = self.clone();
         self.app.run_on_main_thread(move || {
             window::prepare(&window);
+            // A new window is read-only to every capture until it is told otherwise, so the
+            // setting goes on before the window can be shown or captured.
+            this.apply_capture();
             this.ensure_hit();
             // A snapshot that came before the window did (or before a rebuild) shows now.
             let seq = {
@@ -492,6 +528,9 @@ impl Pill {
             "stopPanel": HIT.with(panel),
             "screenPanel": SCREEN_HIT.with(panel),
             "bodyPanel": BODY.with(panel),
+            // What the app applied ("Hide pill from capture"); every window above should report the
+            // matching sharing type, and a difference is a window that didn't take it.
+            "hidePillFromCapture": self.lock().ui.hide_pill_from_capture,
         })
     }
 
@@ -516,9 +555,6 @@ impl Pill {
                 return;
             }
             let prev_phase = i.snapshot.as_ref().map(|p| p.phase);
-            if has_stop(&s) || has_screen(&s) {
-                i.stop_seq = i.stop_seq.max(s.seq);
-            }
             let action = if s.visible {
                 // A visible snapshot cancels a pending hide, like Ownkey's show().
                 i.hide_gen += 1;
@@ -649,10 +685,10 @@ impl Pill {
     pub fn layout(self: &Arc<Self>, layout: Layout) {
         {
             let mut i = self.lock();
-            if layout.seq < i.stop_seq {
+            let Some(next) = newer_layout(i.layout.as_ref(), layout) else {
                 return;
-            }
-            i.layout = Some(layout);
+            };
+            i.layout = Some(next);
         }
         self.on_main(|p| p.update_hit());
     }
@@ -667,19 +703,21 @@ impl Pill {
     /// The show sequence: restore the size (#13), place on the monitor the user works on, show without
     /// activating, reapply the styles, raise (#14), put the stop window back, then watch for the paint.
     fn show_now(self: &Arc<Self>, seq: u64, at: Place) {
-        let (edge, excluded, last) = {
+        let (edge, last) = {
             let i = self.lock();
             if !i.shown {
                 return;
             }
             let Some(s) = i.snapshot.as_ref() else { return };
-            (s.edge, i.ui.hide_pill_from_capture, i.monitor)
+            (s.edge, i.monitor)
         };
         let Some(win) = self.window() else {
             // The window comes later (startup) or is being rebuilt; create() shows it then.
             return;
         };
         let _ = win.set_size(LogicalSize::new(place::WINDOW_W, place::WINDOW_H));
+        // Before anything can capture the pill, and again for a window the watchdog rebuilt.
+        self.apply_capture();
         let monitor = match (at, last) {
             (Place::Last, Some(last)) => Some(last),
             (Place::Choose, _) | (Place::Last, None) => Some(window::target_monitor()),
@@ -689,7 +727,6 @@ impl Pill {
             window::place(&win, monitor, edge);
             self.lock().monitor = Some(monitor);
         }
-        let _ = win.set_content_protected(excluded);
         window::show(&win);
         window::raise(&win);
         self.update_hit();
@@ -759,10 +796,8 @@ impl Pill {
 
     fn apply_ui(self: &Arc<Self>) {
         let ui = self.lock().ui.clone();
+        self.apply_capture();
         if let Some(win) = self.window() {
-            // Hide from capture takes effect at once, shown or not, so a hidden pill doesn't show up
-            // in a capture during its first frames after the next show.
-            let _ = win.set_content_protected(ui.hide_pill_from_capture);
             #[cfg(target_os = "macos")]
             crate::appearance::apply_to_window(&win, &ui);
             if self.lock().shown {
@@ -778,10 +813,7 @@ impl Pill {
                 if let Some(hit) = hit.borrow().as_ref() {
                     hit.set_title(&self.catalog.text(ui.locale, key));
                     #[cfg(target_os = "macos")]
-                    {
-                        hit.set_appearance(&ui);
-                        hit.set_capture_excluded(ui.hide_pill_from_capture);
-                    }
+                    hit.set_appearance(&ui);
                 }
             });
         }
@@ -789,7 +821,6 @@ impl Pill {
         BODY.with(|body| {
             if let Some(body) = body.borrow().as_ref() {
                 body.set_appearance(&ui);
-                body.set_capture_excluded(ui.hide_pill_from_capture);
             }
         });
         #[cfg(not(any(windows, target_os = "macos")))]
@@ -797,6 +828,57 @@ impl Pill {
         // The button windows take the new capture setting too.
         self.update_hit();
     }
+
+    /// Applies "Hide pill from capture" to the pill's window and its three panels, from the app's
+    /// copy of the setting, and says in the log when that value changed. Every path that shows,
+    /// raises, moves or re-lays the pill calls this: `status` reads AppKit's own answer, so a path
+    /// that skipped the setting left the two disagreeing for the rest of the session. Main thread
+    /// only; the panels it can't reach on another thread are left alone.
+    #[cfg(any(windows, target_os = "macos"))]
+    fn apply_capture(self: &Arc<Self>) {
+        let hidden = self.lock().ui.hide_pill_from_capture;
+        let changed = {
+            let mut i = self.lock();
+            let changed = capture_changed(i.capture_applied, hidden);
+            i.capture_applied = Some(hidden);
+            changed
+        };
+        let win = self.window();
+        if let Some(win) = &win {
+            exclude_pill_from_capture(win, hidden);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            for cell in [&HIT, &SCREEN_HIT] {
+                cell.with(|hit| {
+                    if let Some(hit) = hit.borrow().as_ref() {
+                        hit.set_capture_excluded(hidden);
+                    }
+                });
+            }
+            BODY.with(|body| {
+                if let Some(body) = body.borrow().as_ref() {
+                    body.set_capture_excluded(hidden);
+                }
+            });
+        }
+        if changed {
+            // What the app asked for, and what AppKit says the window has: a script's `status`
+            // reads the second, and a difference here is the only place it shows up.
+            let wording = if hidden { "hidden" } else { "shown" };
+            match &win {
+                #[cfg(target_os = "macos")]
+                Some(win) => log::info!(
+                    "pill: capture {wording} (hidePillFromCapture={hidden}); AppKit says {}",
+                    window::sharing_of(win).unwrap_or("?")
+                ),
+                _ => log::info!("pill: capture {wording} (hidePillFromCapture={hidden})"),
+            }
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    fn apply_capture(self: &Arc<Self>) {}
 
     /// Called from the foreground hook: raise at once, or once the interval has passed.
     pub(crate) fn foreground_changed(self: &Arc<Self>) {
@@ -996,6 +1078,10 @@ impl Pill {
         let screen = rect(want_screen, Target::Screen);
         let visible = HIT.with(|cell| show(cell, stop));
         let screen_visible = SCREEN_HIT.with(|cell| show(cell, screen));
+        // The pill's window takes it too: a raise or a layout is the moment it can come back.
+        if let Some(win) = &win {
+            exclude_pill_from_capture(win, excluded);
+        }
         let mut i = self.lock();
         i.hit_visible = visible;
         i.screen_hit_visible = screen_visible;
@@ -1203,6 +1289,47 @@ mod tests {
         let old: Layout =
             serde_json::from_str(r#"{ "seq": 3, "pill": null, "button": null }"#).unwrap();
         assert!(old.screen_button.is_none());
+    }
+
+    #[test]
+    fn the_capture_setting_is_applied_once_per_change() {
+        // Nothing applied yet: the first show has to tell the window.
+        assert!(capture_changed(None, true));
+        assert!(capture_changed(None, false));
+        // A raise, a layout or a move repeats the value the windows already have.
+        assert!(!capture_changed(Some(true), true));
+        assert!(!capture_changed(Some(false), false));
+        // Either direction is a change: the setting is what the status has to agree with.
+        assert!(capture_changed(Some(true), false));
+        assert!(capture_changed(Some(false), true));
+    }
+
+    #[test]
+    fn a_layout_from_the_page_replaces_an_older_one() {
+        let wide: Layout = serde_json::from_str(
+            r#"{ "seq": 11, "pill": { "x": 70, "y": 24, "width": 244, "height": 36 },
+                 "button": { "x": 285, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        let compact: Layout = serde_json::from_str(
+            r#"{ "seq": 12, "pill": { "x": 106, "y": 24, "width": 172, "height": 36 },
+                 "button": { "x": 248, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        // The pill compacted: the page's newer rectangles count, and the panels follow the buttons
+        // the page draws now instead of the ones it drew a moment ago.
+        assert_eq!(
+            newer_layout(Some(&wide), compact.clone()),
+            Some(compact.clone())
+        );
+        assert_eq!(newer_layout(None, compact.clone()), Some(compact.clone()));
+        // A message from before that one doesn't move the panels back.
+        assert_eq!(newer_layout(Some(&compact), wide.clone()), None);
+        // The same sequence number again is the page's answer to a rebuild, and it counts.
+        assert_eq!(
+            newer_layout(Some(&compact), compact.clone()),
+            Some(compact.clone())
+        );
     }
 
     #[test]

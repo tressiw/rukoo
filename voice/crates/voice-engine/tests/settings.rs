@@ -357,6 +357,30 @@ fn a_setting_is_saved_applied_and_sent() {
     engine.shutdown();
 }
 
+/// The app applies "Hide pill from capture" to its windows from `EngineApi::ui`, and only when the
+/// engine says the UI changed. Both directions have to arrive, with the new value, or the pill's
+/// windows keep the sharing type they had.
+#[test]
+fn a_capture_toggle_reaches_the_app_with_the_new_value_both_ways() {
+    let h = Harness::new("capture-toggle");
+    let engine = h.start();
+    assert!(engine.ui().hide_pill_from_capture, "a new Voice hides it");
+    for hidden in [false, true, false] {
+        let changes = h.sink.ui_changes.load(Ordering::SeqCst);
+        engine
+            .settings_set("ui.hidePillFromCapture", json!(hidden))
+            .unwrap();
+        assert_eq!(engine.ui().hide_pill_from_capture, hidden);
+        assert_eq!(
+            h.sink.ui_changes.load(Ordering::SeqCst),
+            changes + 1,
+            "the app hears about {hidden}"
+        );
+        assert_eq!(h.saved_config().pill_hide_from_capture, hidden);
+    }
+    engine.shutdown();
+}
+
 #[test]
 fn a_system_theme_change_reaches_the_pill_and_settings_only_while_the_theme_follows_it() {
     use voice_engine::Theme;

@@ -83,17 +83,18 @@ What the page shows:
 | `inserted` | | green check, "Inserted {words} words" |
 | `rewrote` | | green check, "Rewrote the selection" |
 | `nothingHeard` | | no icon, "Nothing heard" |
-| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
+| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.accessibility`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
 | `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, the monitor button when `screenSwitch`, stop button |
 | `meeting`, `recording` or `paused` | `pill.micLost`, `pill.micBack` | microphone icon in orange or green, the notice, time, stop button |
-| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed`, `pill.screenPermission`, `pill.screenStopped` | screen icon in orange, the notice: the video, or the whole screen recording, stopped, macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control; the audio goes on. The app holds each for 4000 ms. |
+| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed`, `pill.screenPermission` | screen icon in orange, the notice: the video, or the whole screen recording, stopped, macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control; the audio goes on. The app holds each for 4000 ms, and `pill.screenPermission` for 15 000 ms when the meeting never recorded a screen. |
+| `meeting`, `recording` or `paused` | `pill.screenPermission`, `pill.screenStopped` | screen icon in orange: macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control, in a meeting that had recorded the screen. It stands for the rest of the meeting, until the screen records again or the meeting ends, and comes after `pill.callSilent` and before `pill.micLost` when those apply; a passing notice shows over it for its own time. `meeting.screen` is `off` with no screen button while it shows. The app sends `app.notify.screenPermission` or `app.notify.screenStopped` once. |
 | `meeting`, `recording` or `paused` | `pill.callSilent` | info icon in orange, "No sound from the call": the call track recorded only exact silence while another app played sound, so macOS may not let Voice record system audio; the recording goes on. It stands while the call is silent, until the call has sound or the meeting ends, and comes before `pill.micLost` when both apply; a passing notice shows over it for its own time. The app sends `app.notify.callSilent` once. |
 | `meeting`, `recording` or `paused` | `pill.screenMoved` with `args.name` | screen icon in grey, "Screen: {name}": Voice records another monitor now. The app holds it for 2200 ms. |
 | `meeting`, `paused` | | pause glyph, "Paused", grey time, stop button |
 | `meeting`, `processing` | | spinner, "Saving" |
 | `meeting`, `failed` | `pill.meetingFailed` | red x on a red tint, "Couldn't save the meeting" |
 
-`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`.
+`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`, and macOS's missing Accessibility grant, which stops both typing and reading the selection, → `pill.error.accessibility`.
 
 ### Event `pill://level`
 
@@ -123,7 +124,7 @@ What the page shows:
 - `button` is `null` when no stop button is drawn: no meeting, `stopEnabled` false, the pill hidden or leaving. Hide the stop window then.
 - `screenButton` is `null` when no monitor button is drawn: `screenSwitch` false or missing, no meeting that records or is paused, the pill hidden or leaving. Hide the monitor window then. An app from before the monitor button ignores it.
 - `pill` is `null` while nothing is drawn.
-- `seq` is the snapshot the layout was measured for. Ignore a layout whose `seq` is older than the newest snapshot that has a stop button.
+- `seq` is the snapshot the layout was measured for. A layout replaces the one the app holds unless it is older than that one; it is not compared with the newest snapshot, which the app can have and the page not yet: the page only sends a layout when the rectangles change, so a refused layout would leave the native windows where the pill no longer draws its buttons.
 - The page reports after every change: a new snapshot, the end of the entry animation, every frame of a width transition (the label sliding to 0 when the pill compacts, the button widening to "Stop?") and when Inter finishes loading. It never sends the same layout twice in a row.
 
 ### Strings the app reads from the catalogs
@@ -152,7 +153,7 @@ The page can open at a page or a group: `settings.html?page=<page>`, where `<pag
 
 ### Command `settings_state`
 
-`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it once on load.
+`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it on load, and again when its window gains the focus or the Storage page opens, for the parts that change without the app: the macOS permissions and `storage`'s free space.
 
 ### Event `settings://state`
 
@@ -236,7 +237,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. The free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows; Settings reads it again when the Storage page opens or the window gains the focus, because nothing of the app changes when another program fills the disk. |
 | `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: Windows can capture the screen (Windows 10 2004 or later); `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the text recognition languages Windows has, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
@@ -371,7 +372,7 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 |---|---|
 | `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
 | `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
-| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
+| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `notPublished` (this platform's runtime isn't published yet, which is macOS today, so there is nothing to install), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
 | `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
 | `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]` or `["dotprod"]`; else `[]`. |
 | `cpu` | This processor's features. Windows reports the x86-64 build's four (`avx2`, `fma`, `f16c`, `bmi2`) and macOS the arm64 build's three (`neon`, `dotprod`, `fp16`); the features of the other platform are `false`. |
@@ -521,7 +522,7 @@ The page shows the code only in its dialog, with the window hidden from capture 
 | `&features=screen` | The Settings of the features listed (`screen`, `speakers`, `sync`, comma-separated), as the engine lists them in `state.features` |
 | `&noEncoder=1`, `&noOcr=1`, `&screenUnavailable=1` | Screen recording on a computer without a hardware video encoder, without an OCR language, or on a Windows that can't capture; each turns on `features.screen` |
 | `&later=1` | Every feature's Settings (`features` all `true`): screen recording, speaker labels, bucket sync. Without it the mock's `features` are `false`, except those named in `&features=screen,speakers,sync` and those a scenario parameter of their own turns on. |
-| `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
+| `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `notPublished`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
 | `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `paused`, `unavailable`, `key`, `key-denied`, `unlocking`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; a new secret waiting for Test connection, with files waiting; the switch on while the sync store didn't open; an unreadable key; a key macOS's keychain refused, whose Try again goes through `unlocking` to up to date; waiting for the keychain dialog; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.

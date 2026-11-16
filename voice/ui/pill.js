@@ -19,6 +19,7 @@ const ERROR_NOTICES = new Set([
   'pill.error.model',
   'pill.error.modelMissing',
   'pill.error.blocked',
+  'pill.error.accessibility',
   'pill.error.generic'
 ]);
 const NOTICES = new Set([

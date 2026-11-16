@@ -200,7 +200,7 @@ impl Manifest {
 
     /// The files this platform's runtime must hold. Empty when the manifest pins no runtime for
     /// it, which verifies nothing.
-    fn files(&self) -> &[ManifestFile] {
+    pub(crate) fn files(&self) -> &[ManifestFile] {
         let files = match self.format {
             1 if TARGET == "windows-x86_64" => self.files.as_deref(),
             2 => self

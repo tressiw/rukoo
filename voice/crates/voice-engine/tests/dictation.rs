@@ -429,6 +429,39 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
 }
 
 #[test]
+fn a_missing_accessibility_grant_has_its_own_notice() {
+    let h = Harness::new("accessibility");
+    h.config(json!({"rewrite_api_key": "k"}));
+    // macOS with the grant off: neither typing nor reading the selection works, and the
+    // message says which setting to switch on.
+    *lock(&h.input.fail) = Some(InputError::Accessibility);
+    let engine = h.start();
+    h.hold(Key::F13);
+    assert_eq!(last_error(&h), "pill.error.accessibility");
+    assert_eq!(
+        h.sink.wait_note("app.notify.dictationFailed").body,
+        InputError::Accessibility.to_string()
+    );
+    *lock(&h.input.fail) = None;
+    lock(&h.sink.pills).clear();
+    // A rewrite over a selection Voice may not read says so instead of "Nothing selected".
+    *lock(&h.input.capture_fail) = Some(InputError::Accessibility);
+    let transcribed = h.speech.heard().len();
+    h.hold(Key::F14);
+    assert_eq!(last_error(&h), "pill.error.accessibility");
+    assert_eq!(
+        h.sink.wait_note("app.notify.rewriteFailed").body,
+        InputError::Accessibility.to_string()
+    );
+    assert_eq!(
+        h.speech.heard().len(),
+        transcribed,
+        "the instruction was never transcribed"
+    );
+    engine.shutdown();
+}
+
+#[test]
 fn no_text_box_warns_but_inserts_anyway() {
     let h = Harness::new("no-text-box");
     h.config(json!({}));

@@ -296,6 +296,7 @@ const SPEAKER_TEXT = {
   platform: 'Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.',
   cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
   runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
+  notPublished: "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
   runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",
   model: 'Download the speaker model to label speakers.',
   modelDamaged: 'The speaker model is damaged. Remove it and download it again.',
@@ -339,6 +340,37 @@ check('every reason labels are off shows its text on the Speaker labels page', a
   }
   await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
   assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. New meetings label each voice on the call\.[\s\S]*Nemotron on this computer/);
+});
+
+check('a platform that cannot run the model is not offered its download', async ({ open, page }) => {
+  // macOS has no published speaker runtime: a download would fetch 107 MB that cannot run here.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=notPublished');
+  const card = page.locator('[data-section="model"]');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /aren't available on macOS yet/);
+  assert.equal(await card.locator('[data-a="model:nemotron:download"]').count(), 0, 'no Download');
+  assert.equal(await card.locator('[data-a="model:nemotron:remove"]').count(), 0);
+  assert.doesNotMatch(await card.innerText(), /Model files/, 'no model row');
+  assert.doesNotMatch(await card.innerText(), /107 MB download/);
+  // The rest of the card stays useful: the switch is there, and it applies to new meetings.
+  assert.equal(await card.locator('[data-a="toggle:meetings.liveSpeakers"]').count(), 1);
+  // A platform where labels can run keeps its download, also when the model is missing.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=model');
+  assert.equal(await page.locator('[data-a="model:nemotron:download"]').count(), 1);
+});
+
+check('a Mac mock shows Mac folders and no Ownkey', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
+  const windows = await page.locator('[data-section="model"]').innerText();
+  assert.match(windows, /C:\\Users\\you\\AppData\\Local\\Ownkey\\models\\nemotron-3-diarization/);
+  assert.match(windows, /Shared with Ownkey\. Remove it in Ownkey\./);
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready&platform=macos');
+  const mac = await page.locator('[data-section="model"]').innerText();
+  assert.match(mac, /\/Users\/you\/Library\/Application Support\/Rukoo Voice\/models\/nemotron-3-diarization/);
+  assert.doesNotMatch(mac, /Ownkey/);
+  assert.match(mac, /Remove download/);
+  // The rest of the Mac page follows: a Mac's meetings folder, and no Ownkey anywhere.
+  await open('settings.html?mock=1&lang=en&page=storage&platform=macos');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Ownkey/);
 });
 
 check('the switch stays usable without the model and applies to new meetings', async ({ open, page, mockState }) => {
@@ -775,6 +807,18 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
     return page.locator('[data-section="sync"]').innerText();
   };
   assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
+  // Only a manifest still to go: nothing waits, so the chip isn't an orange "0 files waiting".
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 0 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('Everything is in the bucket'));
+  const uploading = page.locator('[data-section="sync"] .sync-status');
+  assert.doesNotMatch(await uploading.innerText(), /0 files waiting/);
+  assert.equal(await uploading.locator('.status[data-tone="busy"]').count(), 0, 'no warning tone');
+  assert.equal(await uploading.locator('.status[data-tone="ok"]').count(), 1, 'neutral and fine');
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 2 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('2 files waiting'));
+  assert.equal(await page.locator('[data-section="sync"] .status[data-tone="busy"]').count(), 1, 'a real queue is busy');
   assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
   const retrying = await statusOf('retrying');
   assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
@@ -797,6 +841,21 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
   await page.click('[data-a="sync-details:last"]');
   assert.match(await dialogText(page), /Uploads stopped\.[\s\S]*HTTP 500/);
   assert.doesNotMatch(await dialogText(page), /The test failed/);
+});
+
+check('the free space on the Storage page is read again when the window gets the focus', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage');
+  const usage = () => page.locator('[data-section="local"]').innerText();
+  assert.match(await usage(), /free on this drive/);
+  // The disk changed while Settings sat open, and the app sends no state for that.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.storage.freeBytes = 12_340_000_000), { emit: false }));
+  assert.doesNotMatch(await usage(), /12 GB/, 'nothing is pushed');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelector('[data-section="local"]').innerText.includes('12 GB'));
+  // The same reading shows on the top page's Storage row.
+  await page.click('[data-a="back"], .back');
+  await page.waitForSelector('[data-a="go:storage"]');
+  assert.match(await page.locator('[data-a="go:storage"]').innerText(), /12 GB free/);
 });
 
 check('Show key says what went wrong when the app can\'t give the key', async ({ open, page }) => {
