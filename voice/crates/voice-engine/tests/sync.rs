@@ -1391,9 +1391,23 @@ fn screen_files_upload_by_their_rules() {
     let stopped_at = wall_ms();
     engine.stop_meeting(StopReason::User).unwrap();
     wait_done(&h.data(), &id);
+    // `done` follows the journal's `stop`, so the closed files are final. Sync hears of `done` at
+    // the engine's next look at the event log, up to a second later, and until that scan Settings
+    // can say idle while the last frame and the journal aren't queued yet.
+    let closed = voice_screen_files::media::closed_files(&dir).unwrap();
+    wait_long(
+        "every closed screen file in the bucket",
+        Duration::from_secs(60),
+        || {
+            let objects = decrypt_all(&fake, &code);
+            closed.iter().all(|(rel, _)| {
+                let bytes = std::fs::read(dir.join(rel)).unwrap();
+                objects.iter().any(|(_, plain)| *plain == bytes)
+            })
+        },
+    );
     wait_uploaded(&engine);
 
-    let closed = voice_screen_files::media::closed_files(&dir).unwrap();
     let objects = decrypt_all(&fake, &code);
     let object_of = |rel: &str| {
         let bytes = std::fs::read(dir.join(rel)).unwrap();
