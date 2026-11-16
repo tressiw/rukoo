@@ -578,16 +578,29 @@ mod tests {
         let dir = long_data_folder("long");
         let socket = socket_path(&dir);
         assert!(!socket.starts_with(&dir), "{}", socket.display());
-        assert!(
-            socket.starts_with(std::env::temp_dir()),
+        // `<base>/rukoo-voice-<hash>/instance.sock`, where the base is Linux's runtime folder when
+        // the session sets an absolute one, else the temp folder.
+        #[cfg(target_os = "linux")]
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .unwrap_or_else(std::env::temp_dir);
+        #[cfg(not(target_os = "linux"))]
+        let base = std::env::temp_dir();
+        let folder = socket.parent().unwrap();
+        assert_eq!(
+            folder.parent(),
+            Some(base.as_path()),
             "{}",
             socket.display()
         );
+        let name = folder.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("rukoo-voice-"), "{}", socket.display());
+        assert_eq!(socket.file_name().unwrap(), "instance.sock");
 
         let Instance::First(guard) = acquire(&dir) else {
             panic!("the first acquire should win");
         };
-        let folder = socket.parent().unwrap();
         let mode = std::fs::metadata(folder).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{folder:?} is not private: {mode:o}");
         let mode = std::fs::metadata(&socket).unwrap().permissions().mode();
