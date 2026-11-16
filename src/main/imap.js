@@ -66,6 +66,146 @@ async function unseenBelow(client, first) {
   }
 }
 
+// The flags of the messages with these uids in the open folder, as { uid, unread, starred, answered }; a uid the
+// server no longer has is left out. null when the server doesn't answer, so the caller keeps what it had.
+async function flagsOf(client, uids) {
+  try {
+    const out = [];
+    for await (const m of client.fetch(uids.join(','), { uid: true, flags: true }, { uid: true })) {
+      const flags = m.flags || new Set();
+      out.push({ uid: m.uid, unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') });
+    }
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The uids in the open folder that match query, within criteria (a uid range, flags). Gmail searches the way its own
+// search box does (X-GM-RAW), the message text included; not with gmail false, for Spam and Trash, which that search
+// leaves out unless asked. Other servers, and Gmail when its search fails, compare the subject and the addresses.
+// imapflow answers false for a search the server refused.
+async function searchUids(client, criteria, query, { gmail = true } = {}) {
+  if (gmail && client.capabilities && client.capabilities.has('X-GM-EXT-1')) {
+    try {
+      const found = await client.search({ ...criteria, gmraw: query }, { uid: true });
+      if (Array.isArray(found)) return found;
+    } catch (_) {
+      // The plain search below.
+    }
+  }
+  const found = await client.search({ ...criteria, or: [{ subject: query }, { from: query }, { to: query }, { cc: query }] }, { uid: true });
+  if (!Array.isArray(found)) throw new Error(t('errors.search.refused'));
+  return found;
+}
+
+// The cache's form of the messages in rows (uid and flags each, as a FETCH gave them), in the order of rows. What known
+// holds for a uid is reused; envelope, structure and a preview come from the server only for the rest: on a large
+// Gmail folder that is the slow part, and repeating it every sync kept the connection busy for minutes. signals: also
+// what kind of mail each one is (categories/signals.js). tabs: the Gmail tab of each uid, or null when not asked. A
+// message gone between the fetches (moved or deleted meanwhile) is left out.
+async function describe(client, rows, { known = new Map(), signals = false, tabs = null } = {}) {
+  const cached = (uid) => {
+    const prior = known.get(uid);
+    return Boolean(prior) && STORED.every((k) => k in prior);
+  };
+  const fresh = rows.filter((m) => !cached(m.uid)).map((m) => m.uid);
+  const details = new Map();
+  if (fresh.length) {
+    for await (const m of client.fetch(fresh.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, size: true }, { uid: true })) {
+      details.set(m.uid, m);
+    }
+    // imapflow skips a FETCH response it can't parse, and the command still succeeds. It parses 25 levels of
+    // parentheses, so a message with some 22 nested multiparts is left out, and would be asked for on every sync
+    // and never listed. Asked again without the structure, it lists by its envelope, without a preview or
+    // attachment mark, and is cached.
+    const missing = fresh.filter((uid) => !details.has(uid));
+    if (missing.length) {
+      for await (const m of client.fetch(missing.join(','), { uid: true, envelope: true, internalDate: true, size: true }, { uid: true })) {
+        details.set(m.uid, m);
+      }
+    }
+  }
+
+  // Fetch a few KB of the readable part for messages we have not seen before.
+  const previews = new Map();
+  const byPart = new Map();
+  for (const m of details.values()) {
+    const node = util.findPreviewPart(m.bodyStructure);
+    if (!node) continue;
+    const key = util.partKey(node);
+    if (!byPart.has(key)) byPart.set(key, []);
+    byPart.get(key).push({ uid: m.uid, node });
+  }
+  for (const [key, items] of byPart) {
+    const nodes = new Map(items.map((i) => [i.uid, i.node]));
+    const uids = items.map((i) => i.uid).join(',');
+    for await (const m of client.fetch(uids, { uid: true, bodyParts: [{ key, maxLength: PREVIEW_BYTES }] }, { uid: true })) {
+      const node = nodes.get(m.uid);
+      const buf = m.bodyParts && m.bodyParts.values().next().value;
+      if (!buf || !node) continue;
+      const decodedAlready = m.binaryParts && m.binaryParts.size > 0;
+      const effective = decodedAlready ? { ...node, encoding: '7bit' } : node;
+      try {
+        previews.set(m.uid, util.previewFromPart(buf, effective));
+      } catch (_) {
+        previews.set(m.uid, '');
+      }
+    }
+  }
+
+  // A few header lines, for new messages and for ones cached before Rukoo kept them.
+  const kinds = new Map();
+  if (signals) {
+    const need = rows.filter((r) => details.has(r.uid) || !(known.get(r.uid) || {}).signals).map((r) => r.uid);
+    if (need.length) {
+      for await (const m of client.fetch(need.join(','), { uid: true, headers: SIGNAL_HEADERS }, { uid: true })) {
+        kinds.set(m.uid, mailSignals(m.headers));
+      }
+    }
+  }
+  const extra = (uid, prior) => {
+    const out = {};
+    const kind = kinds.get(uid) || (prior && prior.signals);
+    if (kind) out.signals = kind;
+    if (tabs) out.gmailTab = tabs.get(uid) || 'primary';
+    else if (prior && prior.gmailTab) out.gmailTab = prior.gmailTab;
+    return out;
+  };
+
+  const messages = [];
+  for (const row of rows) {
+    const flags = row.flags || new Set();
+    const state = { unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') };
+    const m = details.get(row.uid);
+    const prior = known.get(row.uid);
+    if (!m) {
+      // Gone between the fetches: the next sync no longer lists it.
+      if (!cached(row.uid)) continue;
+      messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state, ...extra(row.uid, prior) });
+      continue;
+    }
+    const env = m.envelope || {};
+    messages.push({
+      uid: m.uid,
+      messageId: env.messageId || null,
+      inReplyTo: env.inReplyTo || null,
+      subject: env.subject || '',
+      from: util.addressFromEnvelope(env.from)[0] || { name: '', address: '' },
+      to: util.addressFromEnvelope(env.to),
+      cc: util.addressFromEnvelope(env.cc),
+      replyTo: util.addressFromEnvelope(env.replyTo),
+      date: new Date(env.date || m.internalDate || Date.now()).getTime(),
+      preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
+      ...state,
+      hasAttachments: util.hasAttachments(m.bodyStructure),
+      size: m.size || 0,
+      ...extra(m.uid, prior)
+    });
+  }
+  return messages;
+}
+
 class ImapAccount {
   // credentials: a password string, or { accessToken: async () => token } for OAuth (XOAUTH2).
   constructor(account, credentials) {
@@ -297,74 +437,29 @@ class ImapAccount {
     });
   }
 
-  // signals: also what kind of mail each message is (categories/signals.js); gmailTabs: also the Gmail tab each
-  // message is in. Both are for the inbox and its categories. olderUnseen: also how many messages older than the
-  // window are unread, which the inbox's unread count adds to the window's own.
-  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false, olderUnseen = false } = {}) {
+  // limit: how many of the newest messages the cache keeps, or a function that says so when the command runs: Load
+  // older can widen the window while the sync waits for the connection. signals: also what kind of mail each message
+  // is (categories/signals.js); gmailTabs: also the Gmail tab each message is in. Both are for the inbox and its
+  // categories. olderUnseen: also how many messages older than the window are unread, which the inbox's unread count
+  // adds to the window's own. keep: uids below the window the cache holds as well (the older mail a server search
+  // found), or a function that gives them when the command runs; kept then has the flags of those the server still
+  // has, as { uid, unread, starred, answered }. Not after a UIDVALIDITY change, when they are other messages.
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false, olderUnseen = false, keep = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
         const box = client.mailbox;
         // After a UIDVALIDITY change old UIDs point at different messages; reuse nothing.
-        const known = uidValidity && String(box.uidValidity) === String(uidValidity) ? knownIn : new Map();
+        const same = Boolean(uidValidity) && String(box.uidValidity) === String(uidValidity);
+        const known = same ? knownIn : new Map();
         const result = { uidValidity: String(box.uidValidity), exists: box.exists, messages: [] };
         if (!box.exists) return result;
-        const start = Math.max(1, box.exists - limit + 1);
+        const size = typeof limit === 'function' ? limit() : limit;
+        const start = Math.max(1, box.exists - size + 1);
         // The flags of every message in the window: all that can change about a message the cache already has.
         const rows = [];
         for await (const m of client.fetch(`${start}:*`, { uid: true, flags: true })) rows.push(m);
         const first = rows.length ? Math.min(...rows.map((r) => r.uid)) : null;
-        const cached = (uid) => {
-          const prior = known.get(uid);
-          return Boolean(prior) && STORED.every((k) => k in prior);
-        };
-        // Envelope, structure, date and size only for the messages it doesn't have: on a large Gmail folder that is
-        // the slow part, and repeating it every sync kept the connection busy for minutes.
-        const fresh = rows.filter((m) => !cached(m.uid)).map((m) => m.uid);
-        const details = new Map();
-        if (fresh.length) {
-          for await (const m of client.fetch(fresh.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, size: true }, { uid: true })) {
-            details.set(m.uid, m);
-          }
-        }
-
-        // Fetch a few KB of the readable part for messages we have not seen before.
-        const previews = new Map();
-        const byPart = new Map();
-        for (const m of details.values()) {
-          const node = util.findPreviewPart(m.bodyStructure);
-          if (!node) continue;
-          const key = util.partKey(node);
-          if (!byPart.has(key)) byPart.set(key, []);
-          byPart.get(key).push({ uid: m.uid, node });
-        }
-        for (const [key, items] of byPart) {
-          const nodes = new Map(items.map((i) => [i.uid, i.node]));
-          const uids = items.map((i) => i.uid).join(',');
-          for await (const m of client.fetch(uids, { uid: true, bodyParts: [{ key, maxLength: PREVIEW_BYTES }] }, { uid: true })) {
-            const node = nodes.get(m.uid);
-            const buf = m.bodyParts && m.bodyParts.values().next().value;
-            if (!buf || !node) continue;
-            const decodedAlready = m.binaryParts && m.binaryParts.size > 0;
-            const effective = decodedAlready ? { ...node, encoding: '7bit' } : node;
-            try {
-              previews.set(m.uid, util.previewFromPart(buf, effective));
-            } catch (_) {
-              previews.set(m.uid, '');
-            }
-          }
-        }
-
-        // A few header lines, for new messages and for ones cached before Rukoo kept them.
-        const kinds = new Map();
-        if (signals) {
-          const need = rows.filter((r) => details.has(r.uid) || !(known.get(r.uid) || {}).signals).map((r) => r.uid);
-          if (need.length) {
-            for await (const m of client.fetch(need.join(','), { uid: true, headers: SIGNAL_HEADERS }, { uid: true })) {
-              kinds.set(m.uid, mailSignals(m.headers));
-            }
-          }
-        }
         // Gmail doesn't show its tabs as folders, but its own search finds them (X-GM-RAW). Asked again on every sync,
         // since a message can move to another tab. What none of them holds is in Primary.
         let tabs = null;
@@ -380,49 +475,41 @@ class ImapAccount {
           }
         }
         if (olderUnseen) result.olderUnseen = start === 1 ? 0 : await unseenBelow(client, first);
-        const extra = (uid, prior) => {
-          const out = {};
-          const kind = kinds.get(uid) || (prior && prior.signals);
-          if (kind) out.signals = kind;
-          if (tabs) out.gmailTab = tabs.get(uid) || 'primary';
-          else if (prior && prior.gmailTab) out.gmailTab = prior.gmailTab;
-          return out;
-        };
-
-        for (const row of rows) {
-          const flags = row.flags || new Set();
-          const state = { unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') };
-          const m = details.get(row.uid);
-          const prior = known.get(row.uid);
-          if (!m) {
-            // Gone between the two fetches (moved or deleted meanwhile): the next sync no longer lists it.
-            if (!cached(row.uid)) continue;
-            result.messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state, ...extra(row.uid, prior) });
-            continue;
-          }
-          const env = m.envelope || {};
-          result.messages.push({
-            uid: m.uid,
-            messageId: env.messageId || null,
-            inReplyTo: env.inReplyTo || null,
-            subject: env.subject || '',
-            from: util.addressFromEnvelope(env.from)[0] || { name: '', address: '' },
-            to: util.addressFromEnvelope(env.to),
-            cc: util.addressFromEnvelope(env.cc),
-            replyTo: util.addressFromEnvelope(env.replyTo),
-            date: new Date(env.date || m.internalDate || Date.now()).getTime(),
-            preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
-            ...state,
-            hasAttachments: util.hasAttachments(m.bodyStructure),
-            size: m.size || 0,
-            ...extra(m.uid, prior)
-          });
-        }
+        result.messages = await describe(client, rows, { known, signals, tabs });
+        const older = same && keep ? (typeof keep === 'function' ? keep() : keep).filter((uid) => !first || uid < first) : [];
+        if (older.length) result.kept = await flagsOf(client, older);
         return result;
       } finally {
         lock.release();
       }
     }, { background });
+  }
+
+  // Older mail that matches query, for a search of more than the cache holds: in the folder at path, below the uid
+  // below (the oldest message the cache has; null for the whole folder). The newest limit matches come back in the
+  // cache's form, reusing what known has as syncFolder does, with total saying how many matched in all. criteria: more
+  // to match, such as { seen: false }. signals as for syncFolder. gmail: false keeps Gmail to the plain search, for its
+  // Spam and Trash. The user waits for it, so it goes ahead of a sync.
+  searchFolder(path, query, { below = null, limit = 50, known: knownIn = new Map(), uidValidity = null, signals = false, criteria = {}, gmail = true } = {}) {
+    return this.run(async (client) => {
+      const lock = await client.getMailboxLock(path, { readOnly: true });
+      try {
+        const box = client.mailbox;
+        const known = uidValidity && String(box.uidValidity) === String(uidValidity) ? knownIn : new Map();
+        const result = { uidValidity: String(box.uidValidity), total: 0, messages: [] };
+        if (!box.exists || below === 1) return result;
+        const uids = await searchUids(client, { ...criteria, uid: below ? `1:${below - 1}` : '1:*' }, query, { gmail });
+        result.total = uids.length;
+        const newest = [...uids].sort((a, b) => b - a).slice(0, limit);
+        if (!newest.length) return result;
+        const rows = [];
+        for await (const m of client.fetch(newest.join(','), { uid: true, flags: true }, { uid: true })) rows.push(m);
+        result.messages = await describe(client, rows, { known, signals });
+        return result;
+      } finally {
+        lock.release();
+      }
+    });
   }
 
   // The message the user opens comes over the reader, with the folder opened read-only: that connection only reads.
@@ -440,6 +527,30 @@ class ImapAccount {
       }
     };
     return background ? this.run(fetch, { background }) : this.read(fetch);
+  }
+
+  // A large message the user opens, without its attachments: its structure and header first, then the parts the
+  // reader shows and the MIME header of every part (mailutil.readableParts), rebuilt into a source mailparser reads
+  // like the whole message (mailutil.skeletonSource). Over the reader, like fetchSource. null when the message
+  // doesn't split.
+  fetchReadable(path, uid) {
+    return this.read(async (client) => {
+      const lock = await client.getMailboxLock(path, { readOnly: true });
+      try {
+        const head = await client.fetchOne(String(uid), { uid: true, bodyStructure: true, headers: true, size: true }, { uid: true });
+        if (!head || !head.bodyStructure || !head.headers) throw new Error(t('errors.message.serverMissing'));
+        const keys = util.readableParts(head.bodyStructure, head.size);
+        if (!keys) return null;
+        const msg = await client.fetchOne(String(uid), { uid: true, bodyParts: keys }, { uid: true });
+        // Every part asked for, or the whole message: a text part the server left out would read as an empty one.
+        if (!msg || !msg.bodyParts || !keys.every((key) => Buffer.isBuffer(msg.bodyParts.get(key.toLowerCase())))) {
+          throw new Error(t('errors.message.serverMissing'));
+        }
+        return util.skeletonSource(head.headers, head.bodyStructure, msg.bodyParts);
+      } finally {
+        lock.release();
+      }
+    });
   }
 
   setFlags(path, uid, { unread, starred, answered }) {

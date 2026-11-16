@@ -296,25 +296,98 @@ test('deleting the Rukoo account turns the booking page off first and stops when
   await desk.account.deleteAccount(PASSWORD);
   assert.equal(srv.accounts.has('host@example.com'), false);
 
+  // The password is checked on the session that deletes the account, under the lock the deletion uses, before the
+  // page goes.
   const srv2 = await server(t);
   const laptop = await computer(t, srv2, { name: 'laptop' });
   await laptop.booking.enable(ENABLE);
   await srv2.book({ handle: 'bart', type: '30min', start: slot(3, 10) });
-  const sessions = srv2.sessions.size;
+  srv2.calls.length = 0;
+  await laptop.account.deleteAccount(PASSWORD);
+  let routes = srv2.calls.map((c) => c.route);
+  assert.ok(routes.indexOf('POST /v1/password/check') >= 0);
+  assert.ok(routes.indexOf('POST /v1/password/check') < routes.indexOf('DELETE /v1/booking'));
+  assert.ok(routes.indexOf('DELETE /v1/booking') < routes.indexOf('DELETE /v1/account'));
+  assert.equal(routes.includes('POST /v1/login'), false, 'no sign-in of its own');
+  assert.equal(srv2.calls.find((c) => c.route === 'POST /v1/password/check').body.authKey, srv2.calls.find((c) => c.route === 'DELETE /v1/account').body.authKey);
+
+  // A server from before that call answers 404: the password is checked with a sign-in of its own, which has ended
+  // by the time the page goes.
+  const srv3 = await server(t, { passwordCheck: false });
+  const tablet = await computer(t, srv3, { name: 'tablet' });
+  await tablet.booking.enable(ENABLE);
+  await srv3.book({ handle: 'bart', type: '30min', start: slot(3, 10) });
+  const sessions = srv3.sessions.size;
   let during = null;
-  srv2.fail = ({ route }) => {
-    if (route === 'DELETE /v1/booking') during = srv2.sessions.size;
+  srv3.fail = ({ route }) => {
+    if (route === 'DELETE /v1/booking') during = srv3.sessions.size;
     return null;
   };
-  await laptop.account.deleteAccount(PASSWORD);
-  const routes = srv2.calls.map((c) => c.route);
+  await tablet.account.deleteAccount(PASSWORD);
+  routes = srv3.calls.map((c) => c.route);
   assert.ok(routes.includes('DELETE /v1/booking'));
-  // The password is checked with a sign-in of its own, which has ended by the time the page goes.
   const login = routes.lastIndexOf('POST /v1/login');
+  assert.ok(routes.lastIndexOf('POST /v1/password/check') < login);
   assert.ok(login >= 0 && login < routes.lastIndexOf('POST /v1/logout'));
   assert.ok(routes.lastIndexOf('POST /v1/logout') < routes.indexOf('DELETE /v1/booking'));
   assert.ok(routes.indexOf('DELETE /v1/booking') < routes.indexOf('DELETE /v1/account'));
   assert.equal(during, sessions);
+  assert.equal(srv3.accounts.has('host@example.com'), false);
+});
+
+test("a session locked after ten wrong passwords keeps the booking page and the account until the lock is over", async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv);
+  await desk.booking.enable(ENABLE);
+  await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10) });
+
+  // Ten wrong passwords for a new recovery key lock this session's password checks. Sign-ins aren't locked.
+  for (let i = 0; i < 9; i++) await assert.rejects(desk.account.newRecoveryKey('a mistyped password!!'), (err) => err.code === 'wrong_password');
+  await assert.rejects(desk.account.newRecoveryKey('a mistyped password!!'), (err) => err.code === 'locked');
+
+  // The right password now: the check refuses it as the deletion would, before the page goes.
+  await assert.rejects(desk.account.deleteAccount(PASSWORD), (err) => err.code === 'locked');
+  assert.equal(srv.pages.get('bart').enabled, true);
+  assert.equal(srv.pages.get('bart').bookings.size, 1);
+  assert.equal(srv.calls.filter((c) => c.route === 'DELETE /v1/booking').length, 0);
+  assert.ok(srv.accounts.has('host@example.com'));
+  assert.equal(desk.account.signedIn, true);
+  assert.equal(desk.booking.status(), 'on');
+  // Turning the page off from this session waits for the lock as well, with the sign-in lock's message.
+  await assert.rejects(desk.booking.disable(), (err) => err.code === 'locked');
+  assert.equal(srv.pages.get('bart').bookings.size, 1);
+  assert.equal(desk.booking.status(), 'on');
+
+  // After the lock, the same password deletes both.
+  srv.now = () => Date.now() + 16 * 60000;
+  await desk.account.deleteAccount(PASSWORD);
+  assert.equal(srv.accounts.has('host@example.com'), false);
+  assert.equal(srv.pages.get('bart').bookings.size, 0);
+});
+
+test('a locked session that checks the password with a sign-in, as Rukoo from 2.1.0 does, stops at the booking page', async (t) => {
+  // Without POST /v1/password/check this desktop takes the steps of the released ones: a sign-in of its own, the
+  // booking page, then the account. The sign-in leaves the session's lock alone and the server refuses the page.
+  const srv = await server(t, { passwordCheck: false });
+  const desk = await computer(t, srv);
+  await desk.booking.enable(ENABLE);
+  await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10) });
+  for (let i = 0; i < 10; i++) await desk.account.newRecoveryKey('a mistyped password!!').catch(() => {});
+
+  srv.calls.length = 0;
+  await assert.rejects(desk.account.deleteAccount(PASSWORD), (err) => err.code === 'deleteFirst');
+  const routes = srv.calls.map((c) => c.route);
+  assert.ok(routes.indexOf('POST /v1/login') < routes.indexOf('DELETE /v1/booking'));
+  assert.equal(routes.includes('DELETE /v1/account'), false);
+  assert.equal(srv.pages.get('bart').enabled, true);
+  assert.equal(srv.pages.get('bart').bookings.size, 1);
+  assert.ok(srv.accounts.has('host@example.com'));
+  assert.equal(desk.account.signedIn, true);
+
+  srv.now = () => Date.now() + 16 * 60000;
+  await desk.account.deleteAccount(PASSWORD);
+  assert.equal(srv.accounts.has('host@example.com'), false);
+  assert.equal(srv.pages.get('bart').bookings.size, 0);
 });
 
 test("an account deleted and made again on the same computer takes its handle back; a sign-up elsewhere with the email doesn't", async (t) => {

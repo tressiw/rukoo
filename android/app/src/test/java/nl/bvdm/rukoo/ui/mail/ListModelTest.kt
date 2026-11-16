@@ -40,6 +40,16 @@ class ListModelTest {
     }
 
     @Test
+    fun unreadKeepsTheEmailOpenedWhileUnreadButDoesNotCountIt() {
+        val list = listOf(msg("1", "a@x.nl", 3, unread = true), msg("2", "b@x.nl", 2), msg("3", "c@x.nl", 1))
+        assertEquals(listOf("1", "2"), ListModel.applyFilter(list, QuickFilter.UNREAD, keptId = "2").map { it.id })
+        assertEquals(listOf("1"), ListModel.applyFilter(list, QuickFilter.UNREAD, keptId = null).map { it.id })
+        // Only Unread keeps it.
+        assertEquals(emptyList<String>(), ListModel.applyFilter(list, QuickFilter.STARRED, keptId = "2").map { it.id })
+        assertEquals(1, ListModel.filterCount(list, QuickFilter.UNREAD))
+    }
+
+    @Test
     fun threeFromOneSenderOnOneDayFoldIntoAStack() {
         val list = listOf(
             msg("1", "noreply@vb.nl", 5),

@@ -10,6 +10,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
+// A session that sends a wrong password ten times is locked the same way, on its own (PROTOCOL.md, POST /v1/password).
 const MAX_FAILURES = 10;
 const FAILURE_WINDOW = 15 * 60 * 1000;
 const LOCK_TIME = 15 * 60 * 1000;
@@ -23,6 +24,9 @@ const PAGE_BYTES = 4 * 1024 * 1024;
 // An account can change its booking page's handle at most this often (PROTOCOL.md, Handles and meeting types).
 export const HANDLE_CHANGES = 3;
 export const HANDLE_WINDOW = 30 * 24 * 60 * 60 * 1000;
+
+// A session's own count of wrong passwords and its lock, for the signed-in calls that ask for the password again.
+const SESSION_LOCK = ['failures', 'failedAt', 'lockedUntil'].map((name) => `${name} INTEGER NOT NULL DEFAULT 0`);
 
 // The booking page's handle, for accounts that ever had one. changes is a JSON list of when it was changed.
 const BOOKING_TABLE = `
@@ -54,7 +58,8 @@ const SCHEMA = `
     name TEXT NOT NULL,
     platform TEXT NOT NULL,
     createdAt INTEGER NOT NULL,
-    lastSeenAt INTEGER NOT NULL
+    lastSeenAt INTEGER NOT NULL,
+    ${SESSION_LOCK.join(',\n    ')}
   );
   CREATE TABLE records (
     id TEXT PRIMARY KEY,
@@ -106,12 +111,19 @@ export class Account extends DurableObject {
   // Brings an account made by an older version of the server up to the current tables. Each step checks for itself
   // whether it is needed, so running it again changes nothing.
   migrate() {
-    const columns = new Set(this.sql.exec("SELECT name FROM pragma_table_info('meta')").toArray().map((c) => c.name));
-    if (!columns.has('tombstones')) {
+    const columns = (table) =>
+      new Set(this.sql.exec('SELECT name FROM pragma_table_info(?)', table).toArray().map((c) => c.name));
+    if (!columns('meta').has('tombstones')) {
       // The first version didn't count tombstones; count the ones there are.
       this.ctx.storage.transactionSync(() => {
         this.sql.exec('ALTER TABLE meta ADD COLUMN tombstones INTEGER NOT NULL DEFAULT 0');
         this.sql.exec('UPDATE meta SET tombstones = (SELECT COUNT(*) FROM records WHERE data IS NULL) WHERE id = 1');
+      });
+    }
+    if (!columns('sessions').has('lockedUntil')) {
+      // Wrong passwords on signed-in calls counted toward the account's lock before; each session starts at none.
+      this.ctx.storage.transactionSync(() => {
+        for (const column of SESSION_LOCK) this.sql.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       });
     }
     // Booking pages came later; accounts from before have no handle yet.
@@ -127,6 +139,8 @@ export class Account extends DurableObject {
   // Who is asking, for the booking page routes: the account's routing name (the token's first part, which is how the
   // Worker found this object), its handle, the caller's session id, how many handle changes the last 30 days used,
   // and the names of its sessions, for showing which device handles bookings. 401 only for a dead session.
+  // passwordLock is the 429 to send while this session's password checks are locked (#withPassword), else null; only
+  // DELETE /v1/booking uses it.
   async bookingAuth(token) {
     return this.#signedIn(token, (session, now) => {
       const row = this.#booking();
@@ -139,7 +153,8 @@ export class Account extends DurableObject {
         handle: row.handle,
         deviceId: session.id,
         changes: recentChanges(row.changes, now).length,
-        devices
+        devices,
+        passwordLock: session.lockedUntil > now ? locked(session.lockedUntil, now) : null
       };
     });
   }
@@ -208,8 +223,8 @@ export class Account extends DurableObject {
     if (!this.present) return failure(401, 'unauthorized', 'The email address or password is wrong.');
     const now = Date.now();
     const check = this.#check('authVerifier', hash, now);
-    if (check === 'locked') return locked(this.#account().lockedUntil, now);
-    if (check === 'wrong') return failure(401, 'unauthorized', 'The email address or password is wrong.');
+    if (check.result === 'locked') return locked(check.lockedUntil, now);
+    if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or password is wrong.');
     const sessionId = this.ctx.storage.transactionSync(() => this.#addSession(tokenHash, input.device, now));
     const { wrappedKey } = this.#account();
     return reply(200, {
@@ -241,7 +256,7 @@ export class Account extends DurableObject {
     const hash = await sha256(input.authKey);
     const newVerifier = await sha256(input.newAuthKey);
     return this.#signedIn(token, (session, now) =>
-      this.#withPassword(hash, now, () => {
+      this.#withPassword(session, hash, now, () => {
         this.ctx.storage.transactionSync(() => {
           this.sql.exec(
             'UPDATE account SET kdf = ?, salt = ?, authVerifier = ?, wrappedKey = ? WHERE id = 1',
@@ -261,7 +276,7 @@ export class Account extends DurableObject {
     const hash = await sha256(input.authKey);
     const recoveryVerifier = await sha256(input.recoveryAuth);
     return this.#signedIn(token, (session, now) =>
-      this.#withPassword(hash, now, () => {
+      this.#withPassword(session, hash, now, () => {
         this.sql.exec(
           'UPDATE account SET recoveryVerifier = ?, recoveryWrappedKey = ? WHERE id = 1',
           blob(recoveryVerifier),
@@ -272,13 +287,21 @@ export class Account extends DurableObject {
     );
   }
 
+  // Checks the password and changes nothing but this session's count (PROTOCOL.md, POST /v1/password/check). A device
+  // asks before it deletes what doesn't come back, such as the booking page, ahead of DELETE /v1/account: this counts
+  // toward the same lock as that deletion, so the answer holds for it.
+  async checkPassword(token, input) {
+    const hash = await sha256(input.authKey);
+    return this.#signedIn(token, (session, now) => this.#withPassword(session, hash, now, () => reply(204)));
+  }
+
   async recoverStart(input) {
     const hash = await sha256(input.recoveryAuth);
     if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
     const check = this.#check('recoveryVerifier', hash, now);
-    if (check === 'locked') return locked(this.#account().lockedUntil, now);
-    if (check === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
+    if (check.result === 'locked') return locked(check.lockedUntil, now);
+    if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const { recoveryWrappedKey, kdf } = this.#account();
     return reply(200, { recoveryWrappedKey: toBase64url(new Uint8Array(recoveryWrappedKey)), kdf: JSON.parse(kdf) });
   }
@@ -291,8 +314,8 @@ export class Account extends DurableObject {
     if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
     const check = this.#check('recoveryVerifier', hash, now);
-    if (check === 'locked') return locked(this.#account().lockedUntil, now);
-    if (check === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
+    if (check.result === 'locked') return locked(check.lockedUntil, now);
+    if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const sessionId = this.ctx.storage.transactionSync(() => {
       this.sql.exec(
         'UPDATE account SET kdf = ?, salt = ?, authVerifier = ?, wrappedKey = ? WHERE id = 1',
@@ -314,7 +337,7 @@ export class Account extends DurableObject {
     // MAX_ACCOUNTS back once. The booking handle is read in the same stretch and handed to the Worker, which wipes
     // the page afterwards (send() leaves the extra property out of the answer).
     const result = await this.#signedIn(token, (session, now) =>
-      this.#withPassword(hash, now, () => {
+      this.#withPassword(session, hash, now, () => {
         const { handle } = this.#booking();
         this.present = false;
         return { ...reply(204), handle };
@@ -437,7 +460,7 @@ export class Account extends DurableObject {
     const hash = await sha256(utf8(token));
     if (!this.present) return UNAUTHORIZED;
     let session = null;
-    for (const row of this.sql.exec('SELECT id, tokenHash, lastSeenAt FROM sessions')) {
+    for (const row of this.sql.exec('SELECT id, tokenHash, lastSeenAt, failures, failedAt, lockedUntil FROM sessions')) {
       if (sameBytes(new Uint8Array(row.tokenHash), hash)) session = row;
     }
     if (!session) return UNAUTHORIZED;
@@ -449,35 +472,50 @@ export class Account extends DurableObject {
   }
 
   // For signed-in calls that ask for the password again. A wrong one is 403, not 401, so the app can tell it apart
-  // from an ended session; it counts toward the same lock as sign-ins.
-  #withPassword(hash, now, fn) {
-    const check = this.#check('authVerifier', hash, now);
-    if (check === 'locked') return locked(this.#account().lockedUntil, now);
-    if (check === 'wrong') return failure(403, 'wrong_password', 'The password is wrong.');
+  // from an ended session. These attempts count per session, not toward the account's lock: anyone who knows the
+  // email address can lock that one, and the session already proves the device. A stolen session still gets only
+  // ten guesses every 15 minutes, whatever other devices do: sign-ins leave its count and lock alone. While the lock
+  // lasts, the session can't delete the booking page either (owner.js, deleteBooking).
+  #withPassword(session, hash, now, fn) {
+    const { authVerifier } = this.#account();
+    const check = this.#attempt('sessions', session, sameBytes(new Uint8Array(authVerifier), hash), now);
+    if (check.result === 'locked') return locked(check.lockedUntil, now);
+    if (check.result === 'wrong') return failure(403, 'wrong_password', 'The password is wrong.');
     return fn();
   }
 
-  // Compares a hash with the stored verifier and keeps the failure count. Returns 'ok', 'wrong' or 'locked'. The
-  // attempt that reaches the limit already answers 'locked', since the lock is in force from then on.
+  // Compares a hash with the account's stored verifier and keeps the account's failure count, for sign-ins and
+  // recovery.
   #check(column, hash, now) {
     const account = this.#account();
-    if (account.lockedUntil > now) return 'locked';
-    if (sameBytes(new Uint8Array(account[column]), hash)) {
-      if (account.failures > 0) this.sql.exec('UPDATE account SET failures = 0, failedAt = 0 WHERE id = 1');
-      return 'ok';
+    return this.#attempt('account', account, sameBytes(new Uint8Array(account[column]), hash), now);
+  }
+
+  // Counts one attempt in row's failure count, where row is the account or a session from table and right says
+  // whether the secret matched. Returns { result, lockedUntil }, where result is 'ok', 'wrong' or 'locked'. The
+  // attempt that reaches the limit already answers 'locked', since the lock is in force from then on.
+  #attempt(table, row, right, now) {
+    const set = (failures, failedAt, lockedUntil) =>
+      this.sql.exec(
+        `UPDATE ${table} SET failures = ?, failedAt = ?, lockedUntil = ? WHERE id = ?`,
+        failures,
+        failedAt,
+        lockedUntil,
+        row.id
+      );
+    if (row.lockedUntil > now) return { result: 'locked', lockedUntil: row.lockedUntil };
+    if (right) {
+      if (row.failures > 0) set(0, 0, row.lockedUntil);
+      return { result: 'ok' };
     }
-    const fresh = now - account.failedAt >= FAILURE_WINDOW;
-    const failures = fresh ? 1 : account.failures + 1;
+    const fresh = now - row.failedAt >= FAILURE_WINDOW;
+    const failures = fresh ? 1 : row.failures + 1;
     if (failures >= MAX_FAILURES) {
-      this.sql.exec('UPDATE account SET failures = 0, failedAt = 0, lockedUntil = ? WHERE id = 1', now + LOCK_TIME);
-      return 'locked';
+      set(0, 0, now + LOCK_TIME);
+      return { result: 'locked', lockedUntil: now + LOCK_TIME };
     }
-    this.sql.exec(
-      'UPDATE account SET failures = ?, failedAt = ? WHERE id = 1',
-      failures,
-      fresh ? now : account.failedAt
-    );
-    return 'wrong';
+    set(failures, fresh ? now : row.failedAt, row.lockedUntil);
+    return { result: 'wrong' };
   }
 
   #addSession(tokenHash, device, now) {

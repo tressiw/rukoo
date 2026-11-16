@@ -34,7 +34,7 @@ Settings > Agents has a card per agent with its status and a "Test connection" b
 | Agent | How the phone talks to it | How it uses Rukoo's tools on the phone |
 |---|---|---|
 | Clark (Hermes Agent) | The Hermes API server over Tailscale, as on desktop: a Rukoo chat is a Hermes session, a turn is a run | Clark's `rukoo_bridge.py` finds the phone on Tailscale, port 47800, and sends the calls of phone chats there |
-| OpenClaw | The gateway's OpenAI-compatible endpoint over Tailscale | `openclaw mcp set` with the command from Settings > Phone tools > "Copy OpenClaw setup". It replaces the computer's entry, because OpenClaw names one Rukoo. To keep its token out of `openclaw.json`, use the variable [described for the desktop](agents.md#openclaw) |
+| OpenClaw | The gateway's OpenAI-compatible endpoint over Tailscale | The two steps from Settings > Phone tools > "Copy OpenClaw setup", [as on the desktop](agents.md#openclaw): a `RUKOO_MCP_TOKEN` line for the gateway's `.env` file and the `openclaw mcp set` command. It replaces the computer's entry, because OpenClaw names one Rukoo. With the same gateway token, the phone's token is the one the computer copies for a gateway on another computer, so switching between those two needs only the command again |
 | Claude Code, Codex | Rukoo on your computer runs them, over the computer's Tailscale address | The computer forwards their Rukoo tool calls to the phone |
 
 For Claude Code and Codex, the computer must be on, with Rukoo open (the tray is enough), Tailscale on, and "Let my phone use this computer" on. Their own permission requests ("Claude Code wants to read a file") show as approval cards on the phone. Phone chats always run with "Ask before actions" on the computer. [Rukoo on your phone](agents.md#rukoo-on-your-phone) describes the computer's side.
@@ -148,6 +148,12 @@ The account's tests against a real server skip unless `RUKOO_ACCOUNT_TEST_SERVER
 
 ```sh
 RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:8790 RUKOO_ACCOUNT_TEST_NODE=$(which node) ./gradlew testDebugUnitTest --tests 'nl.bvdm.rukoo.account.*'
+```
+
+`app/src/androidTest` holds tests that need Android's own TLS: the account client counts each answer's bytes on the plain socket underneath TLS, and only a device shows that Android's TLS reads through that socket. CI doesn't run them. Run them on an emulator of your own after changing how the account client connects; `ANDROID_SERIAL` picks the emulator when more than one runs, and leaving the APKs installed keeps the debug app's data:
+
+```sh
+ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
 ```
 
 On an emulator, `adb shell wm size 1080x2520` gives the cover screen's size and `adb shell wm size 1968x2184` with density 420 the inner screen's.

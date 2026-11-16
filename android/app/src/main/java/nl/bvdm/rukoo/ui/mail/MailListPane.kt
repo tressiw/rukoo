@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.mail
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -51,12 +53,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.categories.CategoriesState
 import nl.bvdm.rukoo.categories.Category
 import nl.bvdm.rukoo.categories.CategoryLookup
 import nl.bvdm.rukoo.mail.model.FolderRole
+import nl.bvdm.rukoo.mail.model.MailCounts
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.mail.model.SortOrder
@@ -88,6 +92,7 @@ import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.Pane
 import nl.bvdm.rukoo.ui.settings.categoryColor
 import nl.bvdm.rukoo.ui.theme.Rk
+import nl.bvdm.rukoo.ui.theme.RukooEasing
 import nl.bvdm.rukoo.ui.theme.rkShadow
 import nl.bvdm.rukoo.ui.theme.semibold
 
@@ -140,7 +145,8 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val tab = nav.category?.takeIf { id -> tabsOn && id in byId }
     // The list in the category on screen; the quick filters and their counts work on it.
     val inTab = remember(all, tab, lookup, tabsOn) { ListModel.categoryRows(all, lookup, tab, inbox = tabsOn) }
-    val messages = remember(inTab, filter) { ListModel.applyFilter(inTab, filter) }
+    // Unread keeps the email opened while unread (nav.keptId) until another opens; then its row leaves (rowMotion).
+    val messages = remember(inTab, filter, nav.keptId) { ListModel.applyFilter(inTab, filter, nav.keptId) }
     val byDate = settings.sort == SortOrder.DATE_DESC || settings.sort == SortOrder.DATE_ASC
     val now = remember(all) { System.currentTimeMillis() }
     val rows = remember(messages, byDate, searching, nav.openStacks, nav.openMessageId, nav.checked, dates, now) {
@@ -154,6 +160,17 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val showFolder = (searching && nav.searchAll) || nav.view.kind == ViewKind.STARRED
     val checked = nav.checked.toSet()
     val selecting = checked.isNotEmpty()
+
+    // The unread inbox mail older than the messages the list holds, which the drawer's Inbox count adds: Inbox itself
+    // names it in its header and explains it under its last row, where a phone has no tooltip (app.js listTitle).
+    // A category or a search doesn't.
+    val olderShown = nav.view.kind == ViewKind.INBOX && tab == null && !nav.searching
+    val countsFlow = remember(mail, nav.view.accountId, olderShown) {
+        if (olderShown) runCatching { mail.counts(nav.view.accountId) }.getOrElse { flowOf(MailCounts()) } else flowOf(MailCounts())
+    }
+    val counts by countsFlow.collectAsStateWithLifecycle(MailCounts())
+    val older = if (olderShown) counts.olderUnread else 0
+    val olderHint = if (older > 0) pluralStringResource(R.plurals.mailbox_list_older_unread_hint, older, counts.inboxLimit, older) else null
 
     // One scroll position per list: leaving a folder keeps its place for when it comes back.
     val listKey = "${listView.kind}|${listView.accountId}|${listView.folder}|$searching"
@@ -177,7 +194,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             when {
                 selecting -> SelectionBar(app, messages.filter { it.id in checked }, messages)
                 nav.searching -> SearchBar(app, nav.query, nav.view, folders)
-                else -> ListHeader(app, nav.view, inTab, accounts.map { it.id to it.email }, folders, category = tab?.let(byId::get))
+                else -> ListHeader(app, nav.view, inTab, accounts.map { it.id to it.email }, folders, category = tab?.let(byId::get), older = older)
             }
             if (!selecting) {
                 if (nav.searching) {
@@ -259,6 +276,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                         swipeRight = settings.swipeRight.takeIf { settings.swipeActions && it != SwipeAction.NONE },
                         swipeLeft = settings.swipeLeft.takeIf { settings.swipeActions && it != SwipeAction.NONE },
                         categoryOf = { m -> ListModel.rowCategory(m, lookup, tab, byId) },
+                        footer = olderHint,
                     )
                 }
             }
@@ -295,6 +313,8 @@ private fun MessageList(
     swipeLeft: SwipeAction?,
     /** The category label a row shows, if any (ListModel.rowCategory). */
     categoryOf: (MessageSummary) -> Category?,
+    /** A note under the last row, such as why older unread mail isn't listed. */
+    footer: String? = null,
 ) {
     val c = Rk.colors
     val ui = app.mailUi
@@ -302,6 +322,7 @@ private fun MessageList(
     val noRecipient = stringResource(R.string.mailbox_message_no_recipient)
     val unknown = stringResource(R.string.mailbox_message_unknown_sender)
     val folderNames = folders.mapValues { (_, list) -> list.associate { it.path to folderName(it) } }
+    val reduced = Rk.motion.reduced
     LazyColumn(
         state = state,
         modifier = Modifier.fillMaxSize(),
@@ -317,7 +338,7 @@ private fun MessageList(
                     if (names.isEmpty()) noRecipient else sentTo.replace("%s", names.joinToString(", ")),
                     if (d.savedAt > 0) dates.listTime(d.savedAt, now) else "",
                     onOpen = { app.openLocalDraft(d.id) },
-                    modifier = Modifier.animateItem(),
+                    modifier = rowMotion(reduced),
                 )
             }
         }
@@ -352,13 +373,37 @@ private fun MessageList(
                         ),
                         stack = row.stack,
                         stacked = row.stacked,
-                        modifier = Modifier.animateItem(),
+                        modifier = rowMotion(reduced),
                     )
                 }
             }
         }
+        if (footer != null) {
+            item(key = "footer") {
+                Text(
+                    footer,
+                    style = Rk.type.text12,
+                    color = c.text3,
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
+                )
+            }
+        }
     }
 }
+
+/**
+ * How a row comes, moves and goes. One that leaves, such as the email the Unread filter kept once another opens, fades
+ * out where it is while the rows below close the gap (app.js letGo):
+ *     0ms  the row fades out
+ *   110ms  it is gone; the rows below go on moving up into its place
+ * With the system's animations removed, rows don't animate.
+ */
+private fun LazyItemScope.rowMotion(reduced: Boolean): Modifier =
+    if (reduced) Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
+    else Modifier.animateItem(fadeOutSpec = tween(LEAVE_FADE_MS, easing = RukooEasing.Out))
+
+// How long a leaving row takes to fade (app.js letGo's first step).
+private const val LEAVE_FADE_MS = 110
 
 /**
  * What a swipe with [action] does to [m], or null where it can't: a saved or draft email only goes away, and only
@@ -405,17 +450,31 @@ private fun GroupHead(label: String) {
 /**
  * "N unread · account" when the view counts unread mail, else the account or "All accounts" (app.js listTitle). A
  * category under Inbox titles the list with its name and wears its color, so it can't be taken for Inbox itself; the
- * line below names the account or "All accounts" too.
+ * line below names the account or "All accounts" too. Inbox names its [older] unread mail apart, the mail older than
+ * the messages the list holds, where the list's own unread mail is counted.
  */
 @Composable
-private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>, category: Category? = null) {
+private fun ListHeader(
+    app: AppViewModel,
+    view: MailView,
+    list: List<MessageSummary>,
+    accounts: List<Pair<String, String>>,
+    folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>,
+    category: Category? = null,
+    older: Int = 0,
+) {
     val c = Rk.colors
     val where = view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
         ?: accounts.singleOrNull()?.second
         ?: stringResource(R.string.mailbox_search_all_accounts)
     val counts = view.kind in setOf(ViewKind.INBOX, ViewKind.FOLDER, ViewKind.VIP, ViewKind.JUNK, ViewKind.ARCHIVE, ViewKind.UNREAD)
     val unread = if (counts) list.count { it.unread } else 0
-    val sub = if (unread > 0) stringResource(R.string.mailbox_list_unread_summary, unread, where) else where
+    val sub = when {
+        older > 0 && unread > 0 -> stringResource(R.string.mailbox_list_unread_summary_older, unread, older, where)
+        older > 0 -> stringResource(R.string.mailbox_list_older_unread_summary, older, where)
+        unread > 0 -> stringResource(R.string.mailbox_list_unread_summary, unread, where)
+        else -> where
+    }
     var menu by remember { mutableStateOf(false) }
     var sort by remember { mutableStateOf(false) }
     val settings by app.services.settingsSnapshot.collectAsStateWithLifecycle()

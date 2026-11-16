@@ -55,16 +55,30 @@ pub fn highest_seq_on_disk(dir: &Path, track: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Writes `recorder.json` through a temporary file and a rename, so a reader never sees half.
-pub fn write_recorder_file(dir: &Path, file: &RecorderFile) -> io::Result<()> {
+/// `recorder.json` written and synced under a temporary name, waiting for the rename that puts
+/// it in place, so a reader never sees half. The recorder does the slow part before its session
+/// starts and renames the file after its `session` line.
+pub struct PreparedRecorderFile {
+    tmp: PathBuf,
+    path: PathBuf,
+}
+
+pub fn prepare_recorder_file(dir: &Path, file: &RecorderFile) -> io::Result<PreparedRecorderFile> {
     let tmp = dir.join("recorder.json.tmp");
     let bytes = serde_json::to_vec(file)?;
-    {
-        let out = fs::File::create(&tmp)?;
-        io::Write::write_all(&mut &out, &bytes)?;
-        out.sync_data()?;
+    let out = fs::File::create(&tmp)?;
+    io::Write::write_all(&mut &out, &bytes)?;
+    crate::disk::sync(&out)?;
+    Ok(PreparedRecorderFile {
+        tmp,
+        path: dir.join(RECORDER_FILE),
+    })
+}
+
+impl PreparedRecorderFile {
+    pub fn publish(self) -> io::Result<()> {
+        fs::rename(&self.tmp, &self.path)
     }
-    fs::rename(&tmp, dir.join(RECORDER_FILE))
 }
 
 pub fn read_recorder_file(dir: &Path) -> Option<RecorderFile> {

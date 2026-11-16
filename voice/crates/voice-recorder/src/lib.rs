@@ -9,10 +9,12 @@ pub mod control;
 #[cfg(target_os = "macos")]
 mod coreaudio;
 pub mod devices;
+pub mod disk;
 pub mod meeting;
 pub mod record;
 pub mod silence;
 pub mod source;
+mod syncer;
 pub mod timeline;
 mod token;
 
@@ -120,6 +122,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
     let mut limit_ms = DEFAULT_LIMIT_MS;
     let mut segment_ms = DEFAULT_SEGMENT_MS;
     let mut silence_ms = silence::DEFAULT_THRESHOLD_MS;
+    let mut sync_delay_ms = 0;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -169,6 +172,12 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                     .filter(|&ms| ms >= 100)
                     .ok_or_else(|| ExitError::usage("--silence-ms needs at least 100 ms"))?;
             }
+            // For tests: every sync to disk waits this long first, as on a busy disk.
+            "--test-sync-delay-ms" => {
+                sync_delay_ms = value()?
+                    .parse()
+                    .map_err(|_| ExitError::usage("--test-sync-delay-ms needs milliseconds"))?;
+            }
             _ => {
                 return Err(ExitError::usage(format!(
                     "unknown argument {arg:?}\n{USAGE}"
@@ -192,6 +201,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
         limit_ms,
         segment_ms,
         silence_ms,
+        sync_delay_ms,
     })
 }
 
@@ -245,11 +255,16 @@ mod tests {
             "--resume",
             "--limit-ms",
             "1500",
+            "--test-sync-delay-ms",
+            "700",
         ]))
         .unwrap();
         assert_eq!(opts.meeting, PathBuf::from("m"));
         assert!(opts.resume);
         assert_eq!(opts.limit_ms, 1500);
+        assert_eq!(opts.sync_delay_ms, 700);
+        let plain = parse_record(&args(&["--meeting", "m", "--track", "mic=synthetic:idle"]));
+        assert_eq!(plain.unwrap().sync_delay_ms, 0);
         let names: Vec<_> = opts.tracks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["mic", "call"]);
     }
@@ -271,6 +286,14 @@ mod tests {
             ],
             vec!["--meeting", "m", "--track"],
             vec!["--meeting", "m", "--bogus"],
+            vec![
+                "--meeting",
+                "m",
+                "--track",
+                "mic=synthetic:idle",
+                "--test-sync-delay-ms",
+                "slow",
+            ],
         ] {
             let err = parse_record(&args(&bad)).unwrap_err();
             assert_eq!(err.code, exit::USAGE, "{bad:?}");

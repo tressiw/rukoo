@@ -137,12 +137,14 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   let edit = null;
   let hours = null;
   // What was drawn last: the settings page element, which screen of the booking page (for screen()), and what the
-  // page and the overview's row showed of the state, so a 'booking' event that changes nothing shown draws nothing.
+  // page, the overview's row and the footer rows showed of the state, so a 'booking' event that changes nothing shown
+  // draws nothing.
   let host = null;
   let clock = null;
   let screen = null;
   let drawnPage = null;
   let drawnRow = null;
+  let drawnFooter = null;
 
   const signedIn = () => Boolean(state && state.signedIn);
   const isOn = () => Boolean(state && state.status === 'on');
@@ -208,7 +210,8 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const now = Date.now();
     return JSON.stringify({ ...rest, bookings: (bookings || []).filter((b) => b.end > now && b.status === 'confirmed'), unchecked: publishing && publishing.unchecked });
   };
-  // What the overview shows: the row's status and link, and the footer's language.
+  // What the overview shows: the row's status and link, and the footer's language. The footer rows show the same:
+  // the link while the page is on, in the page's language.
   const rowShown = (s) => JSON.stringify(s ? [s.status, s.url, s.settings && s.settings.locale] : null);
 
   function showPublish() {
@@ -221,9 +224,12 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const was = state && state.status;
     state = next;
     const view = current();
-    // The setup screen and the editors keep what is typed; the page and the overview follow what they show.
+    // The setup screen and the editors keep what is typed; the page, the overview and the pages with the footer rows
+    // (Signatures and an account's page) follow what they show.
     if (view === 'main') {
       if (rowShown(next) !== drawnRow) rerender();
+    } else if (view === 'signatures' || view === 'account') {
+      if (rowShown(next) !== drawnFooter) rerender();
     } else if (view === 'booking') {
       if (isOn() && drawnPage !== null && pageShown(next) === drawnPage) showPublish();
       else if (isOn() || was !== next.status) rerender();
@@ -244,6 +250,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
 
   // Beside the general signature: the switch, the preview while the page is on, and the text.
   function footerRow(s) {
+    drawnFooter = rowShown(state);
     const live = safeBookingUrl(footerData().bookingUrl);
     const preview = live && s.bookingFooter ? bookingFooterHtml(null, { ...footerData(), settings: s }) : '';
     let out = row({
@@ -259,6 +266,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
 
   // Beside an account's signature: following the general setting, or on or off for this account.
   function accountFooterRow(a, s) {
+    drawnFooter = rowShown(state);
     const own = typeof a.bookingFooter === 'boolean';
     const general = s.bookingFooter ? t('settings.footer.on') : t('settings.footer.off');
     const value = own ? (a.bookingFooter ? (a.bookingFooterText ? t('settings.footer.onOwnText') : t('settings.footer.on')) : t('settings.footer.off')) : t('settings.footer.accountGeneral', { state: general });

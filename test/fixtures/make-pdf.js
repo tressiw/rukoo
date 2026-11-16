@@ -131,6 +131,12 @@ function hostilePdfs() {
     nestedObjects: Buffer.from(`%PDF-1.5\n${'1 0 obj ['.repeat(100000)}`, 'latin1'),
     openTrailers: Buffer.from(`%PDF-1.5\n${'trailer ['.repeat(100000)}`, 'latin1'),
     openHex: Buffer.from(`%PDF-1.5\n${'1 0 obj < endobj\n'.repeat(200000)}`, 'latin1'),
+    // A string or comment that endobj cuts runs on to its own end: strings that never close, strings that each
+    // close only at the end of the file, and comments with no line break after them, in every object. Each run on
+    // looked through the rest of the file.
+    openStrings: Buffer.from(`%PDF-1.5\n${'1 0 obj ( endobj\n'.repeat(200000)}`, 'latin1'),
+    farStrings: Buffer.from(`%PDF-1.5\n${'1 0 obj(endobj\n'.repeat(200000)}${')'.repeat(200000)}`, 'latin1'),
+    openComments: Buffer.from(`%PDF-1.5\n${'1 0 obj<</A % endobj '.repeat(200000)}`, 'latin1'),
     sameOffsets: Buffer.from(`%PDF-1.5\n${sameOffsets}trailer<</Root 10 0 R>>\n`, 'latin1'),
     // A second review: an object stream whose First is past the safe integers, which the lexer took as its end and
     // read characters past the string for, and one that claims six hundred thousand objects in 1.6 MB.
@@ -197,6 +203,18 @@ function refChain(n) {
   return onePage(`${START}BT /F2 12 Tf 72 700 Td (lost) Tj ET`, { fonts: '/F1 5 0 R/F2 20 0 R', objects });
 }
 
+// n objects whose title never closes, near the start of a file that white space at the end of the page makes
+// long, so each one looks through almost all of it.
+const openStrings = (n) => plainPage(`${START}${' '.repeat(10000)}`, { before: '11 0 obj<</Title( endobj\n'.repeat(n) });
+
+// The same n titles, then font 5 again with "t" as "x" and two strings that endobj cuts: the first runs on to its
+// end, the second only 20000 bytes on, with what the n titles left. Short of that, the font is read without them.
+const spentStrings = (n) =>
+  plainPage(START, {
+    before: '11 0 obj<</Title( endobj\n'.repeat(n),
+    after: `5 0 obj<</Title(endobj x)/Subject(endobj ${' '.repeat(20000)})/Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding<</Differences[116/x]>>>>endobj\n`
+  });
+
 const cmapPdf = (body) => makePdf([['Hi']], { type0: true, cmap: cmapOf(body) });
 
 // A saved state holds the font. After `saves` saves in F1, F2 is set and saved once more, then F1 again, and the
@@ -228,7 +246,12 @@ function silentCaps() {
       cmapWideRange: { pdf: cmapPdf('1 beginbfrange <00000000> <0001FFFF> <0041> endbfrange 1 beginbfchar <0001> <0048> endbfchar'), read: 'H' },
       cmapRanges: { pdf: cmapPdf(`${Array.from({ length: 33 }, (_, i) => `1 begincodespacerange <${(i + 2).toString(16).padStart(4, '0')}00> <${(i + 2).toString(16).padStart(4, '0')}FF> endcodespacerange`).join('\n')}\n1 beginbfchar <0001> <0048> endbfchar`), read: 'H' },
       cmapLongText: { pdf: cmapPdf(`1 beginbfchar <0001> <${'0048'.repeat(300)}> endbfchar`), read: 'HHHH' },
-      savedStates: { pdf: savedFont(64), read: 'start' }
+      savedStates: { pdf: savedFont(64), read: 'start' },
+      // Strings that never close, each looking through the rest of the file for its end: once they have looked
+      // through it four times, the strings after them stay cut.
+      openStrings: { pdf: openStrings(5), read: 'start' },
+      // A string that ran on to its end doesn't undo a later one in the same object that room left cut.
+      spentStrings: { pdf: spentStrings(4), read: 'start' }
     },
     // Right at the limits: read in full.
     within: {
@@ -236,7 +259,9 @@ function silentCaps() {
       tjItems: { pdf: onePage(`BT /F1 12 Tf 72 720 Td [(start) ${'1 '.repeat(99998)}(last)] TJ ET`), read: 'last' },
       refChain: { pdf: refChain(6), read: 'lost' },
       deepTree: { pdf: deepTree(60), read: 'deep' },
-      savedStates: { pdf: savedFont(63), read: 'H' }
+      savedStates: { pdf: savedFont(63), read: 'H' },
+      openStrings: { pdf: openStrings(4), read: 'start' },
+      spentStrings: { pdf: spentStrings(3), read: 'sxarx' }
     }
   };
 }

@@ -15,8 +15,11 @@ data class FolderRecord(
     val role: FolderRole = FolderRole.NONE,
 )
 
-/** The newest window of a folder: its UIDVALIDITY, EXISTS and messages in sequence order. */
-data class FolderSync(val uidValidity: String, val exists: Int, val messages: List<CachedMessage>)
+/**
+ * The newest window of a folder: its UIDVALIDITY, EXISTS and messages in sequence order. [olderUnseen]: how many
+ * messages older than the window are unread, when the sync was asked for it and the server said; else null.
+ */
+data class FolderSync(val uidValidity: String, val exists: Int, val messages: List<CachedMessage>, val olderUnseen: Int? = null)
 
 /** Where moved messages landed (old uid → new uid), as far as the server says (UIDPLUS); empty and null without it. */
 data class MoveOutcome(val uids: Map<Long, Long>, val uidValidity: String?)
@@ -40,7 +43,8 @@ interface MailSession {
      * The newest [limit] messages of [path] by sequence number. Messages in [known] (cached under the
      * same [uidValidity]) only get their flags refreshed; the rest are fetched in full. [signals]: also what kind of
      * mail each message is (MailSignals), for new ones and cached ones without; [gmailTabs]: also the Gmail tab each
-     * message is in. Both are for the inbox and its categories.
+     * message is in. Both are for the inbox and its categories. [olderUnseen]: also how many messages older than the
+     * window are unread, which the inbox's unread count adds to the window's own (FolderSync.olderUnseen).
      */
     suspend fun syncFolder(
         path: String,
@@ -50,6 +54,7 @@ interface MailSession {
         background: Boolean = false,
         signals: Boolean = false,
         gmailTabs: Boolean = false,
+        olderUnseen: Boolean = false,
     ): FolderSync
 
     /** The raw source of a message. Doesn't mark it read. */

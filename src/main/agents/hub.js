@@ -2943,8 +2943,9 @@ class AgentHub extends EventEmitter {
     return true;
   }
 
-  // The command that adds Rukoo's MCP server to OpenClaw. For a gateway on this computer: 127.0.0.1 and the port the
-  // local listener really has. With a remote gateway allowed: Rukoo's Tailscale address (or the host name in
+  // The two steps that add Rukoo's MCP server to OpenClaw: a token line for the gateway's .env file and the command
+  // (AgentConfig.openclawSetup). For a gateway on this computer: 127.0.0.1 and the port the local listener really
+  // has. With a remote gateway allowed: Rukoo's Tailscale address (or the host name in
   // remoteHost) and the port the Tailscale listener really has. Returns {remote, url}, so Settings can say which one
   // went on the clipboard; never the token.
   //

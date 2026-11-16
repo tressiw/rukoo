@@ -13,6 +13,12 @@ let win;
 let dataDir;
 let running;
 
+// On a Mac the close button always hides the main window, closing the last window never quits, the two settings
+// are about the menu bar and session-end (a Windows event) never comes. macos.spec.js covers the Mac behavior, so
+// the cases below that check the Windows and Linux behavior skip there.
+const MAC = process.platform === 'darwin';
+const NOT_ON_MAC = 'Windows and Linux behavior; macos.spec.js covers the Mac';
+
 async function launch() {
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -289,6 +295,7 @@ test('the tray menu opens Rukoo, starts a new message, syncs and follows the lan
 });
 
 test('with minimize to the tray on, minimizing hides the window and the tray brings it back where it was', async () => {
+  test.skip(MAC, NOT_ON_MAC);
   await win.click('[data-action="settings"]');
   const row = win.locator('.settings [data-a="toggle:minimizeToTray"]');
   await expect(row).toContainText('Minimize to the tray');
@@ -547,6 +554,7 @@ test('the end of the Windows session cleans up while only a compose window asks'
 });
 
 test('with both settings off there is no tray icon, and closing the window quits as before', async () => {
+  test.skip(MAC, NOT_ON_MAC);
   await win.click('[data-action="settings"]');
   const row = win.locator('.settings [data-a="toggle:closeToTray"]');
   await expect(row).toContainText('Close to the tray');
@@ -566,6 +574,7 @@ test('with both settings off there is no tray icon, and closing the window quits
 });
 
 test('only minimize to the tray: closing quits, minimizing hides', async () => {
+  test.skip(MAC, NOT_ON_MAC);
   await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: false, minimizeToTray: true }));
   expect(await tray()).not.toBeNull();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
@@ -578,6 +587,7 @@ test('only minimize to the tray: closing quits, minimizing hides', async () => {
 });
 
 test('starting Rukoo again shows the hidden window, and the end of the Windows session lets it close', async () => {
+  test.skip(MAC, NOT_ON_MAC);
   await closeMain();
   await expect.poll(visible).toBe(false);
   // What a second start sends to the running app (tests run without the single-instance lock).
@@ -595,6 +605,7 @@ test('starting Rukoo again shows the hidden window, and the end of the Windows s
 });
 
 test('a quit after the end of the Windows session still waits for the agents to close', async () => {
+  test.skip(MAC, NOT_ON_MAC);
   await watchQuit();
   // Closing the agents takes a while, as a stop request to Hermes or the kill of a process tree can.
   await app.evaluate((_electron, file) => {

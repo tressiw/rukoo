@@ -32,6 +32,8 @@ android {
         // The Rukoo account server the app uses until someone picks another in Settings (docs/account.md). A fork
         // points its builds at its own server here.
         buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo.io\"")
+        // For the tests that need the phone's own TLS (src/androidTest): ./gradlew connectedDebugAndroidTest.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -155,4 +157,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.okhttp.tls)
 }

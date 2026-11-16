@@ -511,19 +511,34 @@ pub fn assert_timeline_continuous(m: &TempMeeting) {
             show(&lines)
         );
     }
-    let mut end: Option<u64> = None;
-    for line in &lines {
-        match line["kind"].as_str() {
-            Some("segment") => {
-                if let Some(end) = end {
-                    let gap = t(line).abs_diff(end);
-                    assert!(gap <= 30, "a {gap} ms gap in the audio:\n{}", show(&lines));
-                }
-            }
-            Some("segment_end") => end = Some(t(line)),
+    // By `t`, track by track: the recorder writes a `segment_end` once its segment is on disk,
+    // which can be after the track's next `segment` line or a pause.
+    let pauses: Vec<u64> = of_kind(&lines, "pause").iter().map(|l| t(l)).collect();
+    let mut tracks: Vec<&str> = of_kind(&lines, "segment")
+        .iter()
+        .filter_map(|l| l["track"].as_str())
+        .collect();
+    tracks.sort_unstable();
+    tracks.dedup();
+    for track in tracks {
+        let segments: Vec<&Value> = of_kind(&lines, "segment")
+            .into_iter()
+            .filter(|l| l["track"] == track)
+            .collect();
+        for pair in segments.windows(2) {
+            let Some(end) = of_kind(&lines, "segment_end")
+                .into_iter()
+                .find(|l| l["track"] == track && l["seq"] == pair[0]["seq"])
+                .map(t)
+            else {
+                continue;
+            };
             // A pause leaves a gap on purpose.
-            Some("pause") => end = None,
-            _ => {}
+            if pauses.iter().any(|&p| p + 30 >= end && p <= t(pair[1])) {
+                continue;
+            }
+            let gap = t(pair[1]).abs_diff(end);
+            assert!(gap <= 30, "a {gap} ms gap in the audio:\n{}", show(&lines));
         }
     }
     assert!(

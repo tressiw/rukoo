@@ -5,7 +5,9 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class McpAuthTest {
@@ -73,12 +75,19 @@ class McpAuthTest {
     }
 
     @Test
-    fun buildsTheOpenClawCommand() {
-        val command = McpSetup.openClaw("http://100.64.0.3:47800/mcp", "gw-token")
+    fun buildsTheOpenClawSetup() {
+        val setup = McpSetup.openClaw("http://100.64.0.3:47800/mcp", "gw-token")!!
+        val lines = setup.lines()
+        // Step 1 is the only line with the token, for the gateway's .env file; the command names the variable.
+        assertEquals("RUKOO_MCP_TOKEN=uE_hQuFxFtxWG4T8oU5PsTUz3Q6GPB03jYtDiXrdiSw", lines[1])
+        assertEquals(listOf(lines[1]), lines.filter { "uE_hQuFxFtxWG4T8oU5PsTUz3Q6GPB03jYtDiXrdiSw" in it })
         assertEquals(
-            "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer uE_hQuFxFtxWG4T8oU5PsTUz3Q6GPB03jYtDiXrdiSw\"}}'\n",
-            command,
+            "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer \${RUKOO_MCP_TOKEN}\"}}'",
+            lines[3],
         )
+        assertTrue(lines[0].startsWith("# Step 1") && lines[2].startsWith("# Step 2"))
+        // The labels hold nothing a shell would act on when the whole text is pasted into one.
+        for (label in listOf(lines[0], lines[2])) assertFalse(label, label.any { it in "'\"`()[]{};&|<>*?!\\" })
         assertNull(McpSetup.openClaw("http://100.64.0.3:47800/mcp", ""))
     }
 }

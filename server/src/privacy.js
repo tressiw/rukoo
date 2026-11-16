@@ -5,7 +5,7 @@
 import { escape, link } from './page.js';
 
 // When the text below last changed in a way that matters to the people it describes.
-export const UPDATED = '2026-10-27';
+export const UPDATED = '2026-11-11';
 const PROTOCOL_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/server/PROTOCOL.md';
 
 const TEXT = {
@@ -28,7 +28,7 @@ const TEXT = {
       'Your encrypted data key, wrapped by your password and by your recovery key. We can’t open it.',
       'The names and platforms of your devices, when each one signed in and when it last connected.',
       'How many records you have, how large they are and when they change.',
-      'Failed sign-in attempts, to lock an account for 15 minutes after ten of them.',
+      'Failed sign-in attempts, to lock an account for 15 minutes after ten of them. Wrong passwords entered on a signed-in device count for that device alone.',
       'If you turn on a booking page: what it publishes and the bookings made on it, as Booking pages below describes.'
     ],
     ip: 'Your IP address reaches Cloudflare with every request. The server uses it to limit how often one address may try to sign in or write to a booking page, and doesn’t store it. For bookings it also counts how many came from one network that day (an IPv4 /24 or an IPv6 /64). It keeps those counts only as hashes made with a key that changes every day, and deletes them once the host’s day is over. Cloudflare may keep addresses in its own logs for a short time.',
@@ -86,7 +86,7 @@ const TEXT = {
       'Je versleutelde gegevenssleutel, ingepakt met je wachtwoord en met je herstelsleutel. Wij kunnen hem niet openen.',
       'De namen en platforms van je apparaten, wanneer elk ervan inlogde en wanneer het voor het laatst verbinding had.',
       'Hoeveel records je hebt, hoe groot ze zijn en wanneer ze veranderen.',
-      'Mislukte inlogpogingen, om een account na tien daarvan 15 minuten te blokkeren.',
+      'Mislukte inlogpogingen, om een account na tien daarvan 15 minuten te blokkeren. Verkeerde wachtwoorden op een ingelogd apparaat tellen alleen voor dat apparaat.',
       'Als je een afsprakenpagina aanzet: wat die publiceert en de afspraken die erop worden gemaakt, zoals hieronder bij Afsprakenpagina’s staat.'
     ],
     ip: 'Bij elk verzoek komt je IP-adres bij Cloudflare binnen. De server gebruikt het om te beperken hoe vaak één adres mag proberen in te loggen of iets naar een afsprakenpagina mag sturen, en slaat het niet op. Voor afspraken telt de server ook hoeveel er die dag van één netwerk kwamen (een IPv4-/24 of een IPv6-/64). Die tellingen bewaart hij alleen als hashes, gemaakt met een sleutel die elke dag wisselt, en hij verwijdert ze zodra de dag van de host voorbij is. Cloudflare kan adressen kort in zijn eigen logs bewaren.',

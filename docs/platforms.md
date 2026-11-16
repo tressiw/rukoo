@@ -23,23 +23,25 @@ The profile is `%APPDATA%\Rukoo Mail`. `data`, `logos`, `skills` and `google-oau
 
 ## macOS (experimental)
 
-Native CI runs the tests on Apple Silicon and Intel, but few people have used Rukoo on a real Mac yet, and builds are only notarized when the release notes say so. If you try it, please report your findings in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74): what works, what breaks, your Mac model and your macOS version.
+Few people have used Rukoo on a real Mac yet, and builds are only notarized when the release notes say so. Native CI runs the unit tests and the Mac-specific Electron tests (`test/e2e/macos.spec.js`) on Apple Silicon and Intel; the rest of the Electron suite runs on Windows and Linux only. If you try it, please report your findings in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74): what works, what breaks, your Mac model and your macOS version.
 
 The bundled Electron version needs macOS 13 or newer. Choose `arm64` for Apple Silicon or `x64` for Intel. Open the DMG, drag Rukoo Mail to Applications and launch it there; ZIP builds contain the same app bundle.
 
 Release builds are ad-hoc signed unless the release notes confirm Developer ID signing and notarization. Gatekeeper may block an ad-hoc signed download.
 
+Notifications need Rukoo Mail to be allowed under **System Settings → Notifications**. An ad-hoc signed build may not show them at all, and macOS doesn't tell Rukoo when it drops one. **Settings → General → Send a test notification** shows whether one reaches you. Rukoo never shows a desktop notification for new mail while its window is in front; the window shows the mail itself then (see [Notifications](mail.md#notifications-and-settings)). Sound for new mail, in the same place, plays whether or not notifications arrive.
+
 The red close button hides the main window while mail keeps syncing. Click Rukoo in the Dock to return to the same reader or draft. **Rukoo Mail → Quit Rukoo Mail** or **⌘Q** quits, asking about unsaved drafts. A separate compose window still asks about its unsaved draft when closed. Tray behavior is off by default; unread counts can appear on the Dock icon.
 
-Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. Mark as read is **⌘ShiftU**, mark as unread is **⌘U**, and **⌘Q** stays Quit. The native Edit menu supports copy, paste, undo and selection, and shortcuts in the interface show ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
+Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. The mouse wheel doesn't zoom on a Mac, with or without Command, because Chromium only zooms with Ctrl and the wheel on other systems. Mark as read is **⌘ShiftU**, mark as unread is **⌘U**, and **⌘Q** stays Quit. The native Edit menu supports copy, paste, undo and selection, and shortcuts in the interface show ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
 
 For email links, choose **Settings → General → Email links → Use Rukoo Mail** after installing the app. This works only for a copy in Applications or `~/Applications`. When Rukoo runs from the DMG or from Downloads, Settings asks you to move it there first, so email links never point at a copy that disappears later. macOS may ask for confirmation. If needed, choose Rukoo Mail as the default email reader in **Apple Mail → Settings → General**. Links delivered while Rukoo starts wait until its windows are ready.
 
 macOS 15 and later may ask whether Rukoo Mail can find devices on your local network, sometimes right after launch. Rukoo doesn't need that access with default settings, so denying it is safe. It may matter for a mail or calendar server on your own network, and for remote agent access, which connects Rukoo with an agent or a paired phone on another device over Tailscale. If one of those stops working after you denied it, turn Rukoo Mail on under **System Settings → Privacy & Security → Local Network**.
 
-The profile is `~/Library/Application Support/Rukoo Mail`; `data`, `logos`, `skills` and `google-oauth.json` live under that directory. Credentials use Keychain; unlock the login keychain if Rukoo can't save them. Agents started from Finder also search `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`.
+The profile is `~/Library/Application Support/Rukoo Mail`; `data`, `logos`, `skills` and `google-oauth.json` live under that directory. Credentials use Keychain; unlock the login keychain if Rukoo can't save them. Agents started from Finder also search `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and the folders of the Node version managers Volta, fnm and nvm; see [agents](agents.md).
 
-To build both architectures on a Mac, run `npm run dist:mac`.
+To build both architectures on a Mac, run `npm run dist:mac`. It signs the app ad-hoc, as CI does, so it needs no Apple certificate. An unsigned app can't post notifications; [Build packages](development.md#build-packages) explains when a build ends up unsigned.
 
 ## Linux
 

@@ -302,13 +302,14 @@ class ImapSession(
         background: Boolean,
         signals: Boolean,
         gmailTabs: Boolean,
+        olderUnseen: Boolean,
     ): FolderSync {
         // New messages whose structure overflows the parser: they are fetched without it (see tooDeep).
         var bare = emptySet<Long>()
         while (true) {
             var fresh = emptyList<Long>()
             try {
-                return syncOnce(path, limit, known, uidValidity, background, signals, gmailTabs, bare) { fresh = it }
+                return syncOnce(path, limit, known, uidValidity, background, signals, gmailTabs, olderUnseen, bare) { fresh = it }
             } catch (e: MailException) {
                 if (e.code != TOO_DEEP) throw e
                 // One overflow loses the whole batch, and the next sync would ask for the same batch again.
@@ -349,6 +350,7 @@ class ImapSession(
         background: Boolean,
         signals: Boolean,
         gmailTabs: Boolean,
+        olderUnseen: Boolean,
         bare: Set<Long>,
         onFresh: (List<Long>) -> Unit,
     ): FolderSync =
@@ -358,7 +360,7 @@ class ImapSession(
                 // After a UIDVALIDITY change old UIDs point at different messages; reuse nothing.
                 val cache = if (uidValidity != null && uidValidity == validity) known else emptyMap()
                 val exists = folder.messageCount
-                if (exists <= 0) return@withFolder FolderSync(validity, 0, emptyList())
+                if (exists <= 0) return@withFolder FolderSync(validity, 0, emptyList(), if (olderUnseen) 0 else null)
                 val start = maxOf(1, exists - limit + 1)
                 folder.protocol { p ->
                     // The flags of every message in the window: all that can change about a message the cache has.
@@ -391,6 +393,8 @@ class ImapSession(
                     // Gmail doesn't show its tabs as folders, but its own search finds them (X-GM-RAW). Asked again on every
                     // sync, since a message can move to another tab. What none of them holds is in Primary.
                     val tabs = if (gmailTabs && rows.isNotEmpty() && p.hasCapability("X-GM-EXT-1")) gmailTabsOf(p, rows.minOf { it.second }) else null
+                    // A window that starts at the first message leaves nothing older.
+                    val older = if (!olderUnseen) null else if (start == 1) 0 else unseenBelow(p, rows.minOfOrNull { it.second })
                     fun CachedMessage.extra(prior: CachedMessage?): CachedMessage = copy(
                         signals = kinds[uid] ?: prior?.signals,
                         gmailTab = if (tabs != null) tabs[uid] ?: "primary" else prior?.gmailTab,
@@ -408,7 +412,7 @@ class ImapSession(
                             else -> null
                         }
                     }
-                    FolderSync(validity, exists, messages)
+                    FolderSync(validity, exists, messages, older)
                 }
             }
         }
@@ -436,6 +440,23 @@ class ImapSession(
         tabs
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * How many messages of the open folder are unread below uid [first], the oldest of the window a sync fetches; null
+     * when the server doesn't say (imap.js unseenBelow). Only below the window: the window's own unread mail is counted
+     * in the cache, where reading a message counts at once. With ESEARCH the server sends only the count; otherwise the
+     * uids it sends are counted.
+     */
+    private fun unseenBelow(p: IMAPProtocol, first: Long?): Int? {
+        if (first == null) return null
+        if (first <= 1) return 0
+        val below = "UID 1:${first - 1} UNSEEN"
+        return try {
+            searchCount(p.exec(if (p.hasCapability("ESEARCH")) "UID SEARCH RETURN (COUNT) $below" else "UID SEARCH $below"))
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** A few KB of the readable part of each new message, one fetch per part number (imap.js:281-306). */
@@ -637,6 +658,19 @@ class ImapSession(
                 }
             }
             return out
+        }
+
+        private val ESEARCH_COUNT = Regex("\\bCOUNT (\\d+)", RegexOption.IGNORE_CASE)
+
+        /**
+         * How many messages a search found: the COUNT of its ESEARCH answer (RFC 4731), 0 when that answer names none, or
+         * else the uids of its SEARCH lines.
+         */
+        fun searchCount(responses: Array<Response>): Int {
+            for (r in responses) {
+                if (r is IMAPResponse && r.keyEquals("ESEARCH")) return ESEARCH_COUNT.find(r.toString())?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            }
+            return searchUids(responses).size
         }
 
         private val SPECIAL_USE = setOf("\\inbox", "\\sent", "\\drafts", "\\trash", "\\junk", "\\archive", "\\all", "\\flagged", "\\important")

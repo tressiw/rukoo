@@ -52,6 +52,11 @@ data class NavState(
     val openStacks: List<String> = emptyList(),
     /** The inbox category tab on screen, or null for All. */
     val category: String? = null,
+    /**
+     * The email last opened while it was unread (desktop's keptId): the Unread filter keeps listing it, read now,
+     * until another email opens, also after Back on one pane. Always the open email or null.
+     */
+    val keptId: String? = null,
 ) {
     val top: Pane get() = stack.last()
 
@@ -87,6 +92,7 @@ data class NavState(
             checked = emptyList(),
             openMessageId = if (keep) openMessageId else null,
             chatLeft = if (keep) chatLeft else Pane.LIST,
+            keptId = null,
         ).push(Pane.LIST)
     }
 
@@ -112,11 +118,19 @@ data class NavState(
 
     fun toggleStack(key: String): NavState = copy(openStacks = if (key in openStacks) openStacks - key else openStacks + key)
 
+    /** Opens [id] in the reader. The email the Unread filter kept leaves it, unless it is [id] again. */
     fun openMessage(id: String): NavState =
-        copy(openMessageId = id, chatLeft = Pane.READER, lastInteracted = Pane.READER, chatListOpen = false).push(Pane.READER)
+        copy(openMessageId = id, keptId = keptId.takeIf { it == id }, chatLeft = Pane.READER, lastInteracted = Pane.READER, chatListOpen = false)
+            .push(Pane.READER)
+
+    /** The open email [id] was unread when it opened: the Unread filter keeps it once it is read ([keptId]). */
+    fun keep(id: String): NavState = if (openMessageId != id || keptId == id) this else copy(keptId = id)
 
     /** Clears the selection (the email was deleted or moved away). */
-    fun messageGone(id: String): NavState = if (openMessageId != id) this else copy(openMessageId = null, chatLeft = Pane.LIST).drop(Pane.READER)
+    fun messageGone(id: String): NavState {
+        val s = if (keptId == id) copy(keptId = null) else this
+        return if (s.openMessageId != id) s else s.copy(openMessageId = null, chatLeft = Pane.LIST).drop(Pane.READER)
+    }
 
     fun openChat(conversationId: String?, emailId: String?): NavState = copy(
         chatOpen = true,
@@ -124,6 +138,7 @@ data class NavState(
         chatEmailId = emailId,
         // A chat about an email sits next to that email.
         openMessageId = emailId ?: openMessageId,
+        keptId = keptId.takeIf { it == (emailId ?: openMessageId) },
         chatLeft = if (emailId != null) Pane.READER else Pane.LIST,
         chatListOpen = false,
         lastInteracted = Pane.CHAT,

@@ -107,6 +107,8 @@ async function handle(request, env) {
     }
     case 'POST /v1/password':
       return changePassword(request, env);
+    case 'POST /v1/password/check':
+      return checkPassword(request, env);
     case 'POST /v1/recovery':
       return replaceRecovery(request, env);
     case 'DELETE /v1/account':
@@ -234,6 +236,13 @@ async function changePassword(request, env) {
     wrappedKey: input.sealed(body.wrappedKey, 'wrappedKey')
   };
   return send(await stub.changePassword(token, fields));
+}
+
+// Only checks the password, on the session's own lock (PROTOCOL.md, POST /v1/password/check).
+async function checkPassword(request, env) {
+  const { stub, token } = session(request, env);
+  const body = await input.readJson(request);
+  return send(await stub.checkPassword(token, { authKey: input.key(body.authKey, 'authKey', 32) }));
 }
 
 async function replaceRecovery(request, env) {

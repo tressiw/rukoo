@@ -2518,6 +2518,12 @@
   .bui-stream__caret {
     animation: none;
   }
+  /* A file on its way keeps a still, readable name in the colour of text that waits, as a proposed task does. */
+  .bui-entity--attached.is-pending .bui-entity__name {
+    animation: none;
+    background-image: none;
+    color: var(--ink-2);
+  }
   .bui-stream__tail {
     filter: none;
     -webkit-mask-image: none;

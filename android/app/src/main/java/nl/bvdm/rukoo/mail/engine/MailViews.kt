@@ -137,16 +137,38 @@ object MailViews {
         return sort(if (query.isBlank()) all else all.filter { matches(it, query) }, order, locale)
     }
 
-    /** Unread mail in the inboxes of all accounts: the badge. */
-    fun unreadCount(s: MailSnapshot): Int = collect(s, null, predicate(MailView(ViewKind.UNREAD), s.prefs)).size
+    /**
+     * Unread inbox mail older than the newest messages the cache keeps (Limits.INBOX), as the server counted it at the
+     * last sync (engine.js olderUnread); [folderPath]: of that folder only. Mail from senders on the spam list is in it
+     * too: it can't be told apart without its headers. Reading a cached message counts at once; an older one counts
+     * from the next sync.
+     */
+    fun olderUnread(s: MailSnapshot, accountId: String?, folderPath: String? = null): Int {
+        var n = 0
+        for (acc in s.accounts) {
+            if (accountId != null && acc.id != accountId) continue
+            val cache = s.caches[acc.id] ?: continue
+            for (f in cache.folders) {
+                if (f.role != FolderRole.INBOX || (folderPath != null && f.path != folderPath)) continue
+                n += cache.boxes[f.path]?.olderUnseen ?: 0
+            }
+        }
+        return n
+    }
+
+    /** Unread mail in the inboxes of all accounts, older mail included: the badge. */
+    fun unreadCount(s: MailSnapshot): Int = collect(s, null, predicate(MailView(ViewKind.UNREAD), s.prefs)).size + olderUnread(s, null)
 
     fun counts(s: MailSnapshot, accountId: String?): MailCounts {
-        val perAccount = s.accounts.associate { it.id to collect(s, it.id, predicate(MailView(ViewKind.UNREAD), s.prefs)).size }
+        val perAccount = s.accounts.associate { it.id to collect(s, it.id, predicate(MailView(ViewKind.UNREAD), s.prefs)).size + olderUnread(s, it.id) }
         fun count(kind: ViewKind, onlyUnread: Boolean) =
             collect(s, accountId, predicate(MailView(kind, accountId), s.prefs)).count { !onlyUnread || it.unread }
+        // The list holds only the newest Limits.INBOX messages of each inbox, so its header names the older unread mail
+        // apart. Only Inbox and Unread add it: VIP picks its mail by sender, and other folders count their cache.
+        val older = olderUnread(s, accountId)
         val views = mapOf(
-            ViewKind.INBOX to count(ViewKind.INBOX, true),
-            ViewKind.UNREAD to count(ViewKind.UNREAD, true),
+            ViewKind.INBOX to count(ViewKind.INBOX, true) + older,
+            ViewKind.UNREAD to count(ViewKind.UNREAD, true) + older,
             ViewKind.VIP to count(ViewKind.VIP, true),
             ViewKind.STARRED to count(ViewKind.STARRED, false),
             ViewKind.DRAFTS to count(ViewKind.DRAFTS, false),
@@ -158,9 +180,9 @@ object MailViews {
         val folders = if (accountId == null) {
             emptyMap()
         } else {
-            s.caches[accountId]?.boxes.orEmpty().mapValues { (_, box) -> box.messages.count { it.unread } }
+            s.caches[accountId]?.boxes.orEmpty().mapValues { (path, box) -> box.messages.count { it.unread } + olderUnread(s, accountId, path) }
         }
-        return MailCounts(perAccount, perAccount.values.sum(), views, folders)
+        return MailCounts(perAccount, perAccount.values.sum(), views, folders, olderUnread = older, inboxLimit = Limits.INBOX)
     }
 
     /** Every address an account can send from: its own first, then its aliases (engine.js:329-335). */

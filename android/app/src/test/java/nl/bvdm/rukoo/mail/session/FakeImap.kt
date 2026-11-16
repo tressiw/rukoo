@@ -18,6 +18,10 @@ internal class FakeImap(messages: List<Msg>, var capabilities: String, val tabs:
 
     val messages = CopyOnWriteArrayList(messages)
     val commands = CopyOnWriteArrayList<String>()
+
+    /** Answers a search for unread mail with NO, as a server that turns it down. */
+    @Volatile
+    var refuseSearch = false
     private val server = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
     val port: Int get() = server.localPort
 
@@ -67,8 +71,10 @@ internal class FakeImap(messages: List<Msg>, var capabilities: String, val tabs:
                         "* OK [UIDNEXT ${messages.maxOf { it.uid } + 1}] ok\r\n$tag OK [${if (verb == "EXAMINE") "READ-ONLY" else "READ-WRITE"}] done\r\n",
                 )
                 verb == "FETCH" -> {
+                    // FETCH <start>:* answers for the messages from that sequence number on.
+                    val start = Regex("^FETCH (\\d+):").find(command)?.groupValues?.get(1)?.toInt() ?: 1
                     val sb = StringBuilder()
-                    messages.forEachIndexed { i, m -> sb.append("* ${i + 1} FETCH (UID ${m.uid} FLAGS (${m.flags}))\r\n") }
+                    messages.forEachIndexed { i, m -> if (i + 1 >= start) sb.append("* ${i + 1} FETCH (UID ${m.uid} FLAGS (${m.flags}))\r\n") }
                     send("$sb$tag OK done\r\n")
                 }
                 command.startsWith("UID FETCH") -> {
@@ -104,6 +110,16 @@ internal class FakeImap(messages: List<Msg>, var capabilities: String, val tabs:
                         }
                     }
                     send("$sb$tag OK done\r\n")
+                }
+                // Unread mail in a uid range, as a count with ESEARCH's RETURN (COUNT) or else as uids.
+                command.startsWith("UID SEARCH") && command.endsWith(" UNSEEN") -> {
+                    val range = Regex("UID (\\d+):(\\d+) UNSEEN").find(command)!!.groupValues
+                    val uids = messages.filter { it.uid in range[1].toLong()..range[2].toLong() && "\\Seen" !in it.flags }.map { it.uid }
+                    when {
+                        refuseSearch -> send("$tag NO search not allowed\r\n")
+                        command.contains("RETURN (COUNT)") -> send("* ESEARCH (TAG \"$tag\") UID COUNT ${uids.size}\r\n$tag OK done\r\n")
+                        else -> send("* SEARCH${uids.joinToString("") { " $it" }}\r\n$tag OK done\r\n")
+                    }
                 }
                 command.startsWith("UID SEARCH") -> {
                     val tab = Regex("category:(\\w+)").find(command)?.groupValues?.get(1)

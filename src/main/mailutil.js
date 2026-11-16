@@ -98,6 +98,111 @@ function hasAttachments(structure) {
   return found;
 }
 
+// ---------- a large email's text before its attachments (imap.js fetchReadable) ----------
+
+// How much of the pictures an email's text shows by Content-ID comes with the text. The rest shows once the whole
+// email is in.
+const INLINE_IMAGES = 2 * 1024 * 1024;
+// More parts than this go in one command only with the whole email.
+const MAX_PARTS = 100;
+// The header that gives the size of a part skeletonSource left empty.
+const OMITTED = 'X-Rukoo-Omitted';
+
+const nodeType = (node) => String(node.type || '').toLowerCase();
+
+// What mailparser shows as the email's text instead of listing it as an attachment: text and delivery reports that
+// aren't attachments, and an email forwarded inline, whose text it shows too (mailsplit's message/rfc822 rule).
+function readsAsText(node) {
+  const type = nodeType(node);
+  if (['text/plain', 'text/html', 'message/delivery-status'].includes(type)) return !node.disposition || node.disposition === 'inline';
+  if (type === 'message/rfc822') return node.disposition === 'inline' && ['', '7bit', '8bit', 'binary'].includes(String(node.encoding || '').toLowerCase());
+  return false;
+}
+
+// A calendar part, which the reader shows as an invitation card (calendar/invite.js calendarPart).
+function isCalendarNode(node) {
+  const name = String((node.dispositionParameters && node.dispositionParameters.filename) || (node.parameters && node.parameters.name) || '');
+  return /^(text\/calendar|application\/ics|text\/x-vcalendar)$/.test(nodeType(node)) || /\.ics$/i.test(name);
+}
+
+// The parts of an email to fetch so the reader can show it before its attachments are in: the MIME header of every
+// part, and the body of the parts that read as text, of calendar parts, and of the pictures the text shows by
+// Content-ID while they fit in INLINE_IMAGES. Keys as imapflow's bodyParts takes them. size: the whole email's.
+// null when splitting doesn't pay: an email of one part, one of very many parts, or one whose text is half of it or
+// more.
+function readableParts(structure, size) {
+  if (!structure || !nodeType(structure).startsWith('multipart/') || !Array.isArray(structure.childNodes)) return null;
+  const keys = [];
+  let wanted = 0;
+  let images = 0;
+  const visit = (node) => {
+    if (!node.part) throw new Error('A part without a number');
+    keys.push(`${node.part}.MIME`);
+    const type = nodeType(node);
+    if (type.startsWith('multipart/')) return (node.childNodes || []).forEach(visit);
+    const bytes = Number(node.size) || 0;
+    let take = readsAsText(node) || isCalendarNode(node);
+    if (!take && node.id && type.startsWith('image/') && images + bytes <= INLINE_IMAGES) {
+      images += bytes;
+      take = true;
+    }
+    if (take) {
+      keys.push(node.part);
+      wanted += bytes;
+    }
+  };
+  structure.childNodes.forEach(visit);
+  if (keys.length > MAX_PARTS || !size || wanted * 2 >= size) return null;
+  return keys;
+}
+
+// About how many bytes a part holds once decoded: a line of 76 base64 characters and its CRLF hold 57.
+function decodedSize(size, encoding) {
+  const n = Number(size) || 0;
+  return String(encoding || '').toLowerCase() === 'base64' ? Math.floor((n * 57) / 78) : n;
+}
+
+// A header without the empty line after it, its last line ending in CRLF.
+function headerLines(buf) {
+  let end = buf.length;
+  while (end && (buf[end - 1] === 0x0a || buf[end - 1] === 0x0d)) end--;
+  return Buffer.concat([buf.subarray(0, end), Buffer.from('\r\n')]);
+}
+
+// An email rebuilt from its header, its BODYSTRUCTURE and the parts readableParts names, as imapflow fetched them
+// (parts: a Map from lower-case key to Buffer). Each part keeps its own MIME header and the email's own boundaries; a
+// part that wasn't fetched is empty, with its decoded size in an X-Rukoo-Omitted header. mailparser reads it the way
+// it reads the whole email, so the attachments come in the same order and keep their index. Throws when a part's
+// header or a boundary is missing.
+function skeletonSource(header, structure, parts) {
+  const out = [headerLines(header), Buffer.from('\r\n')];
+  const add = (s) => out.push(Buffer.from(s));
+  const multipart = (node) => {
+    const boundary = node.parameters && node.parameters.boundary;
+    if (!boundary) throw new Error('A multipart part without a boundary');
+    for (const child of node.childNodes || []) {
+      const mime = parts.get(`${child.part}.mime`);
+      if (!mime) throw new Error(`No header for part ${child.part}`);
+      add(`--${boundary}\r\n`);
+      out.push(headerLines(mime));
+      const body = parts.get(String(child.part).toLowerCase());
+      if (nodeType(child).startsWith('multipart/')) {
+        add('\r\n');
+        multipart(child);
+      } else if (body) {
+        add('\r\n');
+        out.push(body);
+      } else {
+        add(`${OMITTED}: ${decodedSize(child.size, child.encoding)}\r\n\r\n`);
+      }
+      add('\r\n');
+    }
+    add(`--${boundary}--\r\n`);
+  };
+  multipart(structure);
+  return Buffer.concat(out);
+}
+
 function decodeTransfer(buffer, encoding) {
   const enc = String(encoding || '').toLowerCase();
   if (enc === 'base64') {
@@ -292,6 +397,11 @@ module.exports = {
   isAttachmentNode,
   findPreviewPart,
   hasAttachments,
+  INLINE_IMAGES,
+  OMITTED,
+  readableParts,
+  decodedSize,
+  skeletonSource,
   decodeTransfer,
   decodeCharset,
   htmlToPlain,

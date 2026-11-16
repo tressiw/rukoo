@@ -340,7 +340,10 @@ impl Client {
         self.reader
     }
 
+    /// Sets how long a reply may take. Replies are read through a clone of the socket, and on
+    /// Windows a clone has a read timeout of its own, so both handles get it.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)?;
         self.writer.set_read_timeout(timeout)
     }
 }
@@ -380,6 +383,18 @@ mod tests {
         let (command, rx) = parse(&json!({"cmd": "tap", "track": "mic"})).ok().unwrap();
         assert!(matches!(command, Command::Tap { track, .. } if track == "mic"));
         assert!(rx.is_some());
+    }
+
+    #[test]
+    fn the_read_timeout_reaches_the_handle_replies_are_read_from() {
+        let listener = bind().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = Client::connect(port, Duration::from_secs(2)).unwrap();
+        // A stop waits for the disk: the 2 s of `connect` must not stay on the reading handle.
+        let long = Some(Duration::from_secs(15));
+        client.set_read_timeout(long).unwrap();
+        assert_eq!(client.reader.get_ref().read_timeout().unwrap(), long);
+        assert_eq!(client.writer.read_timeout().unwrap(), long);
     }
 
     #[test]

@@ -64,6 +64,7 @@ async function expectSignature(editor) {
 
 test('a pasted signature is cleaned, previewed and saved; its HTML can be edited', async () => {
   await win.click('[data-action="settings"]');
+  await win.click('[data-a="signatures"]');
   await expect(win.locator('[data-a="signature"] .value')).toHaveText('None');
   await win.click('[data-a="signature"]');
   const editor = win.locator('.sig-editor');
@@ -112,9 +113,15 @@ test('an account signature can be formatted, and set back to the general one', a
   await setSignature('<i>General one</i>');
   await win.click('[data-action="settings"]');
   await win.click('.row:has-text("demo@example.com")');
-  const row = win.locator('[data-a="acc-signature"]');
+  const row = win.locator('[data-a^="acc-signature:"]');
   await expect(row.locator('.value')).toHaveText('Uses the general signature');
   await expect(row.locator('.sig-preview i')).toHaveText('General one');
+  // With sending: right after Send as and Sender addresses, with the booking link under it.
+  const actions = await win.locator('.page.settings .card').first().locator('.row').evaluateAll((rows) => rows.map((r) => r.dataset.a || ''));
+  const at = (prefix) => actions.findIndex((a) => a.startsWith(prefix));
+  expect(at('acc-aliases')).toBe(at('acc-from') + 1);
+  expect(at('acc-signature:')).toBe(at('acc-aliases') + 1);
+  expect(at('booking-acc-footer:')).toBe(at('acc-signature:') + 1);
   await row.click();
   await expect(win.locator('.sig-editor i')).toHaveText('General one');
   await win.click('.sig-toolbar [data-c="source"]');
@@ -317,14 +324,145 @@ test('a draft keeps the signature, and sent mail carries it with its image and t
   expect(raw).toMatch(/Demo Sender\r?\nCustomer success\r?\nexample\.com\/team/);
 });
 
+test('Settings > Signatures shows what every account sends and edits it there', async () => {
+  await setSignature('<i>General one</i>');
+  await addAccounts();
+  const demoId = await app.evaluate(() => global.__semEngine.accounts.find((a) => a.type === 'demo').id);
+  await app.evaluate(() => {
+    global.__semEngine.accounts.find((a) => a.id === 'w1').aliases = [
+      { address: 'sales@example.com', name: 'Werk' },
+      { address: 'info@example.com', name: 'Werk' }
+    ];
+  });
+  const accountOf = (id) => win.evaluate((x) => window.mail.call('state').then((s) => s.accounts.find((a) => a.id === x)), id);
+  const page = win.locator('.page.settings');
+  const save = () => win.click('.scrim .buttons button:text-is("Save")');
+
+  // One row under the accounts, reached by keyboard too; General no longer has the signature.
+  await win.click('[data-action="settings"]');
+  const open = page.locator('[data-a="signatures"]');
+  await expect(open.locator('.desc')).toHaveText('General and per account');
+  await expect(page.locator('[data-a="signature"], [data-a="booking-footer"]')).toHaveCount(0);
+  await open.focus();
+  await win.keyboard.press('Enter');
+  await expect(page.locator('h1')).toHaveText('Signatures');
+
+  const general = page.locator('[data-a="signature"]');
+  await expect(general.locator('.title')).toHaveText('General signature');
+  await expect(general.locator('.desc')).toHaveText('For accounts without a signature of their own');
+  await expect(general.locator('.sig-preview i')).toHaveText('General one');
+  await expect(page.locator('[data-a="booking-footer"]')).toBeVisible();
+
+  // Each account: its own signature, the general one, or none, with the aliases that send it too.
+  const acc = (id) => page.locator(`[data-a="acc-signature:${encodeURIComponent(id)}"]`);
+  await expect(page.locator('.sig-account .acc-email')).toHaveText(['demo@example.com', 'werk@example.com', 'prive@example.com']);
+  await expect(acc(demoId).locator('.default-badge')).toHaveText('Default');
+  await expect(acc(demoId).locator('.value')).toHaveText('Uses the general signature');
+  await expect(acc(demoId).locator('.sig-preview i')).toHaveText('General one');
+  await expect(acc(demoId).locator('.desc')).toHaveCount(0);
+  await expect(acc('w1').locator('.value')).toHaveText('Its own signature');
+  await expect(acc('w1').locator('.sig-preview b')).toHaveText('Werk signature');
+  await expect(acc('w1').locator('.desc')).toHaveText('Also under mail from sales@example.com and info@example.com');
+  await expect(acc('p1').locator('.value')).toHaveText('None');
+  await expect(acc('p1').locator('.sig-preview')).toHaveCount(0);
+
+  // Edited from the list with the same editor, which says whose signature it is; the page stays.
+  await acc('w1').click();
+  await expect(win.locator('.scrim h2')).toHaveText('Signature for werk@example.com');
+  await expect(win.locator('.sig-editor b')).toHaveText('Werk signature');
+  await win.click('.sig-toolbar [data-c="source"]');
+  await win.locator('.sig-source').fill('<b>Werk</b> <a href="https://example.com/werk">example.com/werk</a>');
+  await save();
+  await expect(acc('w1').locator('.sig-preview a')).toHaveText('example.com/werk');
+  await expect(page.locator('h1')).toHaveText('Signatures');
+  expect((await accountOf('w1')).signatureHtml).toBe('<b>Werk</b> <a href="https://example.com/werk">example.com/werk</a>');
+
+  // Its size limit too: a signature that is too large is refused and the account keeps what it had.
+  await acc('w1').click();
+  await win.click('.sig-toolbar [data-c="source"]');
+  await win.locator('.sig-source').fill(`<img src="data:image/png;base64,${'A'.repeat(1100 * 1024)}">`);
+  await save();
+  await expect(win.locator('.toast')).toHaveText('This signature is too large. Use smaller images, or images from the web.');
+  await expect(acc('w1').locator('.sig-preview a')).toHaveText('example.com/werk');
+  expect((await accountOf('w1')).signatureHtml).toContain('example.com/werk');
+
+  // Back to the general signature from the list.
+  await acc('w1').click();
+  await win.click('.scrim .buttons button:text-is("Use general signature")');
+  await expect(acc('w1').locator('.value')).toHaveText('Uses the general signature');
+  await expect(acc('w1').locator('.sig-preview i')).toHaveText('General one');
+  expect(await accountOf('w1')).toMatchObject({ signature: null, signatureHtml: null });
+
+  // A new general signature shows under every account that uses it.
+  await general.click();
+  await expect(win.locator('.scrim h2')).toHaveText('General signature');
+  await win.click('.sig-toolbar [data-c="source"]');
+  await win.locator('.sig-source').fill('<i>New general</i>');
+  await save();
+  await expect(general.locator('.sig-preview i')).toHaveText('New general');
+  await expect(acc(demoId).locator('.sig-preview i')).toHaveText('New general');
+  await expect(acc('w1').locator('.sig-preview i')).toHaveText('New general');
+  await expect(acc('p1').locator('.value')).toHaveText('None');
+
+  // Keyboard: Tab goes from row to row, Enter opens the editor, Escape closes it and then the page.
+  await general.focus();
+  await win.keyboard.press('Tab');
+  await expect(page.locator('[data-a="booking-footer"]')).toBeFocused();
+  await win.keyboard.press('Tab');
+  await expect(acc(demoId)).toBeFocused();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.sig-editor')).toBeFocused();
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+  await expect(page.locator('h1')).toHaveText('Email settings');
+
+  // The sender addresses page says which signature all of an account's addresses send, and edits it too.
+  await page.locator('.row:has-text("werk@example.com")').first().click();
+  await page.locator('[data-a="acc-aliases"]').click();
+  await expect(page.locator('h1')).toHaveText('Sender addresses');
+  const sent = acc('w1');
+  await expect(page.locator('.settings-group-title').last()).toHaveText('Signature');
+  await expect(sent.locator('.title')).toHaveText('Under mail from all 3 addresses');
+  await expect(sent.locator('.value')).toHaveText('Uses the general signature');
+  await expect(sent.locator('.sig-preview i')).toHaveText('New general');
+  await sent.click();
+  await win.click('.sig-toolbar [data-c="source"]');
+  await win.locator('.sig-source').fill('<b>Werk again</b>');
+  await save();
+  await expect(sent.locator('.sig-preview b')).toHaveText('Werk again');
+  await expect(sent.locator('.value')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Sender addresses');
+  expect((await accountOf('w1')).signatureHtml).toBe('<b>Werk again</b>');
+});
+
 test('the signature editor is in Dutch with the rest of the app', async () => {
   await setSettings({ language: 'nl' });
   await win.click('[data-action="settings"]');
+  await win.click('[data-a="signatures"]');
+  const page = win.locator('.page.settings');
+  await expect(page.locator('h1')).toHaveText('Handtekeningen');
+  await expect(page.locator('[data-a="signature"] .title')).toHaveText('Algemene handtekening');
+  await expect(page.locator('[data-a="signature"] .desc')).toHaveText('Voor accounts zonder eigen handtekening');
+  await expect(page.locator('[data-a="signature"] .value')).toHaveText('Geen');
+  await expect(page.locator('[data-a^="acc-signature:"] .value')).toHaveText('Algemeen: geen');
+  await page.locator('[data-a="back"]').click();
+  await expect(page.locator('[data-a="signatures"] .desc')).toHaveText('Algemeen en per account');
   await win.click('.row:has-text("demo@example.com")');
-  await expect(win.locator('[data-a="acc-signature"] .value')).toHaveText('Algemeen: geen');
-  await win.click('[data-a="acc-signature"]');
+  await expect(win.locator('[data-a^="acc-signature:"] .value')).toHaveText('Algemeen: geen');
+  await win.click('[data-a^="acc-signature:"]');
+  await expect(win.locator('.scrim h2')).toHaveText('Handtekening voor demo@example.com');
   await expect(win.locator('.sig-help')).toHaveText('Plak een handtekening uit een andere mailapp of van een webpagina, of schrijf en maak hem hier op.');
   await expect(win.locator('.sig-editor')).toHaveAttribute('data-placeholder', 'Je naam, functie en contactgegevens');
   await expect(win.locator('.sig-toolbar [data-c="source"]')).toHaveAttribute('title', 'HTML bewerken');
   await expect(win.locator('.scrim .buttons button')).toHaveText(['Algemene gebruiken', 'Annuleren', 'Opslaan']);
+
+  // An account without aliases: its one address sends the signature.
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  await page.locator('[data-a="acc-aliases"]').click();
+  await expect(page.locator('h1')).toHaveText('Afzenderadressen');
+  await expect(page.locator('.settings-group-title').last()).toHaveText('Handtekening');
+  await expect(page.locator('[data-a^="acc-signature:"] .title')).toHaveText('Onder mail van het accountadres');
+  await expect(page.locator('[data-a^="acc-signature:"] .value')).toHaveText('Algemeen: geen');
 });

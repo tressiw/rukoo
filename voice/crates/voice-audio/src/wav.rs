@@ -92,6 +92,17 @@ impl SegmentWriter {
         Ok(self.samples)
     }
 
+    /// The open file, for a writer that syncs it itself.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
+    /// Ends writing without a sync and hands over the file. The header already counts every
+    /// sample, so the caller only has to put the file on disk.
+    pub fn into_file(self) -> File {
+        self.file
+    }
+
     pub fn samples(&self) -> u64 {
         self.samples
     }
@@ -415,6 +426,19 @@ mod tests {
         let mut expected = ramp(1600);
         expected.extend(ramp(320));
         assert_eq!(samples, expected);
+    }
+
+    #[test]
+    fn a_handed_over_file_counts_every_sample() {
+        let dir = TempDir::new("handover");
+        let path = dir.file("000001.wav");
+        let mut writer = SegmentWriter::create(&path).unwrap();
+        writer.append(&ramp(500)).unwrap();
+        let file = writer.into_file();
+        file.sync_data().unwrap();
+        drop(file);
+        assert_eq!(header_sizes(&path), (36 + 1000, 1000));
+        assert_eq!(read_wav_i16(&path).unwrap(), (ramp(500), 16_000));
     }
 
     #[test]

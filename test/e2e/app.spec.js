@@ -5,6 +5,7 @@ const http = require('http');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { titlebar, edges } = require('./titlebar');
 
 let app;
 let win;
@@ -58,6 +59,22 @@ const slowDown = (method, ms) =>
     [method, ms]
   );
 const calls = (method) => app.evaluate((_, m) => (global.__calls || {})[m] || 0, method);
+
+// ---------- window ----------
+
+// With the window buttons on the right, as on Windows and by default on Linux, the title bar keeps the layout it has
+// always had: the icon 22px from the left edge and 150px kept free for the buttons. linux.spec.js covers both Linux
+// layouts in both windows.
+test('the title bar keeps its fixed room for window buttons on the right', async () => {
+  test.skip(process.platform === 'darwin', 'macOS has traffic lights, without a window controls overlay');
+  // The buttons take part of the bar once the overlay knows its geometry.
+  await expect.poll(() => titlebar(win).then((g) => g.width - (g.area.right - g.area.left))).toBeGreaterThan(40);
+  const g = await titlebar(win);
+  test.skip(g.area.left > 0, 'this Linux desktop puts the window buttons on the left');
+  expect(await edges(win)).toEqual({ controls: null, icon: 22, actions: 150 });
+  // The buttons fit in those 150px.
+  expect(g.actions.right).toBeLessThan(g.area.right);
+});
 
 // ---------- reading ----------
 
@@ -174,6 +191,58 @@ test('every email has its own row until stacks are turned on, and then unread ma
   await expect(win.locator('.stack-btn')).toHaveCount(0);
 });
 
+// #152: a stack says what it is, and the arrow keys open and close it.
+test('the arrow keys open and close a stack, also from an email inside it', async () => {
+  const head = item('Your sign-in details have been updated');
+  const member = win.locator('.list-scroll .item', { hasText: 'How to change your My Vandebron password' });
+  const last = win.locator('.list-scroll .item', { hasText: 'Failed sign-in attempt' });
+  // Without stacks, the arrows do nothing in the list.
+  await head.click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowLeft');
+  await win.keyboard.press('ArrowRight');
+  await expect(win.locator('.reader-subject')).toHaveText('Your sign-in details have been updated');
+  await expect(last).toBeVisible();
+
+  await win.evaluate(() => window.mail.call('updateSettings', { stackSenders: true }));
+  const chip = head.locator('.stack-btn');
+  await expect(chip).toHaveText('+2');
+  await expect(chip.locator('svg')).toHaveCount(1);
+  await expect(chip).toHaveAttribute('aria-label', 'Nog 2 e-mails van Vandebron No Reply');
+  await expect(chip).toHaveAttribute('title', 'Nog 2 e-mails van Vandebron No Reply (→)');
+  await expect(last).toHaveCount(0);
+  // The row keeps room for the edge of the pile under it.
+  await expect(win.locator('.item-wrap.folded')).toHaveCount(1);
+  await expect(win.locator('.item-wrap.folded')).toHaveCSS('padding-bottom', '4px');
+
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowRight');
+  await expect(last).toBeVisible();
+  await expect(win.locator('.item-wrap.folded')).toHaveCount(0);
+  await expect(chip).toHaveAttribute('aria-expanded', 'true');
+  await expect(chip).toHaveAttribute('title', 'Inklappen (←)');
+  await win.keyboard.press('ArrowLeft');
+  await expect(last).toHaveCount(0);
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+
+  // From an email inside, ← closes the stack and opens its first row.
+  await win.keyboard.press('ArrowRight');
+  await win.keyboard.press('ArrowDown');
+  await expect(win.locator('.reader-subject')).toHaveText('How to change your My Vandebron password');
+  await expect(member).toHaveClass(/selected/);
+  await win.keyboard.press('ArrowLeft');
+  await expect(member).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveText('Your sign-in details have been updated');
+  await expect(head).toHaveClass(/selected/);
+
+  // A row outside a stack leaves the arrows alone.
+  await item('Sign in to Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowRight');
+  await expect(last).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
+});
+
 test('related emails under the open email open the rest of the conversation', async () => {
   await item('Call on Thursday').click();
   const related = win.locator('.reader .related');
@@ -242,6 +311,157 @@ test('attachments are listed for messages that have them', async () => {
   await expect(win.locator('.atts-head')).toHaveCount(0);
 });
 
+// #56: a large message with attachments goes into the demo inbox, and its downloads wait until the test lets them go:
+// the background download always, the user's when holdUser is set. A banner over the inline-picture budget (a 40 x 30
+// PNG with padding after its end) comes with the whole message only.
+async function largeMessage({ holdUser = false } = {}) {
+  await app.evaluate(
+    async ({ app, nativeImage }, holdUser) => {
+      // The main process here only resolves Node's own modules; the app's come through its own path.
+      const { createRequire } = process.mainModule.require('module');
+      const MailComposer = createRequire(`${app.getAppPath()}/package.json`)('nodemailer/lib/mail-composer');
+      const engine = global.__semEngine;
+      const acc = engine.accounts[0];
+      const png = (bgra) => nativeImage.createFromBitmap(Buffer.alloc(40 * 30 * 4).map((_, i) => bgra[i % 4]), { width: 40, height: 30 }).toPNG();
+      const paragraphs = Array.from({ length: 30 }, (_, i) => `<p>Section ${i + 1}: revenue, costs and the outlook for the next quarter.</p>`).join('');
+      const raw = await new MailComposer({
+        from: { name: 'Sanne de Vries', address: 'sanne@example.com' },
+        to: 'demo@example.com',
+        subject: 'Quarterly report',
+        html: `<p id="intro">The quarterly report is attached.</p><img id="banner" src="cid:banner@example.com" width="40" height="30" alt="">${paragraphs}`,
+        attachments: [
+          { filename: 'banner.png', content: Buffer.concat([png([0xd0, 0x80, 0x30, 0xff]), Buffer.alloc(2200 * 1024)]), cid: 'banner@example.com' },
+          { filename: 'Quarterly-report.pdf', content: Buffer.alloc(3 * 1024 * 1024, 0x25), contentType: 'application/pdf' },
+          { filename: 'chart.png', content: png([0x40, 0xa0, 0x20, 0xff]) }
+        ]
+      })
+        .compile()
+        .build();
+      await engine.session(acc).append('INBOX', raw);
+      await engine.syncAll();
+      while (engine.prefetching.size) await new Promise((r) => setTimeout(r, 20));
+      const session = engine.session(acc);
+      const real = session.fetchSource.bind(session);
+      global.__fetches = [];
+      global.__held = { background: [], user: [] };
+      session.fetchSource = (p, u, opts = {}) => {
+        const kind = opts.background ? 'background' : 'user';
+        global.__fetches.push(kind);
+        if (kind === 'user' && !holdUser) return real(p, u, opts);
+        return new Promise((resolve, reject) =>
+          global.__held[kind].push({ go: () => real(p, u, opts).then(resolve, reject), fail: () => reject(new Error('Connection lost')) })
+        );
+      };
+    },
+    holdUser
+  );
+  // The save dialog answers with a file in the profile.
+  await app.evaluate(({ dialog }, dir) => {
+    const path = process.mainModule.require('path');
+    dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path.join(dir, path.basename(opts.defaultPath)) });
+  }, dataDir);
+}
+const release = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.go()), kind);
+const failDownload = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.fail()), kind);
+const fetches = () => app.evaluate(() => global.__fetches);
+const mailFrame = () => win.frameLocator('.mail-frame');
+
+test('a large message shows its text and attachment cards before the attachments are in', async () => {
+  await largeMessage();
+  await item('Quarterly report').click();
+  await expect(mailFrame().locator('#intro')).toHaveText('The quarterly report is attached.');
+  // The cards, with names and sizes, before anything but the text came in; no thumbnail yet, and the banner keeps
+  // its place.
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect(win.locator('.att').first().locator('.att-size')).toHaveText('3,0 MB');
+  await expect(win.locator('.atts-toggle')).toContainText('2 bijlagen');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await expect(mailFrame().locator('#banner')).toHaveAttribute('src', /^data:image\/svg\+xml,/);
+  // It keeps the box its width and height give it.
+  expect(await mailFrame().locator('#banner').evaluate((img) => [img.clientWidth, img.clientHeight])).toEqual([40, 30]);
+  expect(await fetches()).toEqual(['background']);
+
+  // Scrolled down, the whole message lands: the thumbnail and the banner appear, and the reader stays where it was.
+  const scroll = win.locator('.reader-scroll');
+  await scroll.evaluate((el) => (el.scrollTop = 200));
+  await release('background');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  expect(Math.abs((await scroll.evaluate((el) => el.scrollTop)) - 200)).toBeLessThan(4);
+  await expect(win.locator('.att').first().locator('.att-size')).toHaveText('3,0 MB');
+
+  await win.locator('[data-save-att]').first().click();
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  expect(await fetches()).toEqual(['background']);
+});
+
+test('saving an attachment of a partly shown message fetches the message in the user turn and shows a spinner meanwhile', async () => {
+  await largeMessage({ holdUser: true });
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  const save = win.locator('[data-save-att]').first();
+  await save.click();
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save.locator('.spinner')).toBeVisible();
+  expect(await fetches()).toEqual(['background', 'user']);
+  // The user's download brings the message: the attachment saves whole, and the reader completes without waiting for
+  // the background download, which is still held.
+  await release('user');
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  await expect(save).toHaveAttribute('aria-busy', 'false');
+  await expect(save.locator('svg')).toBeVisible();
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await release('background');
+});
+
+test('a partly shown message whose background download failed completes once an attachment is opened', async () => {
+  await largeMessage();
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect.poll(() => app.evaluate(() => global.__held.background.length)).toBe(1);
+  // Offline for a moment: the text and the cards stay, without thumbnails.
+  await failDownload('background');
+  await expect(mailFrame().locator('#intro')).toBeVisible();
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await win.locator('[data-save-att]').first().click();
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  // One download in the user's turn. The reader may have asked for the background download again meanwhile.
+  expect((await fetches()).filter((kind) => kind === 'user')).toHaveLength(1);
+});
+
+// A full disk: the main process can't write a message to the profile.
+const fullDisk = () =>
+  app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const { sep } = process.mainModule.require('path');
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (String(file).includes(`${sep}bodies${sep}`)) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return write.call(fs, file, ...rest);
+    };
+  });
+
+test('a partly shown message that comes in but cannot be kept still completes', async () => {
+  await largeMessage();
+  await fullDisk();
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await release('background');
+  // The whole message came in once but isn't on disk: the reader reads it whole again in the user's turn, and the
+  // thumbnail does the same, as for any message that can't be kept.
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await expect(mailFrame().locator('#intro')).toHaveText('The quarterly report is attached.');
+  expect(await fetches()).toEqual(['background', 'user', 'user']);
+});
+
 test('star toggles and shows up under Sterren', async () => {
   await item('Bencompare').hover();
   await item('Bencompare').locator('[data-star]').click();
@@ -277,9 +497,113 @@ test('archive from the toolbar, undo with Ctrl+Z', async () => {
   await expect(item('Bencompare')).toBeVisible();
 });
 
+// #211: Mark all as read covers what the list shows, has a shortcut and can be undone.
+test('Shift+Esc marks what the list shows read, with a filter or a search, and Undo brings it back', async () => {
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(inboxCount).toHaveText('7');
+  // The More menu and Settings show the shortcut.
+  await win.click('[data-action="list-more"]');
+  await expect(win.locator('.menu button', { hasText: 'Alles als gelezen markeren' }).locator('kbd')).toHaveText('Shift+Esc');
+  await win.keyboard.press('Escape');
+  await win.click('[data-action="settings"]');
+  const page = win.locator('.page.settings');
+  await page.locator('[data-a="keyboard"]').click();
+  await expect(page.locator('.row', { hasText: 'Alles als gelezen markeren' }).locator('kbd')).toHaveText('Shift+Esc');
+  while (await page.count()) await page.locator('[data-a="back"]').click();
+
+  // With the Starred filter on, only the starred unread email is marked.
+  await win.evaluate(async () => {
+    const list = await window.mail.call('list', { scope: 'all', view: 'inbox' });
+    await window.mail.call('setFlags', list.find((x) => x.subject === 'Call on Thursday').id, { starred: true });
+  });
+  await win.click('[data-filter="starred"]');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('1 e-mail als gelezen gemarkeerd');
+  await expect(item('Call on Thursday')).not.toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('6');
+  await win.click('#toast button:has-text("Ongedaan maken")');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('7');
+  await win.click('[data-filter="all"]');
+
+  // A search marks its results and leaves the rest of Inbox unread.
+  await win.fill('#search', 'Vandebron');
+  await expect(win.locator('.list-title h1')).toHaveText('Zoekresultaten');
+  const found = await win.locator('.list-scroll .item.unread').count();
+  expect(found).toBeGreaterThan(1);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText(`${found} e-mails als gelezen gemarkeerd`);
+  await expect(win.locator('.list-scroll .item.unread')).toHaveCount(0);
+  await expect(inboxCount).toHaveText(String(7 - found));
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toHaveText('Alles is al gelezen');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(item('You updated some of your Google Account details')).toHaveClass(/unread/);
+});
+
+test('with the Unread filter, Shift+Esc keeps the open email, Ctrl+Z undoes it, and an open editor stays', async () => {
+  await item('Call on Thursday').click();
+  await expect(item('Call on Thursday')).not.toHaveClass(/unread/);
+  await win.click('[data-filter="unread"]');
+  const rows = win.locator('.list-scroll .item');
+  await expect(rows).toHaveCount(7);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 e-mails als gelezen gemarkeerd');
+  // The list empties except for the email on screen, which the Unread filter keeps (#146).
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('Call on Thursday');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(win.locator('.nav-item[data-view="inbox"] .count')).toHaveCount(0);
+  await win.keyboard.press('Control+z');
+  await expect(rows).toHaveCount(7);
+  await expect(win.locator('.nav-item[data-view="inbox"] .count')).toHaveText('6');
+
+  // Esc closes the editor; Shift+Esc doesn't.
+  await composer(() => win.keyboard.press('Control+r'));
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 e-mails als gelezen gemarkeerd');
+  await expect(rows).toHaveCount(1);
+  await expect(win.locator('.composer')).toHaveCount(1);
+});
+
+test('when the server refuses one email, Mark all as read says so and its Undo still reaches the rest', async () => {
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(inboxCount).toHaveText('7');
+  // The demo server refuses to mark this one email read.
+  await app.evaluate((_, subject) => {
+    const engine = global.__semEngine;
+    const m = engine.listMessages({ scope: engine.accounts[0].id, view: 'inbox' }).find((x) => x.subject === subject);
+    const { acc, uid } = engine.locate(m.id);
+    const session = engine.session(acc);
+    const write = session.setFlags.bind(session);
+    session.setFlags = async (p, u, patch) => {
+      if (u === uid && patch.unread === false) throw new Error('The server refused the change.');
+      return write(p, u, patch);
+    };
+  }, 'Call on Thursday');
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 van 7 e-mails als gelezen gemarkeerd. The server refused the change.');
+  await expect(win.locator('#toast button')).toHaveText('Ongedaan maken');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('1');
+  // Ctrl+Z still undoes the six it marked.
+  await win.keyboard.press('Control+z');
+  await expect(win.locator('.list-scroll .item.unread')).toHaveCount(7);
+  await expect(inboxCount).toHaveText('7');
+});
+
 test('Ctrl+click selects several messages for one action', async () => {
   await item('Bencompare').click();
-  await item('You updated some of your Google Account details').click({ modifiers: ['Control'] });
+  // Command on a Mac, where Control+click opens the context menu.
+  await item('You updated some of your Google Account details').click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.list-tools.selecting .sel-count')).toHaveText('2 geselecteerd');
   await expect(win.locator('.reader .multi .t')).toHaveText('2 e-mails geselecteerd');
   await win.click('.list-tools [data-bulk="delete"]');
@@ -297,6 +621,8 @@ test('dragging a message onto a folder moves it', async () => {
   const target = win.locator('[data-folder="Invoices"]');
   await target.dispatchEvent('dragover', { dataTransfer: dt });
   await target.dispatchEvent('drop', { dataTransfer: dt });
+  // A drag ends with a dragend, which lets the sidebar draw itself again.
+  await win.evaluate(() => document.dispatchEvent(new DragEvent('dragend')));
   await expect(win.locator('#toast')).toContainText('Verplaatst naar Invoices');
   await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
   await win.click('[data-folder="Invoices"]');
@@ -368,8 +694,8 @@ test('the shared editor formats text and inserts links inline and in a compose w
     await editor.press('Control+a');
     await page.locator(`.float-bar [data-cmd="${command}"]`).click();
     await editor.press('Control+k');
-    await page.locator('.dialog input').fill(href);
-    await page.locator('.dialog .buttons .primary').click();
+    await page.locator('.link-pop [data-f="url"]').fill(href);
+    await page.locator('.link-pop [data-a="apply"]').click();
     await expect(editor.locator('a')).toHaveAttribute('href', href);
     expect(await editor.locator('*').evaluateAll((els, command) => els.some((el) => command === 'bold' ? Number(getComputedStyle(el).fontWeight) >= 600 : getComputedStyle(el).fontStyle === 'italic'), command)).toBe(true);
   };
@@ -775,6 +1101,106 @@ test('search can cover all folders', async () => {
   await win.click('.menu button:has-text("Alle mappen")');
   await expect(win.locator('.item').first()).toBeVisible();
   await expect(win.locator('.item .pill').first()).toBeVisible();
+});
+
+// #112: mail older than the newest messages Rukoo keeps. The demo inbox keeps 6 of its 16 here instead of 300, and
+// Sent 2 of 3; Load older adds 6 at a time, 8 at most.
+async function smallWindow() {
+  await app.evaluate(async () => {
+    const engine = global.__semEngine;
+    while (engine.syncs.size) await new Promise((r) => setTimeout(r, 50));
+    engine.limits = { ...engine.limits, inbox: 6, default: 2, batch: 6, extra: 8 };
+    await engine.syncAccount(engine.accounts[0].id);
+  });
+}
+
+test('Load older emails at the end of the list brings in older mail, and the unread count stays the same', async () => {
+  await smallWindow();
+  const row = win.locator('.list-older');
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(win.locator('.item')).toHaveCount(6);
+  await expect(row).toContainText('nog 10 op de server');
+  await expect(inboxCount).toHaveText('7');
+  await expect(win.locator('.item', { hasText: 'Call on Thursday' })).toHaveCount(0);
+
+  await slowDown('loadOlder', 600);
+  await row.getByRole('button', { name: 'Oudere e-mails laden' }).click();
+  await expect(row.getByRole('button', { name: 'Oudere e-mails laden…' })).toBeDisabled();
+  await expect(win.locator('.item')).toHaveCount(12);
+  await expect(row).toContainText('nog 4 op de server');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  // Its unread mail moved from the server's count into the list's.
+  await expect(inboxCount).toHaveText('7');
+  await expect(win.locator('.filter[data-filter="unread"] .n')).toHaveText('7');
+
+  // Up to the most a folder adds; then the row goes and only a search reaches further back.
+  await row.getByRole('button', { name: 'Oudere e-mails laden' }).click();
+  await expect(win.locator('.item')).toHaveCount(14);
+  await expect(row).toHaveCount(0);
+  await win.fill('#search', 'tax administration');
+  await expect(item('You have a new message')).toBeVisible();
+});
+
+test('a search finds older mail on the server, which opens, deletes and comes back with undo', async () => {
+  await smallWindow();
+  const row = win.locator('.list-older');
+  const sub = win.locator('.list-title .sub');
+  // While the server is searched an empty result says so, and the header leaves out a count until it answers.
+  await slowDown('searchServer', 800);
+  await win.fill('#search', 'parcel');
+  await expect(win.locator('.empty')).toContainText('Oudere mail op de server doorzoeken…');
+  await expect(sub).toHaveText('"parcel" in Postvak IN');
+  await expect(win.locator('.item')).toHaveCount(1);
+  await expect(sub).toHaveText('1 voor "parcel" in Postvak IN');
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('parcel');
+
+  await win.click('[data-reader="delete"]');
+  await expect(win.locator('#toast')).toContainText('Prullenbak');
+  await expect(win.locator('.item', { hasText: 'Your parcel' })).toHaveCount(0);
+  await win.click('#toast button:has-text("Ongedaan maken")');
+  await expect(win.locator('#toast')).toContainText('Teruggezet');
+  await expect(item('Your parcel is on its way')).toBeVisible();
+  // Back in the inbox it is among the newest uids, so the list holds it from now on.
+  await win.locator('#search').press('Escape');
+  await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
+  await expect(item('Your parcel is on its way')).toBeVisible();
+});
+
+test('a search of all folders finds older sent mail, and a server that fails says so and can be tried again', async () => {
+  await smallWindow();
+  // One folder per call to main: the older contract mail is in Sent, the second folder, so the list asks for the next.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.search = { ...engine.search, folders: 1 };
+  });
+  const row = win.locator('.list-older');
+  await win.fill('#search', 'contract');
+  await expect(row).toHaveText('Geen oudere mail op de server gevonden');
+  await expect(win.locator('.item')).toHaveCount(2);
+  await win.click('.search-scope');
+  await win.click('.menu button:has-text("Alle mappen")');
+  await expect(item('Question about my contract')).toBeVisible();
+  await expect(win.locator('.item')).toHaveCount(3);
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
+
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.realSearchServer = engine.searchServer;
+    engine.searchServer = async () => ({ more: 0, errors: ['demo@example.com: De server is niet bereikbaar.'] });
+  });
+  await win.fill('#search', 'dinner');
+  await expect(row).toContainText('Rukoo kon oudere mail op de server niet doorzoeken. demo@example.com: De server is niet bereikbaar.');
+  await expect(item('Dinner on Saturday')).toBeVisible();
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.searchServer = engine.realSearchServer;
+  });
+  await row.getByRole('button', { name: 'Opnieuw proberen' }).click();
+  await expect(item('Re: Dinner on Saturday')).toBeVisible();
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
 });
 
 test('user folders load on demand', async () => {
@@ -1507,6 +1933,8 @@ test('a folder that fails to sync leaves the folders after it current, and the n
   await win.click('.sync-status');
   await expect(win.locator('.sync-status')).toHaveText('Synchronisatie mislukt');
   await expect(win.locator('.sync-status')).toHaveAttribute('title', 'demo@example.com: Sent is temporarily unavailable');
+  // The toast for the one account says it as the sidebar does (#135).
+  await expect(win.locator('#toast')).toHaveText('Sent is temporarily unavailable');
   await expect(item('Nieuw in het postvak')).toBeVisible();
   await expect.poll(announced).toEqual(['Nieuw in het postvak']);
   // Archief synced in the same run, not when it was opened.
@@ -1523,6 +1951,20 @@ test('a folder that fails to sync leaves the folders after it current, and the n
   await expect(win.locator('#toast')).toContainText('Gesynchroniseerd');
   await expect(win.locator('.sync-status')).toHaveText('Zojuist bijgewerkt');
   expect(await announced()).toEqual(['Nieuw in het postvak']);
+});
+
+test('a sync that times out says so in the toast, in Dutch and in English', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.session(engine.accounts[0]).syncFolder = () => Promise.reject(new Error('connect ETIMEDOUT 192.0.2.1:993'));
+  });
+  await win.click('.sync-status');
+  await expect(win.locator('.sync-status')).toHaveText('Synchronisatie mislukt');
+  await expect(win.locator('#toast')).toHaveText('Er is een time-out opgetreden bij het verbinden met de server.');
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));
+  await expect(win.locator('.sync-status')).toHaveText('Sync failed');
+  await win.click('.sync-status');
+  await expect(win.locator('#toast')).toHaveText('The connection to the server timed out.');
 });
 
 // ---------- regressions from the critique review ----------

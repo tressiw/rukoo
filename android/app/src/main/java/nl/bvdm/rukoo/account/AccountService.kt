@@ -719,7 +719,8 @@ class AccountService(
         while (more) {
             if (session == null || !synchronized(lock) { this.session === session }) return
             // A server that keeps answering more can't keep the phone busy: what is left comes with the next sync. Every
-            // byte of an answer's body counts, so padding a page with fields Rukoo ignores doesn't get past the limit.
+            // byte of an answer counts, headers and chunk framing too, so padding a page with fields Rukoo ignores or
+            // with HTTP framing doesn't get past the limit.
             if (pages >= PULL_PAGES || meter.get() >= PULL_DATA) return
             pages++
             val since = synchronized(lock) { state.cursor }
@@ -926,9 +927,10 @@ class AccountService(
         private const val PULL_LIMIT = 1000
         private const val PUSH_BATCH = 500
 
-        // When one pull stops asking for more: after 500 pages of 1000 records and tombstones, or once 256 MiB of answer
-        // bodies counted whole, with the fields Rukoo ignores, have come in. The meter is checked between pages, so the
-        // page that crosses it is the last. A full account is about 170 MiB of them (server/PROTOCOL.md).
+        // When one pull stops asking for more: after 500 pages of 1000 records and tombstones, or once 256 MiB of answers
+        // counted whole, with their headers, framing and the fields Rukoo ignores, have come in. The meter is checked
+        // between pages, so the page that crosses it is the last. A full account is about 170 MiB of them
+        // (server/PROTOCOL.md).
         internal const val PULL_PAGES = 500
         internal const val PULL_DATA = 256L * 1024 * 1024
 

@@ -27,7 +27,8 @@ function mailNotices(messages) {
 }
 
 class MailNotices {
-  // categories: the Categories (index.js). show(notices): puts notices like mailNotices() on screen.
+  // categories: the Categories (index.js). show(notices, messages): puts notices like mailNotices() on screen, for the
+  // emails in messages, the ones of the batch that notify now.
   constructor({ categories, show, hold = HOLD }) {
     this.categories = categories;
     this.show = show;
@@ -62,7 +63,7 @@ class MailNotices {
     }
     if (!batch.held.length) return this.notify(now);
     const list = now.slice(0, AT_ONCE).map(single);
-    if (list.length) this.show(list);
+    if (list.length) this.show(list, now);
     Object.assign(batch, { shown: list.length, count: now.length });
     batch.timer = setTimeout(() => this.release(batch), this.hold);
     if (batch.timer.unref) batch.timer.unref();
@@ -97,11 +98,11 @@ class MailNotices {
     const list = shows.slice(0, AT_ONCE - batch.shown).map(single);
     const count = batch.count + shows.length;
     if (count > batch.shown + list.length) list.push(counted(count));
-    if (list.length) this.show(list);
+    if (list.length) this.show(list, shows);
   }
 
   notify(messages) {
-    if (messages.length) this.show(mailNotices(messages));
+    if (messages.length) this.show(mailNotices(messages), messages);
   }
 
   close() {

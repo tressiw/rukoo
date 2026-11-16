@@ -155,6 +155,31 @@ class NavStateTest {
     }
 
     @Test
+    fun `the Unread filter keeps the email opened while unread until another opens`() {
+        val unread = start.setFilter(nl.bvdm.rukoo.mail.model.QuickFilter.UNREAD)
+        val kept = unread.openMessage("m1").keep("m1")
+        assertEquals("m1", kept.keptId)
+        // Back on one pane, another tab or filter, and opening it again keep it.
+        assertEquals("m1", kept.back(twoPane = false)!!.keptId)
+        assertEquals("m1", kept.setCategory("money").keptId)
+        assertEquals("m1", kept.setFilter(nl.bvdm.rukoo.mail.model.QuickFilter.ALL).keptId)
+        assertEquals("m1", kept.openMessage("m1").keptId)
+        // Another email lets it go, and so does a chat about another email.
+        assertNull(kept.openMessage("m2").keptId)
+        assertNull(kept.openChat(null, "m2").keptId)
+        assertEquals("m1", kept.openChat(null, null).keptId)
+        // Only the open email is kept: a summary that arrives after another opened doesn't count.
+        assertNull(unread.openMessage("m1").openMessage("m2").keep("m1").keptId)
+        // Another view starts the list over; a deleted or moved email is gone.
+        assertNull(kept.selectView(MailView(ViewKind.SENT)).keptId)
+        assertNull(kept.messageGone("m1").keptId)
+        assertNull(kept.back(twoPane = false)!!.messageGone("m1").keptId)
+        assertEquals("m1", kept.messageGone("m2").keptId)
+        // It comes back with the rest of the state.
+        assertEquals(kept, RukooJson.decodeFromString(NavState.serializer(), RukooJson.encodeToString(NavState.serializer(), kept)))
+    }
+
+    @Test
     fun `another category tab clears the selection, and the tab survives a restart`() {
         val picked = NavState().setChecked(listOf("a", "b"))
         val tabbed = picked.setCategory("money")

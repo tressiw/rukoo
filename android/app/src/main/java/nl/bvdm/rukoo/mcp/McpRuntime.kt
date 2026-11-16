@@ -75,9 +75,14 @@ object McpSetup {
         computers = agents.computers.filter { it.mcpToken.isNotEmpty() }.map { it.pairingId to it.mcpToken },
     )
 
+    /** The variable OpenClaw's MCP entry reads Rukoo's token from: desktop's name, as OpenClaw holds one Rukoo. */
+    const val OPENCLAW_TOKEN_VAR = "RUKOO_MCP_TOKEN"
+
     /**
-     * desktop openclawSetup (config.js:368-373): one command that points OpenClaw's MCP config at this phone. It
-     * contains the token. OpenClaw names one Rukoo, so it replaces a computer's entry.
+     * desktop openclawSetup (config.js): the two steps that point OpenClaw's MCP config at this phone. Step 1 is a
+     * line for the gateway's .env file with the token; step 2 is the command, whose header names the variable, so
+     * the token stays out of openclaw.json. The comment lines hold no shell syntax and the JSON is single-quoted, so
+     * pasting it all into a shell does no harm. OpenClaw names one Rukoo, so it replaces a computer's entry.
      */
     fun openClaw(url: String, gatewayToken: String): String? {
         val token = McpTokens.openClawRemote(gatewayToken)
@@ -85,8 +90,14 @@ object McpSetup {
         val server = buildJsonObject {
             put("url", url)
             put("transport", "streamable-http")
-            put("headers", buildJsonObject { put("Authorization", "Bearer $token") })
+            put("headers", buildJsonObject { put("Authorization", "Bearer \${$OPENCLAW_TOKEN_VAR}") })
         }
-        return "openclaw mcp set rukoo '${RukooJson.encodeToString(JsonElement.serializer(), server)}'\n"
+        return listOf(
+            "# Step 1, not a command: put this line in the OpenClaw .env file, ~/.openclaw/.env or \$OPENCLAW_STATE_DIR/.env, in place of any older $OPENCLAW_TOKEN_VAR line.",
+            "$OPENCLAW_TOKEN_VAR=$token",
+            "# Step 2: run this command where the gateway runs, then restart the gateway.",
+            "openclaw mcp set rukoo '${RukooJson.encodeToString(JsonElement.serializer(), server)}'",
+            "",
+        ).joinToString("\n")
     }
 }

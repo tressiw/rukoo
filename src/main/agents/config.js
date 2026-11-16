@@ -120,6 +120,10 @@ function openclawTokenFor(key, remote = false) {
   return key ? crypto.createHmac('sha256', key).update(remote ? 'rukoo-mcp-openclaw-remote-v1' : 'rukoo-mcp-openclaw-v1').digest('base64url') : '';
 }
 
+// The variable OpenClaw's MCP entry for Rukoo reads its token from. One name for the local and the remote token, and
+// for the phone's: OpenClaw holds one Rukoo entry at a time.
+const OPENCLAW_TOKEN_VAR = 'RUKOO_MCP_TOKEN';
+
 // The tokens a custom agent's MCP client sends to Rukoo, made from its seed: one for the 127.0.0.1 listener and one for
 // the Tailscale listener, like OpenClaw's. The agent id goes in too, so two agents never share a token.
 function customTokenFor(seed, id, remote = false) {
@@ -674,16 +678,27 @@ class AgentConfig {
     ].join('\n');
   }
 
-  // The command that adds Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp): Streamable HTTP with the
-  // token for that listener. OpenClaw leaves a URL server on SSE unless transport says otherwise.
+  // The two steps that add Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp), as Streamable HTTP; OpenClaw
+  // leaves a URL server on SSE unless transport says otherwise. Step 1 is a line for the gateway's .env file with the
+  // token for that listener. Step 2 is the command, whose header names the variable, so the token stays out of
+  // openclaw.json, where `openclaw mcp doctor` flags a literal one. OpenClaw fills the variable in from its own
+  // environment or that file each time it connects. The comment lines hold no quotes, brackets or other shell syntax,
+  // so pasting the whole text into a shell does no harm, and the single quotes keep ${RUKOO_MCP_TOKEN} from the shell.
+  // Android's McpSetup.openClaw copies the same text.
   // {remote: false, port}: this computer's loopback, the port Rukoo's local listener really got.
   // {remote: true, host, port}: Rukoo's Tailscale address and the port its Tailscale listener really got.
-  // The command holds a token, unlike the Hermes block: OpenClaw can't compute it from its gateway token.
+  // The text holds a token, unlike the Hermes block: OpenClaw can't compute it from its gateway token.
   openclawSetup({ remote = false, host = '127.0.0.1', port = this.runtime.localPort || this.data.mcp.port } = {}) {
     const token = this.openclawToken(remote);
     if (!token || !host || !port) return '';
-    const server = { url: `http://${host}:${port}/mcp`, transport: 'streamable-http', headers: { Authorization: `Bearer ${token}` } };
-    return `openclaw mcp set rukoo '${JSON.stringify(server)}'\n`;
+    const server = { url: `http://${host}:${port}/mcp`, transport: 'streamable-http', headers: { Authorization: `Bearer \${${OPENCLAW_TOKEN_VAR}}` } };
+    return [
+      `# Step 1, not a command: put this line in the OpenClaw .env file, ~/.openclaw/.env or $OPENCLAW_STATE_DIR/.env, in place of any older ${OPENCLAW_TOKEN_VAR} line.`,
+      `${OPENCLAW_TOKEN_VAR}=${token}`,
+      '# Step 2: run this command where the gateway runs, then restart the gateway.',
+      `openclaw mcp set rukoo '${JSON.stringify(server)}'`,
+      ''
+    ].join('\n');
   }
 
   // The block for ~/.hermes/config.yaml on Clark's machine. It holds no secret and is the same on every device:

@@ -673,6 +673,59 @@ test('typing instead of continuing starts a new chat about the email on screen',
   ]);
 });
 
+test('a late answer to the email lookup leaves the chat the user just started on screen', async () => {
+  // Main holds one of its answers to the panel's lookups for the email on screen until the test lets it go. The
+  // answer is worked out when asked, before the user's new chat exists, as on a slow main process.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    global.__lookup = { hold: null, held: [] };
+    for (const name of ['findFor', 'relatedFor']) {
+      const real = hub[name].bind(hub);
+      hub[name] = (ref) => {
+        const answer = real(ref);
+        if (global.__lookup.hold !== name) return answer;
+        return new Promise((resolve) => global.__lookup.held.push(() => resolve(answer)));
+      };
+    }
+  });
+  const hold = (name) => app.evaluate((_e, name) => (global.__lookup.hold = name), name);
+  const held = () => app.evaluate(() => global.__lookup.held.length);
+  // Answers what was held, then waits for the panel to have handled it: replies come in the order main sends them,
+  // and a chat the late answer opens takes one more round trip.
+  const release = async () => {
+    await app.evaluate(() => {
+      global.__lookup.hold = null;
+      for (const go of global.__lookup.held.splice(0)) go();
+    });
+    for (let i = 0; i < 2; i++) await win.evaluate(() => window.mail.invoke('agentList'));
+  };
+  const empty = win.locator('.agentpane .bui-rec__title');
+
+  // An email without a chat: the answer that there is no earlier chat to offer comes after the user sent.
+  await hold('relatedFor');
+  await openChat('Call on Thursday');
+  await expect.poll(held).toBe(1);
+  await say('Hello');
+  await expect(transcript().locator('.bui-ub')).toHaveText('Hello');
+  await release();
+  await expect(empty).toHaveCount(0);
+  await expect(transcript()).toContainText('You asked: "Hello"', { timeout: 10000 });
+
+  // An email with a chat: the older chat main found doesn't replace the new one.
+  await item('Your parcel is on its way').click();
+  await expect(empty).toBeVisible();
+  await hold('findFor');
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect.poll(held).toBe(1);
+  await say('Again');
+  await expect(transcript().locator('.bui-ub')).toHaveText('Again');
+  await release();
+  await expect(transcript()).toContainText('You asked: "Again"', { timeout: 10000 });
+  await expect(transcript()).not.toContainText('Hello');
+  expect(await app.evaluate(() => global.__semAgents.list().map((c) => c.message.subject))).toEqual(['Call on Thursday', 'Call on Thursday']);
+});
+
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
   // The title bar holds the only sparkle button; the reading pane toolbar has none.
@@ -1054,6 +1107,12 @@ test('Show on an approval toast opens that chat and leaves the unread answer in 
   await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'Add the proposal task; ask for approval first' }), c);
   const toast = win.locator('#toast');
   await expect(toast).toContainText('An agent is waiting for your approval', { timeout: 10000 });
+  // Ctrl+Z undoes things in the mail; it leaves the toast up and the chat closed.
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  await expect(toast).toHaveClass(/show/);
+  await expect(toast.locator('button')).toHaveText('Show');
+  await expect(pane()).toBeHidden();
   await toast.locator('button', { hasText: 'Show' }).click();
 
   // The panel opens on C, its approval card included; the email on screen stays.
@@ -1389,9 +1448,20 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw))).toMatchObject({ agent: 'research', hasKey: true });
   // The token stays in main: the config the window gets says only that there is one.
   expect(JSON.stringify(await win.evaluate(() => window.mail.call('agentConfig')))).not.toContain('gateway-token-123');
-  // What the copy row puts on the clipboard (not clicked here: the clipboard is the desktop's own).
-  const setup = await app.evaluate(() => global.__semAgents.cfg.openclawSetup({ port: global.__semAgents.mcp.ports().local }));
-  expect(setup).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer [A-Za-z0-9_-]+"\}\}'\n$/);
+  // The copy row puts two steps on the clipboard, recorded in main rather than put on the desktop's own clipboard:
+  // the token in a line for OpenClaw's .env file, and the command, which names the variable instead of the token.
+  await app.evaluate(() => {
+    global.__semAgents.deps.clipboard = { writeText: (text) => (global.__copiedSetup = text) };
+  });
+  await win.locator('.page.settings .row', { hasText: 'Copy OpenClaw setup' }).click();
+  await expect(win.locator('#toast')).toContainText("Copied two steps: a line for OpenClaw's .env file and a command to run on this computer.");
+  const setup = await app.evaluate(() => global.__copiedSetup);
+  const lines = setup.split('\n');
+  expect(lines[0]).toMatch(/^# Step 1, not a command: put this line in the OpenClaw \.env file, /);
+  expect(lines[1]).toMatch(/^RUKOO_MCP_TOKEN=[A-Za-z0-9_-]{43}$/);
+  expect(lines[2]).toBe('# Step 2: run this command where the gateway runs, then restart the gateway.');
+  expect(lines[3]).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer \$\{RUKOO_MCP_TOKEN\}"\}\}'$/);
+  expect(lines.slice(4)).toEqual(['']);
   // A gateway on another computer: an explicit opt-in that opens the Tailscale listener. This test machine gets an
   // address nobody has (TEST-NET), so nothing listens on a real tailnet; the card says so, and nothing is copied.
   await app.evaluate(() => global.__semAgents.updateConfig({ mcp: { remoteHost: '192.0.2.1' } }));
@@ -1399,7 +1469,7 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   const copyDesc = win.locator('.page.settings [data-a="agent-copy-openclaw"] .desc');
   await expect(remoteRow).toContainText('Let OpenClaw use Rukoo from another computer');
   await expect(remoteRow).toContainText('For a gateway elsewhere in your tailnet.');
-  await expect(copyDesc).toContainText('A command for this computer');
+  await expect(copyDesc).toContainText('Two steps for a gateway on this computer');
   await remoteRow.click();
   await expect(remoteRow.locator('.switch')).toHaveClass(/on/);
   await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw.remote))).toBe(true);
@@ -1409,7 +1479,7 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   await expect(win.locator('#toast')).toContainText("Rukoo isn't listening on a Tailscale address.");
   await remoteRow.click();
   await expect(remoteRow.locator('.switch')).not.toHaveClass(/on/);
-  await expect(copyDesc).toContainText('A command for this computer');
+  await expect(copyDesc).toContainText('Two steps for a gateway on this computer');
   await win.click('.page.settings [data-a="back"]');
   await win.click('.page.settings [data-a="back"]');
 
@@ -1991,6 +2061,12 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   // On its way: a chip at once, still busy, and Send off with the reason.
   await expect(pendingChips()).toHaveCount(1);
   await expect(pendingChips()).toHaveAttribute('aria-label', 'Adding notes.txt');
+  // Its name shimmers, and holds still with reduced motion.
+  const shimmer = () => pendingChips().locator('.bui-entity__name').evaluate((el) => ({ name: getComputedStyle(el).animationName, running: el.getAnimations().length }));
+  expect((await shimmer()).name).toBe('bui-shimmer-text');
+  await win.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await shimmer()).toEqual({ name: 'none', running: 0 });
+  await win.emulateMedia({ reducedMotion: null });
   const sendButton = win.locator('.agentpane .bui-pb__send');
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveAttribute('title', 'Wait until the files are added, then send.');

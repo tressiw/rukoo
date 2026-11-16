@@ -7,6 +7,7 @@ import {
   call,
   key as randomKey,
   login,
+  sealed,
   signup
 } from './helpers.js';
 import { DAY, HOUR, bookingStub, host, hostKey, hours, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
@@ -492,6 +493,72 @@ describe('deleting the account', () => {
     expect((await call('DELETE', '/v1/account', { token: alice.token, body: { authKey: alice.authKey } })).status).toBe(204);
     const again = await signup({ email: alice.email });
     expect((await publish(again, page(handle, await hostKey()))).body.error).toBe('handle_reserved');
+  });
+
+  // Ten wrong passwords for a new recovery key: the session's own password checks are locked for 15 minutes.
+  async function lockSession(person) {
+    for (let i = 0; i < 10; i++) {
+      await call('POST', '/v1/recovery', {
+        token: person.token,
+        body: { authKey: randomKey(), recoveryAuth: randomKey(), recoveryWrappedKey: sealed() }
+      });
+    }
+  }
+
+  it("refuses a locked session's password check before the device deletes the page, as the deletion would", async () => {
+    const { person, handle } = await host(signup);
+    await bookDirect(handle, tenAm(4));
+    await lockSession(person);
+    const checked = await call('POST', '/v1/password/check', { token: person.token, body: { authKey: person.authKey } });
+    expect(checked.status).toBe(429);
+    // The device stops there: the page keeps its booking, and the deletion would have been refused the same way.
+    expect((await call('GET', '/v1/booking/bookings', { token: person.token })).body.bookings).toHaveLength(1);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(429);
+  });
+
+  it("deletes the page, then the account, after the password check on the deleting session", async () => {
+    // Rukoo for desktop from this version. Nine typos before don't stand in the way: the right password resets them.
+    const { person, handle } = await host(signup);
+    await bookDirect(handle, tenAm(4));
+    for (let i = 0; i < 9; i++) {
+      expect((await call('POST', '/v1/password/check', { token: person.token, body: { authKey: randomKey() } })).status).toBe(403);
+    }
+    expect((await call('POST', '/v1/password/check', { token: person.token, body: { authKey: person.authKey } })).status).toBe(204);
+    expect((await call('DELETE', '/v1/booking', { token: person.token })).status).toBe(204);
+    expect((await call('GET', '/v1/booking/bookings', { token: person.token })).body.bookings).toHaveLength(0);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(204);
+    expect(await tables(await accountStub(person.email))).toEqual([]);
+  });
+
+  it("refuses to turn the page off from a locked session, so a desktop that checks the password with a sign-in keeps its bookings", async () => {
+    // Rukoo for desktop from 2.1.0 checks the password with a sign-in of its own, deletes the page and then deletes
+    // the account on its session, and stops when the page can't go. The sign-in leaves the session's lock alone.
+    const { person, handle } = await host(signup);
+    await bookDirect(handle, tenAm(4));
+    await lockSession(person);
+    const signedIn = await login(person, 'Same desktop');
+    expect(signedIn.status).toBe(200);
+    expect((await call('POST', '/v1/logout', { token: signedIn.body.token })).status).toBe(204);
+    const refused = await call('DELETE', '/v1/booking', { token: person.token });
+    expect(refused.status).toBe(429);
+    expect(refused.body.error).toBe('locked');
+    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(14 * 60);
+    expect(Number(refused.headers.get('retry-after'))).toBeLessThanOrEqual(15 * 60);
+
+    // Nothing went: the page is on with its booking, and the account is there. Reading the page still works.
+    const view = await call('GET', '/v1/booking', { token: person.token });
+    expect(view.status).toBe(200);
+    expect(view.body).toMatchObject({ handle, enabled: true });
+    expect((await call('GET', '/v1/booking/bookings', { token: person.token })).body.bookings).toHaveLength(1);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(429);
+    expect(await tables(await accountStub(person.email))).toContain('account');
+
+    // Once the lock is over, the same steps delete both.
+    later(16 * 60 * 1000);
+    expect((await login(person, 'Same desktop')).status).toBe(200);
+    expect((await call('DELETE', '/v1/booking', { token: person.token })).status).toBe(204);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(204);
+    expect(await tables(await accountStub(person.email))).toEqual([]);
   });
 });
 

@@ -28,12 +28,13 @@ const readAsDataUrl = (file) =>
     reader.readAsDataURL(file);
   });
 
-// Opens the editor on html. buttons: extra dialog buttons before Cancel and Save, such as "Use general signature".
-// Resolves to { html } on Save (cleaned again by main when stored), to an extra button's value, or null.
-export function editSignature({ html, buttons = [] }) {
+// Opens the editor on html. title: whose signature it is. buttons: extra dialog buttons before Cancel and Save, such
+// as "Use general signature". Resolves to { html } on Save (cleaned again by main when stored), to an extra button's
+// value, or null.
+export function editSignature({ html, title = t('settings.general.signature'), buttons = [] }) {
   let sourceMode = false;
   return dialog({
-    title: t('settings.general.signature'),
+    title,
     wide: true,
     buttons: [
       ...buttons,

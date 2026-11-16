@@ -64,8 +64,9 @@ interface McpController {
     fun stop()
 
     /**
-     * What "Copy OpenClaw setup" copies: `openclaw mcp set rukoo '{...}'` with this phone's address and the
-     * OpenClaw remote token. Null while there is no gateway token or no address to put in it.
+     * What "Copy OpenClaw setup" copies ([McpSetup.openClaw]): a `RUKOO_MCP_TOKEN=` line with the OpenClaw remote
+     * token for the gateway's .env file, and `openclaw mcp set rukoo '{...}'` with this phone's address. Null while
+     * there is no gateway token or no address to put in it.
      */
     fun openClawSetup(): String? = null
 

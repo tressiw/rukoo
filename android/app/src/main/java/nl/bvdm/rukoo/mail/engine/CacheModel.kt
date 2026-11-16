@@ -7,13 +7,18 @@ import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailPrefs
 import nl.bvdm.rukoo.mail.session.FolderRecord
 
-/** The newest window of one folder (spec 4 §1.5): UIDVALIDITY, EXISTS, when it synced, and its messages. */
+/**
+ * The newest window of one folder (spec 4 §1.5): UIDVALIDITY, EXISTS, when it synced, and its messages. An inbox also
+ * keeps [olderUnseen], its unread mail older than [messages] as the server counted it at that sync; null when it
+ * couldn't (MailViews.olderUnread).
+ */
 @Serializable
 data class CachedBox(
     val uidValidity: String,
     val exists: Int = 0,
     val syncedAt: Long = 0,
     val messages: List<CachedMessage> = emptyList(),
+    val olderUnseen: Int? = null,
 )
 
 /**

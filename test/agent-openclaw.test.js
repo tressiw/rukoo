@@ -18,6 +18,17 @@ const { Engine } = require('../src/main/engine');
 
 const TOKEN = 'gateway-token-123';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// What "Copy OpenClaw setup" copies: the token in a line for the gateway's .env file, and the command, whose header
+// names the variable, so the token stays out of openclaw.json (where `openclaw mcp doctor` flags it).
+const openclawSetupText = (url, token) =>
+  [
+    '# Step 1, not a command: put this line in the OpenClaw .env file, ~/.openclaw/.env or $OPENCLAW_STATE_DIR/.env, in place of any older RUKOO_MCP_TOKEN line.',
+    `RUKOO_MCP_TOKEN=${token}`,
+    '# Step 2: run this command where the gateway runs, then restart the gateway.',
+    `openclaw mcp set rukoo '{"url":"${url}","transport":"streamable-http","headers":{"Authorization":"Bearer \${RUKOO_MCP_TOKEN}"}}'`,
+    ''
+  ].join('\n');
 const secrets = {
   encrypt: (s) => `enc:${Buffer.from(String(s)).toString('hex')}`,
   decrypt: (s) => (String(s).startsWith('enc:') ? Buffer.from(String(s).slice(4), 'hex').toString() : String(s))
@@ -347,7 +358,7 @@ test('openclaw: config keeps the token encrypted, checks the agent id, and the s
     assert.notEqual(token, TOKEN);
     assert.equal(cfg.openclawToken(), token);
     const setup = cfg.openclawSetup({ port: 47811 });
-    assert.equal(setup, `openclaw mcp set rukoo '{"url":"http://127.0.0.1:47811/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${token}"}}'\n`);
+    assert.equal(setup, openclawSetupText('http://127.0.0.1:47811/mcp', token));
     // The remote token is another one, and there is none until the user allows a gateway on another computer.
     const remote = openclawTokenFor(TOKEN, true);
     assert.notEqual(remote, token);
@@ -357,14 +368,62 @@ test('openclaw: config keeps the token encrypted, checks the agent id, and the s
     cfg.update({ openclaw: { remote: true } });
     assert.equal(cfg.publicView().openclaw.remote, true);
     assert.equal(cfg.openclawToken(true), remote);
-    assert.equal(
-      cfg.openclawSetup({ remote: true, host: '100.64.0.5', port: 47800 }),
-      `openclaw mcp set rukoo '{"url":"http://100.64.0.5:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${remote}"}}'\n`
-    );
+    assert.equal(cfg.openclawSetup({ remote: true, host: '100.64.0.5', port: 47800 }), openclawSetupText('http://100.64.0.5:47800/mcp', remote));
     assert.equal(cfg.openclawSetup({ remote: true, host: '', port: 47800 }), '', 'no address, no setup');
     // A file edited by hand with an agent id the gateway would refuse falls back to the default agent.
     fs.writeFileSync(file, JSON.stringify({ ...stored, openclaw: { ...stored.openclaw, agent: '../x' } }));
     assert.equal(new AgentConfig({ file, secrets }).load().data.openclaw.agent, '');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('openclaw: the copied setup keeps the token out of the command, matches the phone’s, and is safe to paste into a shell', () => {
+  const dir = tempDir('rukoo-openclaw-setup-');
+  try {
+    const cfg = new AgentConfig({ file: path.join(dir, 'agents.json'), secrets }).load();
+    cfg.setSecret('openclaw', 'gw-token-123');
+    cfg.update({ openclaw: { remote: true } });
+    const setup = cfg.openclawSetup({ remote: true, host: '100.64.0.3', port: 47800 });
+    // Word for word what the phone copies (android SettingsRulesTest.openClawSetupMatchesDesktop pins the same text).
+    assert.equal(
+      setup,
+      '# Step 1, not a command: put this line in the OpenClaw .env file, ~/.openclaw/.env or $OPENCLAW_STATE_DIR/.env, in place of any older RUKOO_MCP_TOKEN line.\n' +
+        'RUKOO_MCP_TOKEN=zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds\n' +
+        '# Step 2: run this command where the gateway runs, then restart the gateway.\n' +
+        `openclaw mcp set rukoo '{"url":"http://100.64.0.3:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer \${RUKOO_MCP_TOKEN}"}}'\n`
+    );
+    const token = cfg.openclawToken(true);
+    const lines = setup.split('\n');
+    assert.deepEqual(
+      lines.filter((l) => l.includes(token)),
+      [`RUKOO_MCP_TOKEN=${token}`],
+      'the token is in the .env line only'
+    );
+    assert.equal(JSON.parse(lines[3].match(/'(.*)'$/)[1]).headers.Authorization, 'Bearer ${RUKOO_MCP_TOKEN}');
+    // The step labels hold nothing a shell acts on, also in zsh, which reads # as a command without interactivecomments.
+    for (const label of [lines[0], lines[2]]) assert.doesNotMatch(label, /['"`()[\]{};&|<>*?!\\]/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Pasting all four lines into a POSIX shell runs the command with the variable left for OpenClaw to fill in.
+test('openclaw: the copied setup pasted into sh passes ${RUKOO_MCP_TOKEN} to openclaw as it is', { skip: process.platform === 'win32' && 'no POSIX shell on Windows' }, () => {
+  const { spawnSync } = require('child_process');
+  const dir = tempDir('rukoo-openclaw-sh-');
+  try {
+    const cfg = new AgentConfig({ file: path.join(dir, 'agents.json'), secrets }).load();
+    cfg.setSecret('openclaw', TOKEN);
+    const setup = cfg.openclawSetup({ port: 47811 });
+    // openclaw stands in as a function that prints its arguments; env shows whether the token line exported anything.
+    const script = `openclaw() { printf '%s\\n' "$@"; }\n${setup}env | grep -c '^RUKOO_MCP_TOKEN=' || true\n`;
+    const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH }, timeout: 10000 });
+    assert.equal(r.status, 0, r.stderr);
+    const out = r.stdout.trim().split('\n');
+    assert.deepEqual(out.slice(0, 3), ['mcp', 'set', 'rukoo']);
+    assert.deepEqual(JSON.parse(out[3]), { url: 'http://127.0.0.1:47811/mcp', transport: 'streamable-http', headers: { Authorization: 'Bearer ${RUKOO_MCP_TOKEN}' } });
+    assert.equal(out[4], '0', 'the token line sets a shell variable only, which the gateway never sees');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -417,12 +476,11 @@ test('openclaw: through the hub, a chat streams from the gateway and OpenClaw’
     await waitFor(() => !hub.turns.has(c.id));
     await waitFor(() => gw.state.cancelled.length === 1);
 
-    // The setup command OpenClaw runs, and the token in it, which Rukoo's loopback listener accepts.
+    // The setup OpenClaw gets, and the token in its .env line, which Rukoo's loopback listener accepts.
     const port = hub.mcp.ports().local;
     assert.deepEqual(hub.copyOpenClawSetup(), { remote: false, url: `http://127.0.0.1:${port}/mcp` });
     const token = openclawTokenFor(TOKEN);
-    assert.ok(clipboard.text.includes(`http://127.0.0.1:${port}/mcp`));
-    assert.ok(clipboard.text.includes(`Bearer ${token}`));
+    assert.equal(clipboard.text, openclawSetupText(`http://127.0.0.1:${port}/mcp`, token));
     assert.deepEqual(hub.identify(token), { agent: 'openclaw', conversationId: null, remote: false });
     assert.equal(hub.identify(TOKEN), null, 'the gateway token itself is no MCP token');
     const rpc = (body) =>
@@ -499,7 +557,7 @@ test('openclaw: a gateway on another computer gets Rukoo’s tools on the Tailsc
     assert.equal(remotePort(), null);
     assert.equal(hub.identify(remoteToken), null);
     assert.deepEqual(hub.copyOpenClawSetup(), { remote: false, url: `http://127.0.0.1:${local}/mcp` });
-    assert.ok(clipboard.text.includes(`Bearer ${localToken}`));
+    assert.equal(clipboard.text, openclawSetupText(`http://127.0.0.1:${local}/mcp`, localToken));
 
     // Allowing it opens the Tailscale listener, which takes the remote token and not the local one.
     await hub.updateConfig({ openclaw: { remote: true } });
@@ -523,8 +581,7 @@ test('openclaw: a gateway on another computer gets Rukoo’s tools on the Tailsc
 
     // The copied setup now names Rukoo's Tailscale address and the listener's real port, with the remote token.
     assert.deepEqual(hub.copyOpenClawSetup(), { remote: true, url: `http://100.64.0.9:${remotePort()}/mcp` });
-    assert.ok(clipboard.text.includes(`"url":"http://100.64.0.9:${remotePort()}/mcp"`));
-    assert.ok(clipboard.text.includes(`Bearer ${remoteToken}`));
+    assert.equal(clipboard.text, openclawSetupText(`http://100.64.0.9:${remotePort()}/mcp`, remoteToken));
     assert.ok(!clipboard.text.includes(localToken) && !clipboard.text.includes(TOKEN));
 
     // A new gateway token gives new MCP tokens; the old ones stop working at once.

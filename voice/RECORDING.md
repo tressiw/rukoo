@@ -41,10 +41,10 @@ Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonica
 1. The recorder creates the file, refusing an existing one, with a header that counts 0 samples: RIFF size 36, data size 0.
 2. It writes the `segment` line.
 3. Every 100 to 200 ms it appends the new samples, then rewrites the RIFF size (offset 4) and the data size (offset 40) in a single write. The samples come first, so the header never counts samples that aren't on disk.
-4. It syncs the file to disk every 5 s, and when the segment closes.
-5. It closes the segment and writes the `segment_end` line.
+4. It syncs the file to disk every 5 s, and when the segment closes. The syncs run on a thread of their own, in the order the recorder asks for them, so a slow disk never holds up the audio, the heartbeats or a time in the timeline. A periodic sync is skipped while the one before it hasn't finished.
+5. It closes the segment: it hands the file to that thread, which syncs and closes it. Only then does the recorder write the `segment_end` line, so no sync of the timeline puts a `segment_end` on disk before the audio it describes. A slow disk delays the line, never its `t`. A sync that fails is logged, and the line follows anyway.
 
-A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. A power cut can lose up to the last 5 s.
+A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. It can also leave segments without a `segment_end` line: the open one, and ones that had closed but weren't on disk yet. `finalize` and `--resume` end each of them from its file. A power cut can lose up to the last 5 s, plus however long the disk takes to sync.
 
 While it records, the recorder keeps a second writer out of the timeline and of every segment it has open: on Windows it shares them for reading and deleting only, and on macOS and Linux it holds an exclusive lock on each open file. Other processes can read them, and a second writer can't open them. The lock goes with the process, so a recorder that was hard-killed leaves its meeting writable.
 
@@ -69,7 +69,13 @@ On macOS the loopback is a Core Audio process tap. Like WASAPI loopback, it deli
 - A reader ignores a last line without a newline, any line that doesn't parse, and kinds and fields it doesn't know. Before a recorder or `finalize` writes to a timeline, it cuts off a last line without a newline.
 - `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept, never by a step of the wall clock. Pauses don't stop the clock.
 - On Windows and macOS, `session` and `heartbeat` lines also carry `boot`: a clock that counts sleep, read right after `t`, in 100 ns units. It is the Windows interrupt time on Windows and `mach_continuous_time` on macOS. It counts sleep and the meeting clock follows the same counter, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs. Linux has no shared counter that counts sleep, so the field is missing there.
-- Lines appear in the order they were written, which is close to the order of `t` but not exactly: `segment_end` carries the end computed from the samples, a padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`, and `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
+- Lines appear in the order they were written, which is close to the order of `t` but not exactly, so readers take the order of events from `t`, never from the order of the lines. A line can have a lower `t` than a line written before it:
+  - `segment_end` carries the end computed from the samples, and comes once the segment is on disk: after the track's next `segment`, after the `device_lost`, `pause` or `suspend` that closed it, and after heartbeats written while the disk worked.
+  - A padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`.
+  - A `segment` that continues a full one starts where that one ended, which can be before a `heartbeat` written ahead of it.
+  - `device_lost` carries the moment the device reported the failure, which can be before a `heartbeat` that still lists the track's segment.
+  - `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
+- `stop` carries the moment the stop command arrived, or the moment the recorder stopped by itself, but never a `t` lower than a line before it, so it is last by `t` too.
 
 | `kind` | Fields | When |
 |---|---|---|
@@ -83,7 +89,7 @@ On macOS the loopback is a Core Audio process tap. Like WASAPI loopback, it deli
 | `pause`, `resume` | `t` | The user paused or resumed |
 | `mark` | `t`, `id`, `label` | A user mark. `id` is `k-<n>` and `n` keeps counting across sessions; `label` is `null` without one |
 | `dictation` | `t`, `state` | The app reports dictation on the microphone: `start` or `end`. Only a change is written. The app reads the microphone through a tap and closes it when the user stops dictating, quits or crashes, so the recorder writes `end` itself when the microphone's last tap goes and a dictation is open. A dictation the dead session left open ends at `lastSeen` |
-| `suspend` | `t`, `until` | The computer slept for more than 3 s: since the last heartbeat, more time passed by a clock that counts sleep than the computer was awake. A stalled recorder or a step of the wall clock doesn't count. `t` is the last heartbeat before it, `until` the meeting time after it. The segments closed before the line; `track` lines follow as the devices reopen |
+| `suspend` | `t`, `until` | The computer slept for more than 3 s: since the last heartbeat, more time passed by a clock that counts sleep than the computer was awake. A stalled recorder or a step of the wall clock doesn't count. `t` is the last heartbeat before it, `until` the meeting time after it. The segments ended before the line, though their `segment_end` lines can follow it; `track` lines follow as the devices reopen |
 | `crash` | `t`, `lastSeen` | Written by a resumed session: the previous one died, and audio is missing from `lastSeen` to `t` |
 | `silent` | `t`, `track`, `since` | The track has recorded only exact zeros since `since` while another app played sound, so the system may not let Voice record it: on macOS, System Audio Recording is off for Voice or its grant went stale. At most once per session |
 | `sound` | `t`, `track` | The first sound on a track after its `silent` line |
@@ -96,8 +102,8 @@ A microphone that was unplugged for two seconds, with the heartbeats after the f
 {"kind":"track","t":33,"track":"mic","source":"default-input","device":"Microphone (USB Audio CODEC)","deviceId":"wasapi:{0.0.1.00000000}.{00000000-0000-0000-0000-000000000001}","nativeRate":48000,"nativeChannels":2}
 {"kind":"segment","t":41,"track":"mic","seq":1,"file":"audio/mic/000001.wav"}
 {"kind":"heartbeat","t":1050,"wall":1793384409989,"boot":123467289012,"samples":{"mic":16144}}
-{"kind":"segment_end","t":1985,"track":"mic","seq":1,"samples":31104}
 {"kind":"device_lost","t":2002,"track":"mic","error":"The requested audio device is not available. It may have been disconnected."}
+{"kind":"segment_end","t":1985,"track":"mic","seq":1,"samples":31104}
 {"kind":"device","t":4076,"track":"mic","device":"Microphone (USB Audio CODEC)","reason":"reconnected"}
 {"kind":"track","t":4076,"track":"mic","source":"default-input","device":"Microphone (USB Audio CODEC)","deviceId":"wasapi:{0.0.1.00000000}.{00000000-0000-0000-0000-000000000001}","nativeRate":48000,"nativeChannels":2}
 {"kind":"segment","t":4089,"track":"mic","seq":2,"file":"audio/mic/000002.wav"}
@@ -109,7 +115,7 @@ A microphone that was unplugged for two seconds, with the heartbeats after the f
 
 `lastSeen` is the highest of: the dead session's start, its last heartbeat `t`, its last `segment_end` `t`, and for each track the last segment's `t` plus its samples on disk divided by 16.
 
-A resumed session writes, in this order: `segment_end` for every segment the dead session left open, after repairing its header; `dictation` `end` at `lastSeen` when the dead session left a dictation open, because the app's tap went with it; `session` with `resumed` true; `crash`; `pause` when the meeting was paused, because a restart must not record a user who paused; then `track` for each device.
+A resumed session writes, in this order: `segment_end` for every segment the dead session left without one, after repairing its header and syncing it; `dictation` `end` at `lastSeen` when the dead session left a dictation open, because the app's tap went with it; `session` with `resumed` true; `crash`; `pause` when the meeting was paused, because a restart must not record a user who paused; then `track` for each device.
 
 ## The recorder
 
@@ -132,7 +138,7 @@ rukoo-voice-recorder devices
 
 The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default), `,open-ms=<ms>` (every open takes this long, as a Bluetooth headset switching profile can, or macOS' first process tap while its prompt waits) and `,skip-at=<ms>,skip-ms=<ms>` (the device delivers nothing for that long and then goes on in time, that stretch lost). The times count from the start of the session. Device sources work on Windows and macOS in this version; elsewhere `record` refuses them with exit code 2.
 
-Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length and `--silence-ms <ms>` the 30 s the silence check waits.
+Four options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, `--silence-ms <ms>` the 30 s the silence check waits, and `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes.
 
 | Exit code | Meaning |
 |---|---|
@@ -152,7 +158,8 @@ Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--s
 - A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed, and on macOS when the device's sample rate changes: the new `track` line has the new `nativeRate`.
 - A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. A macOS process tap that keeps failing to open waits twice as long after each try, up to 30 s, because each try creates a tap and an aggregate device in the audio server. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
-- On stop it pads healthy loopback tracks up to that moment, closes every segment, writes `stop`, removes `recorder.json` and only then replies.
+- On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, waits until every segment is on disk, writes their `segment_end` lines and `stop`, syncs the timeline, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
+- It logs on stderr every sync and every segment file creation that takes over 0.5 s, and a heartbeat that comes over 1.5 s after the one before, so a recording that stalls can be told from a slow disk.
 - On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
 
 ### `recorder.json`
@@ -161,7 +168,7 @@ Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--s
 { "pid": 14152, "port": 51544, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "session": 1, "startedAt": 1793384408939 }
 ```
 
-The recorder writes it after the `session` line, to a temporary name that it renames into place. `token` is 32 random bytes as base64url, made fresh for every session. A recorder is live only when it answers `status` on that port with that token; the file alone, or a running `pid`, proves nothing.
+The recorder writes it to a temporary name and syncs it before the session starts, so the disk's time doesn't count as recording time, and renames it into place after the `session` line. `token` is 32 random bytes as base64url, made fresh for every session. A recorder is live only when it answers `status` on that port with that token; the file alone, or a running `pid`, proves nothing.
 
 ### `finalize`
 

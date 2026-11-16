@@ -2671,6 +2671,10 @@
     "message": "Undo {name}'s draft?",
     "description": "Composer confirmation title when undoing an agent draft you already edited."
   },
+  "composer.attachments.dropHint": {
+    "message": "Drop to attach",
+    "description": "Shown across the composer while files are dragged over it; letting go attaches them. src/renderer/composer.js (mountComposer); src/renderer/styles.css (.composer.drop-files)"
+  },
   "composer.attachments.image": {
     "message": "Insert image",
     "description": "composer > attachments. src/renderer/composer.js (template); src/main/main.js"
@@ -2801,15 +2805,51 @@
   },
   "composer.link.address": {
     "message": "Address",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Label of the address field in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.apply": {
+    "message": "Apply",
+    "description": "composer > link. Button in the link popover (Ctrl+K) that links the text. src/renderer/editor-links.js"
+  },
+  "composer.link.cantOpen": {
+    "message": "Rukoo only opens web and email links.",
+    "description": "composer > link. Toast after Go to link in the bubble under a link whose address Rukoo doesn't open, one that isn't http:, https: or mailto:, such as a javascript: or file: link from pasted HTML. src/renderer/editor-links.js"
+  },
+  "composer.link.change": {
+    "message": "Change",
+    "description": "composer > link. Button in the bubble under a link in the text; opens the link popover for that link. src/renderer/editor-links.js"
+  },
+  "composer.link.edit": {
+    "message": "Edit link",
+    "description": "composer > link. Accessible name of the link popover when it changes an existing link. src/renderer/editor-links.js (insertLink)"
   },
   "composer.link.insert": {
     "message": "Insert",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Button in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.open": {
+    "message": "Go to link: {url}",
+    "description": "composer > link. Tooltip and accessible name of the address in the bubble under a link in the text; opens the link in the browser. url is the link's address. src/renderer/editor-links.js (showBubble)"
+  },
+  "composer.link.options": {
+    "message": "Link",
+    "description": "composer > link. Accessible name of the bubble under a link in the text, a toolbar with Go to link, Change and Remove. src/renderer/editor-links.js"
+  },
+  "composer.link.remove": {
+    "message": "Remove",
+    "description": "composer > link. Button in the bubble under a link in the text; removes the link and keeps its text. src/renderer/editor-links.js"
+  },
+  "composer.link.text": {
+    "message": "Text",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the text that shows as the link. src/renderer/editor-links.js"
   },
   "composer.link.title": {
     "message": "Insert link",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Accessible name of the link popover when it makes a new link. src/renderer/editor-links.js (insertLink)"
+  },
+  "composer.link.url": {
+    "message": "Link",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the address the link opens. src/renderer/editor-links.js"
   },
   "composer.mentions.addedCc": {
     "message": "{name} added to Cc",
@@ -2954,6 +2994,42 @@
   "composer.titles.replyAll": {
     "message": "Reply all",
     "description": "composer > titles. src/renderer/app.js (messageMenu); src/renderer/composer.js"
+  },
+  "composer.undoSend.queued": {
+    "message": "Sending email…",
+    "description": "Notice in the main window right after Send while Undo send (Settings > General) holds the email, with an Undo button; it shows for the chosen number of seconds, then the email goes and 'Email sent' (composer.status.sent) follows. src/renderer/app.js (offerUndoSend)"
+  },
+  "composer.undoSend.undone": {
+    "message": "Sending undone",
+    "description": "Notice after Undo in the 'Sending email…' notice: the email was not sent and its editor is open again. src/renderer/app.js (undoSend)"
+  },
+  "composer.undoSend.late": {
+    "message": "Too late to undo: the email is already on its way",
+    "description": "Notice after Undo in the 'Sending email…' notice when the waiting time had just run out and the email was being sent or was sent. src/renderer/app.js (undoSend)"
+  },
+  "composer.undoSend.quitUnsure": {
+    "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
+  },
+  "composer.undoSend.quitFailed": {
+    "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",
+    "description": "Shown under 'Sending failed' in a compose window that opens an email the server refused while Rukoo was quitting, which couldn't be saved to Drafts either: at the next start, or at once when the quit was called off. error is the server's message. src/main/main.js (waitedMailFailed)"
+  },
+  "composer.undoSend.quitTitle": {
+    "message": { "one": "{count} email is still waiting to be sent", "other": "{count} emails are still waiting to be sent" },
+    "description": "Title of the question when you quit Rukoo while an email still waits out its Undo send notice. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitHelp": {
+    "message": "Send them now and quit, or stay in Rukoo so you can still undo.",
+    "description": "Text under that question. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitSend": {
+    "message": "Send and quit",
+    "description": "Button in that question: sends the waiting emails at once, then quits. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitStay": {
+    "message": "Don't quit",
+    "description": "Button in that question: calls the quit off; the emails keep waiting. src/main/main.js (askQuitWithHeldMail)"
   },
   "errors.account.duplicate": {
     "message": "This account has already been added.",
@@ -3375,6 +3451,10 @@
     "message": "{hostname} is not a public address",
     "description": "errors > network. src/main/net.js (publicLookup)"
   },
+  "errors.search.refused": {
+    "message": "The mail server didn't run the search.",
+    "description": "errors > search. The IMAP server turned down the search of older mail than Rukoo keeps. Shown after the account's address under the search results. src/main/imap.js (searchUids)"
+  },
   "errors.send.identity": {
     "message": "You cannot send as {address} from this account.",
     "description": "errors > send. src/main/engine.js"
@@ -3433,7 +3513,7 @@
   },
   "mailbox.actions.readAll": {
     "message": "Mark all as read",
-    "description": "mailbox > actions. src/renderer/app.js (listAction)"
+    "description": "Message list: item in the list's More menu that marks every unread email the list shows read, with the folder or category, quick filter and search as they are. Shows its shortcut (Shift+Esc by default). src/renderer/app.js (listAction, markAllRead)"
   },
   "mailbox.actions.readCount": {
     "message": {
@@ -3445,6 +3525,10 @@
   "mailbox.actions.readShortcut": {
     "message": "Mark as read (Ctrl+Q)",
     "description": "mailbox > actions. src/renderer/app.js (renderListTools)"
+  },
+  "mailbox.actions.readSome": {
+    "message": "Marked {count} of {total} emails as read. {error}",
+    "description": "Message list: notice after Mark all as read when the mail server refused some of the emails, which stay unread. Its Undo button (and Ctrl+Z) marks the {count} emails that were marked unread again. {count}: emails marked read, {total}: unread emails the list showed, {error}: the server's first refusal, a full sentence. src/renderer/app.js (markAllRead)"
   },
   "mailbox.actions.star": {
     "message": "Star",
@@ -3705,7 +3789,7 @@
   },
   "mailbox.message.collapse": {
     "message": "Collapse",
-    "description": "mailbox > message. src/renderer/app.js (itemHtml)"
+    "description": "Message list: tooltip and accessible name of the button that folds an open stack of emails from one sender again. The tooltip adds the key that does it, (←). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.noRecipient": {
     "message": "(No recipient)",
@@ -3736,7 +3820,7 @@
       "one": "{count} more email from {sender}",
       "other": "{count} more emails from {sender}"
     },
-    "description": "mailbox > message. Message list: tooltip on the collapsed sender stack button."
+    "description": "Message list: tooltip and accessible name of the button on a folded stack of read emails from one sender, which shows a pile icon and +{count}. {count}: the emails folded under the first one; {sender}: the sender's name. The tooltip adds the key that opens the stack, (→). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.vip": {
     "message": "VIP",
@@ -3745,6 +3829,36 @@
   "mailbox.message.account": {
     "message": "Account: {account}",
     "description": "mailbox > message. Screen reader label of the dot in an account's color on the sender's picture, in a list of several accounts. {account}: the account's display name or address. src/renderer/app.js (itemHtml)"
+  },
+  "mailbox.newMail.count": {
+    "message": {
+      "one": "{count} new email",
+      "other": "{count} new emails"
+    },
+    "description": "mailbox > new mail. New mail that came in while Rukoo's window is open: the pill at the top of the message list while the list is scrolled away from the new emails, and the toast for new mail the list on screen doesn't show. {count}: how many. src/renderer/app.js (updateNewPill, newMailToast)"
+  },
+  "mailbox.newMail.countIn": {
+    "message": {
+      "one": "{count} new email in {category}",
+      "other": "{count} new emails in {category}"
+    },
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for several new emails that are all in one inbox category Inbox itself doesn't show (its Show in Inbox switch is off); its Show button opens that category. Emails spread over several categories get mailbox.newMail.count instead. {count}: how many, at least 2. {category}: the category's name, such as Updates. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.from": {
+    "message": "New email from {sender}",
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for one new email without a subject that the list on screen doesn't show; it stands in for the desktop notification. {sender}: the sender's name or address. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.fromSubject": {
+    "message": "New email from {sender}: {subject}",
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for one new email that the list on screen doesn't show; it stands in for the desktop notification. {sender}: the sender's name or address. {subject}: the email's subject. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.open": {
+    "message": "Open",
+    "description": "mailbox > new mail. Action on the toast for one new email: opens it in Inbox. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.show": {
+    "message": "Show",
+    "description": "mailbox > new mail. Action on the toast for several new emails: goes to Inbox, or to the inbox category that holds them when Inbox itself doesn't show it. src/renderer/app.js (newMailToast)"
   },
   "mailbox.move.alreadyThere": {
     "message": "These emails are already there",
@@ -3775,6 +3889,48 @@
   "mailbox.move.title": {
     "message": "Move to",
     "description": "mailbox > move. src/renderer/app.js (pickFolder)"
+  },
+  "mailbox.older.available": {
+    "message": "{count} more on the server",
+    "description": "Message list, the row at the end of a folder: how many older emails are on the server and not in the list yet, beside the Load older emails button. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.failed": {
+    "message": "Couldn't search older mail on the server. {error}",
+    "description": "Message list, under search results: the search of older mail on the server failed. {error} names the account and the reason. A Retry button follows. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.found": {
+    "message": {
+      "one": "Found {count} older email on the server",
+      "other": "Found {count} older emails on the server"
+    },
+    "description": "Message list, under search results: how many of the results are older mail that the server search found, beyond the emails Rukoo keeps. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.load": {
+    "message": "Load older emails",
+    "description": "Message list, the row at the end of a folder: button that fetches the next batch of older emails from the server into the list. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.loadFailed": {
+    "message": "Couldn't load older emails. {error}",
+    "description": "Toast after Load older emails failed. {error} names the account and the reason. src/renderer/app.js (loadOlder)"
+  },
+  "mailbox.older.loading": {
+    "message": "Loading older emails…",
+    "description": "Message list, the row at the end of a folder: the accessible name of the Load older emails button while the server sends them; the button shows a spinner. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.more": {
+    "message": {
+      "one": "{count} more older email matches. Add a word to narrow the search.",
+      "other": "{count} more older emails match. Add a word to narrow the search."
+    },
+    "description": "Message list, under search results: the server found more older matches than it sent (the newest 50 per folder). {count} is how many more. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.none": {
+    "message": "No older mail on the server matches",
+    "description": "Message list, under search results: the search of older mail on the server found nothing beyond the emails Rukoo keeps. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.searching": {
+    "message": "Searching older mail on the server…",
+    "description": "Message list, under search results or in place of an empty result: Rukoo is searching the server for older mail than it keeps. src/renderer/app.js (olderHtml, listHtml)"
   },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",
@@ -3834,6 +3990,10 @@
       "other": "{count} results for \"{query}\" in {scope}"
     },
     "description": "mailbox > search. src/renderer/app.js (listTitle)"
+  },
+  "mailbox.search.summaryWaiting": {
+    "message": "\"{query}\" in {scope}",
+    "description": "mailbox > search. Message list header subtitle while the cache has no matches and the server is still searched for older mail, so no result count yet. {query}: the search text; {scope}: the folder or the search scope. src/renderer/app.js (listTitle)"
   },
   "mailbox.selection.allShortcut": {
     "message": "Select all (Ctrl+A)",
@@ -4038,6 +4198,14 @@
   "native.notifications.newOne": {
     "message": "1 new email",
     "description": "native > notifications. Windows taskbar badge: singular unread/new email description."
+  },
+  "native.notifications.testBody": {
+    "message": "This is how new mail shows up.",
+    "description": "native > notifications. Body of the test notification from Settings > General > Send a test notification. src/main/main.js (testNotification)"
+  },
+  "native.notifications.testTitle": {
+    "message": "Test notification from Rukoo Mail",
+    "description": "native > notifications. Title of the test notification from Settings > General > Send a test notification. src/main/main.js (testNotification)"
   },
   "native.tray.compose": {
     "message": "New message",
@@ -4476,15 +4644,15 @@
   },
   "settings.agents.copyOpenClaw": {
     "message": "Copy OpenClaw setup",
-    "description": "Settings, Agents page, OpenClaw card: row that copies the command that adds Rukoo's MCP server to OpenClaw."
+    "description": "Settings, Agents page, OpenClaw card: row that copies the two steps that add Rukoo's MCP server to OpenClaw: a token line for the gateway's .env file and the openclaw mcp set command."
   },
   "settings.agents.copyOpenClawHelp": {
-    "message": "A command for this computer that lets OpenClaw use Rukoo's tools. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
+    "message": "Two steps for a gateway on this computer: a line with the token for OpenClaw's .env file, and the command that lets OpenClaw use Rukoo's tools. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. Step 1 is a line (RUKOO_MCP_TOKEN=...) that goes in OpenClaw's .env file and holds Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command, which names that variable."
   },
   "settings.agents.copiedOpenClaw": {
-    "message": "Copied. Run it in a terminal on this computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup command."
+    "message": "Copied two steps: a line for OpenClaw's .env file and a command to run on this computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on this computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command."
   },
   "settings.agents.gatewayUrl": {
     "message": "Gateway URL",
@@ -4531,12 +4699,12 @@
     "description": "Settings, Agents page: toast after the OpenClaw gateway token was stored."
   },
   "settings.agents.copyOpenClawRemoteHelp": {
-    "message": "A command for the gateway's computer, with Rukoo's Tailscale address. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. The copied command (openclaw mcp set) contains Rukoo's Tailscale address and its MCP token for OpenClaw."
+    "message": "Two steps for the gateway's computer: a line with the token for OpenClaw's .env file, and a command with Rukoo's Tailscale address. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. Step 1 is a line (RUKOO_MCP_TOKEN=...) for OpenClaw's .env file with Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command with Rukoo's Tailscale address."
   },
   "settings.agents.copiedOpenClawRemote": {
-    "message": "Copied with {url}. Run it on the gateway's computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
+    "message": "Copied two steps with {url}: a line for OpenClaw's .env file and a command, both for the gateway's computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
   },
   "settings.agents.openclawNoListener": {
     "message": "Rukoo isn't listening on a Tailscale address. Check that Tailscale runs on this computer.",
@@ -4992,6 +5160,14 @@
     "message": "Send as",
     "description": "settings > aliases. src/renderer/settings.js (render)"
   },
+  "settings.aliases.signatureOne": {
+    "message": "Under mail from the account address",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list, for an account without aliases; the row shows the signature its mail gets. src/renderer/settings.js (render)"
+  },
+  "settings.aliases.signatureAll": {
+    "message": "Under mail from all {count} addresses",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list; the row shows the signature. Every address of an account sends the account's signature; count is the number of addresses listed above it, the account address included, and is at least 2. src/renderer/settings.js (render)"
+  },
   "settings.badge.new": {
     "message": "New emails",
     "description": "settings > badge. src/renderer/settings.js"
@@ -5077,8 +5253,16 @@
     "description": "Settings > General: switch that folds a run of emails from one sender into one row of the message list, with a +N count. Off by default. src/renderer/settings.js (render)"
   },
   "settings.general.stackSendersHelp": {
-    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row.",
+    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row. Right arrow and Left arrow open and close a group.",
     "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
+  },
+  "settings.general.undoSend": {
+    "message": "Undo send",
+    "description": "Settings > General: row title for how long an email waits after Send, so the notice that follows can take it back. Opens a choice of Off or 5 to 30 seconds (settings.undoSend.*). src/renderer/settings.js (render)"
+  },
+  "settings.general.undoSendHelp": {
+    "message": "After you press Send, the email waits this long, so you can still take it back.",
+    "description": "Settings > General: explanation under the Undo send row. src/renderer/settings.js (render)"
   },
   "settings.general.fit": {
     "message": "Fit content to window",
@@ -5169,8 +5353,44 @@
     "description": "settings > general. src/renderer/settings.js (render)"
   },
   "settings.general.notificationsHelp": {
-    "message": "Show a desktop notification for new emails.",
-    "description": "settings > general. src/renderer/settings.js (render)"
+    "message": "Show a notification for new emails: on the desktop, or inside Rukoo while its window is in front.",
+    "description": "settings > general. Settings > General: explanation below Notifications. While Rukoo's window is in front, a message at the bottom of the window takes the place of the desktop notification. src/renderer/settings.js (render)"
+  },
+  "settings.general.newMailSound": {
+    "message": "Sound for new mail",
+    "description": "settings > general. Settings > General: title of the switch that plays a short sound when new email arrives. Off by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.newMailSoundHelp": {
+    "message": "Play a short coo when new emails arrive. It stays quiet while Rukoo Voice records a meeting.",
+    "description": "settings > general. Settings > General: explanation below Sound for new mail. The coo is the pigeon sound from the Rukoo website; Rukoo Voice is the meeting recorder. src/renderer/settings.js (render)"
+  },
+  "settings.general.notificationsUnavailable": {
+    "message": "This computer doesn't offer notifications to Rukoo.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system has no notifications for Rukoo, such as a Linux desktop without a notification service. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotification": {
+    "message": "Send a test notification",
+    "description": "settings > general. Settings > General: title of the row that shows a desktop notification now, to check that notifications reach the user. src/renderer/settings.js (render)"
+  },
+  "settings.general.testNotificationFailed": {
+    "message": "The system didn't show it. Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system refused the notification without a reason. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationFailedReason": {
+    "message": "The system didn't show it ({reason}). Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system refused the notification. {reason}: the system's own message, often in English. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationHelp": {
+    "message": "Shows one now, also while Rukoo is in front, so you can check that notifications reach you.",
+    "description": "settings > general. Settings > General: explanation below Send a test notification before a test. Rukoo normally shows no desktop notification while its window is in front. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationSending": {
+    "message": "Sending…",
+    "description": "settings > general. Settings > General: below Send a test notification while the test is on its way. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationSent": {
+    "message": "Sent. Didn't see it? Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification once the system took the notification. Rukoo cannot see whether it appeared, so the text says where to look if it did not. src/renderer/settings.js (noticesDesc)"
   },
   "settings.general.signature": {
     "message": "Signature",
@@ -5264,6 +5484,10 @@
     "message": "Rukoo signs in with the username and password above. Leave this empty to show no calendar for this account.",
     "description": "Server settings form and the manual servers of the setup form: help text under the CalDAV address field. In both forms the username and password fields are above it. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
+  "settings.signature.accountTitle": {
+    "message": "Signature for {email}",
+    "description": "Title of the signature editor opened for one account, from its page, its Sender addresses page or the Signatures page; email is the account's address. src/renderer/settings.js (openSettings)"
+  },
   "settings.signature.generalValue": {
     "message": "General: {signature}",
     "description": "settings > signature. src/renderer/settings.js (render)"
@@ -5286,11 +5510,35 @@
   },
   "settings.signature.usesGeneral": {
     "message": "Uses the general signature",
-    "description": "settings > signature. Account settings: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
+    "description": "settings > signature. An account's Signature row (on its page and its Sender addresses page) and its row on the Signatures page: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
   },
   "settings.signature.useGeneral": {
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
+  },
+  "settings.signatures.title": {
+    "message": "Signatures",
+    "description": "Settings: the row in the Accounts card that opens the Signatures page, and that page's title. The page lists the general signature and each account's signature. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.rowHelp": {
+    "message": "General and per account",
+    "description": "Settings: help under the Signatures row in the Accounts card. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.general": {
+    "message": "General signature",
+    "description": "Settings > Signatures: the row with the general signature, and the title of the signature editor it opens. src/renderer/settings.js (render, openSettings)"
+  },
+  "settings.signatures.generalHelp": {
+    "message": "For accounts without a signature of their own",
+    "description": "Settings > Signatures: help under General signature, saying which accounts send it. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.own": {
+    "message": "Its own signature",
+    "description": "Settings > Signatures: value of an account's row when the account has a signature of its own, which is previewed below; the other values are Uses the general signature and None. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.aliases": {
+    "message": "Also under mail from {addresses}",
+    "description": "Settings > Signatures: help under an account that has aliases; its signature also goes under mail sent from them. addresses is a list of email addresses, joined in the interface language (\"a@example.com and b@example.com\"). src/renderer/settings.js (render)"
   },
   "calendar.free.title": {
     "message": "Availability",
@@ -6552,6 +6800,14 @@
     "message": "Every 30 minutes",
     "description": "settings > sync. src/renderer/settings.js"
   },
+  "settings.undoSend.off": {
+    "message": "Off",
+    "description": "Settings > General > Undo send: choice that sends email right away, without an Undo notice. src/renderer/settings.js (UNDO_SEND)"
+  },
+  "settings.undoSend.seconds": {
+    "message": { "one": "{count} second", "other": "{count} seconds" },
+    "description": "Settings > General > Undo send: choice for how long an email waits after Send; count is 5, 10, 20 or 30. src/renderer/settings.js (UNDO_SEND)"
+  },
   "settings.theme.dark": {
     "message": "Dark",
     "description": "settings > theme. src/renderer/settings.js"
@@ -6811,6 +7067,10 @@
   "settings.general.macMinimizeHelp": {
     "message": "Hide the minimized window and show a menu bar icon. Reopen Rukoo from that icon or the Dock.",
     "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macZoomHelp": {
+    "message": "Use ⌘+Plus and ⌘+Minus. ⌘+0 goes back to 100%.",
+    "description": "macOS Settings > General: explanation below Zoom, naming the keyboard shortcuts. Replaces settings.general.zoomHelp on a Mac, where the mouse wheel doesn't zoom. src/renderer/settings.js (zoomRow)"
   },
   "setup.title": {
     "message": "Set up email",
@@ -8453,7 +8713,7 @@
     "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
   },
   "settings.keyboard.fixed": {
-    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears.",
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group.",
     "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.compose": {
@@ -8491,6 +8751,10 @@
   "settings.keyboard.actions.toggleRead": {
     "message": "Mark as read or unread",
     "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.readAll": {
+    "message": "Mark all as read",
+    "description": "Settings > Keyboard shortcuts: name of the action that marks every unread email the list shows read, in the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.star": {
     "message": "Star",

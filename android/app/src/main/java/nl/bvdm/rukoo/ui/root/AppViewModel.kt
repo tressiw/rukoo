@@ -171,12 +171,17 @@ class AppViewModel(
         if (account != null && folder != null) viewModelScope.launch { runCatching { services.mail.openFolder(account, folder) } }
     }
 
-    /** Opens [id] in the reader and marks it read, as desktop's openMessage does (drafts stay as they are). */
+    /**
+     * Opens [id] in the reader and marks it read, as desktop's openMessage does (drafts stay as they are). An email
+     * that was unread is kept first, so the Unread filter still lists it once the read flag lands.
+     */
     fun openMessage(id: String) {
         set { it.openMessage(id) }
         viewModelScope.launch {
             val m = runCatching { services.mail.summary(id) }.getOrNull() ?: return@launch
-            if (m.unread && m.role != FolderRole.DRAFTS) runCatching { services.mail.setFlags(listOf(id), unread = false) }
+            if (!m.unread || m.role == FolderRole.DRAFTS) return@launch
+            set { it.keep(id) }
+            runCatching { services.mail.setFlags(listOf(id), unread = false) }
         }
     }
 

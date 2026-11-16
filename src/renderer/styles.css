@@ -465,6 +465,19 @@ kbd {
   overflow: hidden;
   pointer-events: none;
 }
+/* Window buttons on the left, or on both sides, on Linux: bootstrap.js sets data-controls="left". The bar then follows
+ * the window controls overlay's titlebar-area rectangle, the part of the bar the buttons leave free, in CSS pixels at
+ * the current zoom. The brand starts after the buttons, and the actions end 12px before any buttons on the right or
+ * the window's edge. The brand's padding is wider than the icon rail: the brand grows to fit it, which keeps the
+ * search clear of the buttons and leaves no room for the icon, as on macOS. */
+:root[data-controls="left"] .titlebar {
+  padding-right: calc(
+    100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - env(titlebar-area-x, 0px))) + 12px
+  );
+}
+:root[data-controls="left"] .titlebar-brand {
+  padding-left: calc(22px + env(titlebar-area-x, 0px));
+}
 /* Traffic lights stay in native screen pixels while page zoom scales this bar.
  * Keep the brand width aligned with the sidebar and reserve the left inset inside it. */
 :root[data-platform="darwin"] .titlebar {
@@ -801,6 +814,11 @@ body:has(.page) .titlebar-actions {
 .nav-item.drop-target {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+/* While an email is dragged, a folder row takes the drop itself rather than its icon, name or count. Chromium refuses a
+   drop when the element under the pointer changed on the last update before it. */
+body.dragging-mail .nav-item * {
+  pointer-events: none;
 }
 
 .sidebar-foot {
@@ -1260,6 +1278,62 @@ body:has(.page) .titlebar-actions {
   padding: 0 6px 16px;
   outline: none;
 }
+/* New mail above or below what the list shows (app.js updateNewPill). It floats over the top of the list, above the
+   sticky day heading; app.js sets top. The chevron says which way the mail is. */
+.new-pill {
+  position: absolute;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  max-width: calc(100% - 32px);
+  padding: 0 12px 0 8px;
+  border-radius: 9999px;
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: new-pill-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: background 120ms ease;
+}
+.new-pill[hidden] {
+  display: none;
+}
+.new-pill:hover {
+  background: var(--hover);
+}
+.new-pill:active {
+  transform: translateX(-50%) scale(0.96);
+}
+.new-pill svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--accent);
+  stroke-width: 2;
+}
+.new-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes new-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .new-pill {
+    animation: none;
+  }
+}
 .group-head {
   position: sticky;
   top: 0;
@@ -1462,7 +1536,7 @@ body:has(.page) .titlebar-actions {
   margin-top: 1px;
 }
 
-/* Stacks, when they are on: read mail in a row from one sender folds into one row with a count. */
+/* Stacks, when they are on: read mail in a row from one sender folds into one row with a pile icon and a count. */
 .stack-btn {
   height: 18px;
   min-width: 26px;
@@ -1472,9 +1546,22 @@ body:has(.page) .titlebar-actions {
   color: var(--text-2);
   font-size: 11px;
   font-weight: 650;
-  display: inline-grid;
-  place-items: center;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   flex: none;
+  position: relative;
+}
+/* A 24px target around the 18px chip, so a near miss doesn't open the email instead. */
+.stack-btn::before {
+  content: '';
+  position: absolute;
+  inset: -3px -2px;
+}
+.stack-btn:not(.open) {
+  padding-left: 5px;
 }
 .stack-btn:hover {
   background: var(--active);
@@ -1484,13 +1571,21 @@ body:has(.page) .titlebar-actions {
   width: 13px;
   height: 13px;
 }
+/* The edge of the next card in the pile, under a folded row. The row keeps room for it: the row's wrap clips what
+   sticks out, for swipes. */
+.item-wrap.folded {
+  padding-bottom: 4px;
+}
+.item-wrap.folded .swipe-bg {
+  bottom: 4px;
+}
 .item.folded::after {
   content: '';
   position: absolute;
   left: 22px;
   right: 22px;
-  bottom: -3px;
-  height: 4px;
+  bottom: -4px;
+  height: 5px;
   border-radius: 0 0 6px 6px;
   border: 1px solid var(--border);
   border-top: 0;
@@ -1643,6 +1738,58 @@ body:has(.page) .titlebar-actions {
 }
 .empty .btn {
   margin-top: 10px;
+}
+.list-scroll .empty .spinner {
+  width: 18px;
+  height: 18px;
+  margin: 0 0 6px;
+  border-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+  border-top-color: var(--text-2);
+}
+
+/* The row at the end of the list: Load older, or how the search of older mail on the server went. */
+.list-older {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  padding: 14px 12px 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: pretty;
+}
+.list-older .t {
+  color: var(--text-2);
+}
+.list-older .h {
+  font-variant-numeric: tabular-nums;
+}
+.list-older .spinner {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  border-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+  border-top-color: var(--text-2);
+}
+.list-older .btn {
+  gap: 6px;
+  padding-left: 10px;
+}
+.list-older .btn .ic {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.list-older .btn:disabled {
+  cursor: progress;
+}
+.empty + .list-older {
+  margin-top: -48px;
 }
 
 /* ---------- divider ---------- */
@@ -2124,6 +2271,22 @@ body:has(.page) .titlebar-actions {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+/* The spinner in place of a save icon while a large email's attachments come in (app.js wholeMessage), the size of
+   the icon so the button keeps its shape. */
+.att .icon-btn .spinner,
+.atts-head .link-btn .spinner {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+}
+@media (prefers-reduced-motion: reduce) {
+  .att .icon-btn .spinner,
+  .atts-head .link-btn .spinner {
+    animation-duration: 2s;
+  }
 }
 
 /* Related emails under the header (app.js relatedHtml): one line per email in a card, newest first. The card folds
@@ -2654,11 +2817,13 @@ body:has(.page) .titlebar-actions {
 .toast.show.has-action {
   pointer-events: auto;
 }
+/* A 24px target; the negative margins keep the notice as tall as one without a button. */
 .toast button {
   color: #9cc0ff;
   font-weight: 650;
-  padding: 2px 6px;
-  margin-right: -6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  margin: -4px -8px -4px 0;
   border-radius: 6px;
   white-space: nowrap;
 }
@@ -3310,6 +3475,9 @@ body.compose-window {
   flex: 1;
   padding-left: 16px;
 }
+:root[data-controls="left"] .compose-window .titlebar-brand {
+  padding-left: calc(16px + env(titlebar-area-x, 0px));
+}
 .compose-window .titlebar-name {
   font-size: 12.5px;
   color: var(--text);
@@ -3435,6 +3603,29 @@ body.compose-window {
 .recipient.invalid {
   box-shadow: inset 0 0 0 1.5px var(--danger);
 }
+.recipient[draggable='true'] {
+  cursor: grab;
+}
+.recipient.dragging {
+  opacity: 0.4;
+}
+/* Where a dragged recipient will land: a field of To, Cc and Bcc, or the Cc or Bcc link that opens one. Marked like a
+   folder an email is dragged onto (.nav-item.drop-target). The field's band reaches into the composer's side padding,
+   so the label doesn't sit on its edge. */
+.field.drop-recipient::before {
+  content: '';
+  position: absolute;
+  inset: 3px -8px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  pointer-events: none;
+}
+.cc-links .link-btn.drop-recipient {
+  color: var(--link);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
 .recipient button {
   width: 18px;
   height: 18px;
@@ -3471,9 +3662,11 @@ body.compose-window {
   padding: 6px 10px;
   border-radius: 6px;
 }
+/* The keyboard's row, which Enter picks: the selected-row grey, as in the @-mention list. The dark --hover is
+   darker than --raised, so it doesn't show on this surface. */
 .suggest button.active,
 .suggest button:hover {
-  background: var(--hover);
+  background: var(--sel);
 }
 .suggest .addr {
   color: var(--text-3);
@@ -3762,6 +3955,145 @@ body.compose-window {
   box-shadow: var(--shadow);
   animation: pop 100ms ease;
 }
+/* Links in the text (editor-links.js), for mail and meeting notes: the bubble under a link at the caret and the
+   popover Ctrl+K opens. Both are popovers in the top layer, so no pane clips them; the script places them. */
+.link-bubble,
+.link-pop {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  max-width: calc(100vw - 16px);
+  overflow: visible;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transform-origin: top left;
+  animation: pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.link-bubble {
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+.link-bubble:popover-open {
+  display: flex;
+}
+.link-bubble button {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.link-bubble button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.link-bubble button:active {
+  background: var(--active);
+}
+/* The address gives way first in a narrow window; Change and Remove keep their words. */
+.link-bubble .link-go {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--link);
+}
+.link-bubble .link-go:hover {
+  color: var(--link);
+}
+.link-go svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+/* In a narrow window the path gives way before the site, and the site loses its start: the end of the host, which
+   names where the link goes, stays in view. */
+.link-go-url {
+  display: flex;
+  min-width: 0;
+}
+.link-go-site,
+.link-go-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.link-go-site {
+  flex: 0 1 auto;
+  direction: rtl;
+}
+.link-go-site bdi {
+  direction: ltr;
+}
+.link-go-path {
+  flex: 0 1000 auto;
+}
+.link-bubble .sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+.link-pop {
+  width: 360px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 14px;
+}
+.link-pop:popover-open {
+  display: grid;
+}
+.link-pop label {
+  display: contents;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.link-pop input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  outline: none;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  user-select: text;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.link-pop input::placeholder {
+  color: var(--text-3);
+}
+.link-pop input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.link-pop label:first-child input {
+  grid-column: 2 / 4;
+}
+.link-pop .btn {
+  border-radius: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .link-bubble,
+  .link-pop {
+    animation: none;
+  }
+}
 .color-input {
   position: absolute;
   opacity: 0;
@@ -3776,7 +4108,7 @@ body.compose-window {
   justify-items: start;
 }
 .composer.drop-files::after {
-  content: 'Loslaten om bij te voegen';
+  content: attr(data-drop-hint);
   position: absolute;
   inset: 8px;
   border: 2px dashed var(--accent);
@@ -3788,6 +4120,11 @@ body.compose-window {
   color: var(--accent);
   pointer-events: none;
   z-index: 50;
+}
+/* While files are dragged over it, the composer itself takes the drop rather than what is in it, like the chat panel
+   (.agentpane.is-drop): a drop that went to an element drawn again just before it never reached the composer. */
+.composer.drop-files * {
+  pointer-events: none;
 }
 
 /* The composer's free-times dialog: four choices in a grid, then a preview of what goes into the message, drawn as
@@ -7531,6 +7868,24 @@ button.cal-gchip-main:hover {
 }
 .sig-preview p {
   margin: 0;
+}
+/* Settings > Accounts: the Signatures row leads with a pen, in the column the add row's plus uses. */
+.row .sig-ic {
+  color: var(--text-2);
+  width: 30px;
+  display: grid;
+  place-items: center;
+}
+.row .sig-ic svg {
+  width: 20px;
+  height: 20px;
+}
+/* Settings > Signatures: an account's avatar stays beside its address while a preview makes the row tall. */
+.row.sig-account {
+  align-items: flex-start;
+}
+.row.sig-account .avatar {
+  flex: none;
 }
 .sig-dialog .sig-help {
   font-size: 12.5px;

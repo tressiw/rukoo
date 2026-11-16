@@ -18,9 +18,23 @@ const { normalizeZoom } = require('./zoom');
 
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
-const LIMITS = { inbox: 300, default: 100 };
-// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch().
+// The newest messages the cache keeps of the inbox and of every other folder. Load older (loadOlder()) widens a
+// folder's window by batch messages at a time, to at most extra beyond these.
+const LIMITS = { inbox: 300, default: 100, batch: 100, extra: 1000 };
+// The views Load older can widen: each lists whole folders, so what it says is on the server is what it can bring in.
+// Unread and VIPs pick from the inbox, and their header names the older unread mail instead.
+const OLDER_VIEWS = ['inbox', 'folder', 'sent', 'drafts', 'trash', 'junk', 'archive'];
+// Searching the server for older mail (searchServer()): from this many characters, this many folders per account at a
+// time and the newest hits matches per folder, with up to kept hits per folder held for opening them.
+const SEARCH = { min: 2, folders: 12, hits: 50, kept: 300 };
+// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch(). A larger one
+// shows its text before its attachments when it is opened; see readableSource().
 const PREFETCH = { count: 30, maxBytes: 1024 * 1024 };
+// An empty picture without a size of its own, in place of an inline picture that is still on its way. The reader
+// sizes pictures by their own proportions (mailframe.js), so a transparent pixel would turn a 560 x 120 banner into a
+// square. This one keeps the box the picture's width and height give it, and takes no room without them. Encoded
+// without quotes or spaces, so it fits any attribute or url() the empty address stood in.
+const BLANK_IMAGE = 'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%220%22%20height=%220%22/%3E';
 const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk', archive: 'archive' };
 // Earlier versions put this signature under every mail by default; it is now opt-in.
 const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
@@ -34,6 +48,10 @@ const MOVE_PAST = 5;
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 // How many related emails the reader gets under an email; see related().
 const RELATED_LIMIT = 20;
+// Settings > General > Undo send: how many seconds Send waits before the email goes (main.js and outbox.js), as
+// Apple Mail and Gmail offer it. 0 is off. The renderer's list in settings.js offers the same values.
+const UNDO_SEND_SECONDS = [0, 5, 10, 20, 30];
+const UNDO_SEND_DEFAULT = 5;
 
 const DEFAULT_SETTINGS = {
   language: 'en',
@@ -42,6 +60,8 @@ const DEFAULT_SETTINGS = {
   fitContent: true,
   darkEmails: true,
   notifications: true,
+  // A short sound for new mail, played by the main window (main.js showMailNotices). Off by default.
+  newMailSound: false,
   badge: 'new',
   density: 'standard',
   sort: 'date-desc',
@@ -64,6 +84,8 @@ const DEFAULT_SETTINGS = {
   // Three or more emails in a row from one sender, on one day, fold into one row in the list (renderer stackLayout).
   // Off by default, so every email has its own row.
   stackSenders: false,
+  // Seconds an email waits after Send, so the notice that follows can take it back; one of UNDO_SEND_SECONDS.
+  undoSend: UNDO_SEND_DEFAULT,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
   // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
@@ -100,6 +122,8 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.stackSenders = s.stackSenders === true;
+  s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
+  s.newMailSound = s.newMailSound === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
@@ -240,9 +264,17 @@ function messageKey(v) {
   return String(v || '').trim().replace(/[<>]/g, '').toLowerCase();
 }
 
+// Recipients of an email to send: { name, address } objects or bare addresses, without empty ones.
+function addressList(list) {
+  return (list || []).map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a)).filter((a) => a && a.address);
+}
+
 class Engine extends EventEmitter {
-  constructor({ dataDir, secrets, google = null, fetchImpl = null }) {
+  // limits: other window sizes than LIMITS, and search: other sizes than SEARCH, for tests.
+  constructor({ dataDir, secrets, google = null, fetchImpl = null, limits = null, search = null }) {
     super();
+    this.limits = { ...LIMITS, ...(limits || {}) };
+    this.search = { ...SEARCH, ...(search || {}) };
     this.fetch = fetchImpl || ((...args) => fetch(...args));
     this.dataDir = dataDir;
     this.secrets = secrets || { encrypt: (s) => s, decrypt: (s) => s };
@@ -258,14 +290,26 @@ class Engine extends EventEmitter {
     this.syncs = new Map();
     this.saved = [];
     this.saveTimers = new Map();
-    // Local changes whose IMAP command has not finished yet; re-applied over sync results.
+    // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
+    // sync results. See holdPending().
     this.pending = new Map();
+    // What those changes did to an inbox's count of older unread mail, per email; see recountOf().
+    this.recounts = new Map();
     // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
     this.undoable = new Map();
     // Message bodies being downloaded, by cache file; see download().
     this.downloads = new Map();
     // Accounts whose newest messages are being downloaded ahead of time.
     this.prefetching = new Set();
+    // Older mail the server search found below a folder's window (searchServer()), by account and folder (foundKey()):
+    // { uidValidity, hits }, where hits maps a uid to { msg, query }, query being the search it matched last. Kept in
+    // memory only, so it can be opened, moved and deleted like cached mail.
+    this.found = new Map();
+    // Load older runs, by the view they widen; see loadOlder().
+    this.loading = new Map();
+    // The latest server search, which a call with resume continues: { id, queue }, queue holding the folders still to
+    // search by account. See searchServer().
+    this.searching = null;
     this.closed = false;
   }
 
@@ -762,6 +806,7 @@ class Engine extends EventEmitter {
     this.sessions.delete(id);
     if (s) await s.close();
     this.caches.delete(id);
+    for (const key of this.found.keys()) if (key.startsWith(`${id}\n`)) this.found.delete(key);
     this.tokens.delete(id);
     clearTimeout(this.saveTimers.get(id));
     this.saveTimers.delete(id);
@@ -842,24 +887,78 @@ class Engine extends EventEmitter {
   async syncAll() {
     const errors = [];
     await Promise.all(
-      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err)}`)))
+      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err, a)}`)))
     );
     if (errors.length) throw new Error(errors.join('\n'));
+  }
+
+  // The sync the user asked for, of one account or of all. A failure reads the way the sidebar shows it for the
+  // account (friendlyError), with the account so a refused password at Gmail or Yahoo points to its app password.
+  async syncNow(accountId = null) {
+    if (!accountId) return this.syncAll();
+    try {
+      await this.syncAccount(accountId);
+    } catch (err) {
+      throw new Error(friendlyError(err, this.accounts.find((a) => a.id === accountId)));
+    }
   }
 
   pendingKey(accountId, folder, uid) {
     return `${accountId}\n${folder}\n${uid}`;
   }
 
-  // Tracks an optimistic change until its IMAP command settles, so a sync that read
-  // server state just before the command cannot undo it in the cache.
-  async withPending(acc, folder, uid, patch, op) {
-    const key = this.pendingKey(acc.id, folder, uid);
-    this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+  // Holds an optimistic change to one email until its IMAP command settles, so a sync that read server state just
+  // before the command cannot undo it in the cache. Changes to the same email line up in the order they were made: a
+  // sync sees them merged with the latest on top, and each one lets go of its own only, so an earlier change that
+  // finishes never drops a later one (such as Undo of a Mark all as read that is still on its way).
+  // The changes to one email share a base: the fields as the server last took them, taken from current (the email
+  // before this change) the first time a change sets a field, and moved up by each change that reaches the server.
+  // before: settles when the earlier changes to this email have. confirm(): the server took this change.
+  // rollback(): what a failure puts back, the base of each field no later change has set since.
+  holdPending(accountId, folder, uid, patch, current = null) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const earlier = this.pending.get(key) || [];
+    const base = earlier.length ? earlier[0].base : {};
+    if (current) for (const k of Object.keys(patch)) if (!(k in base)) base[k] = Boolean(current[k]);
+    let settle;
+    const hold = { patch, base, settled: new Promise((resolve) => (settle = resolve)) };
+    this.pending.set(key, [...earlier, hold]);
+    return {
+      before: Promise.all(earlier.map((h) => h.settled)),
+      confirm: () => {
+        for (const k of Object.keys(patch)) if (k in base) base[k] = patch[k];
+      },
+      rollback: () => {
+        const all = this.pending.get(key) || [];
+        const later = all.slice(all.indexOf(hold) + 1);
+        const back = {};
+        for (const k of Object.keys(patch)) if (k in base && !later.some((h) => k in h.patch)) back[k] = base[k];
+        return back;
+      },
+      release: () => {
+        settle();
+        const rest = (this.pending.get(key) || []).filter((h) => h !== hold);
+        if (rest.length) this.pending.set(key, rest);
+        else {
+          // Nothing more on its way for this email: what its changes did to the count stays until a sync counts again.
+          this.pending.delete(key);
+          this.recounts.delete(key);
+        }
+      },
+    };
+  }
+
+  // Runs op once the earlier changes to this email have reached the server, so a move or delete never overtakes a
+  // flag write still on its way to the old folder and uid. recount: the email's record of the inbox's count of older
+  // unread mail, as removeFromCache() gives it; it stays in this.recounts until the email's changes have settled.
+  async withPending(acc, folder, uid, patch, op, recount = null) {
+    const hold = this.holdPending(acc.id, folder, uid, patch);
+    if (recount) this.recounts.set(recount.key, recount);
     try {
+      await hold.before;
       return await op();
     } finally {
-      this.pending.delete(key);
+      hold.release();
     }
   }
 
@@ -867,7 +966,8 @@ class Engine extends EventEmitter {
     if (!this.pending.size) return messages;
     const out = [];
     for (const m of messages) {
-      const p = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const holds = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const p = holds && Object.assign({}, ...holds.map((h) => h.patch));
       if (!p) out.push(m);
       else if (!p.removed) out.push({ ...m, ...p });
     }
@@ -919,9 +1019,9 @@ class Engine extends EventEmitter {
       }
       // The last sync stays the last one that got through every folder.
       if (!failed) cache.lastSync = Date.now();
-      cache.error = failed ? friendlyError(failed) : null;
+      cache.error = failed ? friendlyError(failed, acc) : null;
     } catch (err) {
-      cache.error = friendlyError(err);
+      cache.error = friendlyError(err, acc);
       this.changed(id);
       throw err;
     }
@@ -933,6 +1033,14 @@ class Engine extends EventEmitter {
     return fresh;
   }
 
+  // How many of a folder's newest messages the cache keeps: the folder's limit, plus what Load older added (box.extra).
+  windowOf(accountId, folderPath) {
+    const cache = this.caches.get(accountId);
+    const info = (cache && cache.folders.find((f) => f.path === folderPath)) || {};
+    const box = cache && cache.boxes[folderPath];
+    return (info.role === 'inbox' ? this.limits.inbox : this.limits.default) + ((box && box.extra) || 0);
+  }
+
   // background: a sync nobody waits for, which lets the user's own commands go first on the connection.
   async syncFolderInto(acc, folderPath, { background = false } = {}) {
     const cache = this.caches.get(acc.id);
@@ -940,9 +1048,18 @@ class Engine extends EventEmitter {
     const prev = cache.boxes[folderPath];
     const known = new Map();
     if (prev) for (const m of prev.messages) known.set(m.uid, m);
-    const limit = info.role === 'inbox' ? LIMITS.inbox : LIMITS.default;
+    // The older mail a server search found there, as the command runs, whose flags the sync asks for too.
+    let asked = [];
     const res = await this.session(acc).syncFolder(folderPath, {
-      limit,
+      // Read when the command runs: Load older can widen the window while this sync waits for the connection.
+      limit: () => this.windowOf(acc.id, folderPath),
+      // With the older mail whose change of the unread count is on its way, a move included; see carryRecounts().
+      keep: () => {
+        const entry = this.foundIn(acc.id, folderPath);
+        asked = entry ? [...entry.hits.keys()] : [];
+        const changing = [...this.recounts.values()].filter((r) => r.accountId === acc.id && r.folder === folderPath).map((r) => r.uid);
+        return [...new Set([...asked, ...changing])];
+      },
       known,
       uidValidity: prev ? prev.uidValidity : null,
       background,
@@ -953,14 +1070,20 @@ class Engine extends EventEmitter {
     });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
+    // What Load older added, as it is now: it may have changed while this sync ran.
+    const extra = (cache.boxes[folderPath] || {}).extra || 0;
     cache.boxes[folderPath] = {
       uidValidity: res.uidValidity,
       exists: res.exists,
       // The inbox's unread mail older than messages, as the server counted it; null when it couldn't. See olderUnread().
       ...(info.role === 'inbox' ? { olderUnseen: Number.isInteger(res.olderUnseen) ? res.olderUnseen : null } : {}),
+      ...(extra ? { extra } : {}),
       syncedAt: Date.now(),
       messages: this.applyPending(acc.id, folderPath, res.messages)
     };
+    this.pruneFound(acc.id, folderPath);
+    this.refreshFound(acc.id, folderPath, asked, res.kept);
+    this.carryRecounts(acc.id, folderPath, res.kept);
     if (!sameValidity && prev) {
       fs.rmSync(this.file('bodies', acc.id), { recursive: true, force: true });
       for (const [key, r] of this.undoable) if (r.accountId === acc.id && r.destination === folderPath) this.undoable.delete(key);
@@ -1029,32 +1152,35 @@ class Engine extends EventEmitter {
     return !scope || scope === 'all' ? this.accounts : this.accounts.filter((a) => a.id === scope);
   }
 
-  collect(scope, predicate) {
+  // query: also the older mail the server search found for it (searchServer()), marked older.
+  collect(scope, predicate, { query = null } = {}) {
     const out = [];
     for (const acc of this.scopeAccounts(scope)) {
       const cache = this.caches.get(acc.id);
       if (!cache) continue;
+      const hits = query ? (p) => this.olderHits(acc.id, p, query) : null;
       for (const [folderPath, box] of Object.entries(cache.boxes)) {
         const info = cache.folders.find((f) => f.path === folderPath) || { path: folderPath };
         // Gmail's All Mail also holds every message of the other folders. Normally its copies of those
         // are hidden; the archive view only drops what is still in a system folder, so archived mail
         // with a label stays visible there.
-        const elsewhere = info.role === 'all' ? this.messageIdsOutside(cache, folderPath, predicate.archive ? SYSTEM_ROLES : null) : null;
-        for (const m of box.messages) {
-          if (elsewhere && m.messageId && elsewhere.has(m.messageId)) continue;
-          if (predicate(info, m)) out.push(this.publicMessage(acc, folderPath, m));
-        }
+        const elsewhere = info.role === 'all' ? this.messageIdsOutside(cache, folderPath, predicate.archive ? SYSTEM_ROLES : null, hits) : null;
+        const shown = (m) => !(elsewhere && m.messageId && elsewhere.has(m.messageId)) && predicate(info, m);
+        for (const m of box.messages) if (shown(m)) out.push(this.publicMessage(acc, folderPath, m));
+        if (hits) for (const m of hits(folderPath)) if (shown(m)) out.push({ ...this.publicMessage(acc, folderPath, m), older: true });
       }
     }
     return out;
   }
 
-  messageIdsOutside(cache, folderPath, roles = null) {
+  // hits: for a search, the older mail the server found in a folder, which counts as being there too.
+  messageIdsOutside(cache, folderPath, roles = null, hits = null) {
     const ids = new Set();
     for (const [p, box] of Object.entries(cache.boxes)) {
       if (p === folderPath) continue;
       if (roles && !roles.includes((cache.folders.find((f) => f.path === p) || {}).role)) continue;
       for (const m of box.messages) if (m.messageId) ids.add(m.messageId);
+      if (hits) for (const m of hits(p)) if (m.messageId) ids.add(m.messageId);
     }
     return ids;
   }
@@ -1082,23 +1208,28 @@ class Engine extends EventEmitter {
     }
   }
 
+  // A search (query) matches the subject, preview, sender and recipients of the cached mail, and lists the older mail
+  // the server search found for it as well; the server matched that, which can be on text the cache doesn't have.
   listMessages({ scope = 'all', view = 'inbox', folder = null, query = '', sort } = {}) {
+    const q = String(query || '').trim().toLowerCase();
     let list =
       view === 'saved'
         ? this.saved.filter((s) => scope === 'all' || s.accountId === scope).map((s) => ({ ...s, unread: false }))
-        : this.collect(scope, this.viewPredicate(view, folder));
-    const q = String(query || '').trim().toLowerCase();
+        : this.collect(scope, this.viewPredicate(view, folder), { query: q || null });
     if (q) {
-      list = list.filter((m) =>
-        [m.subject, m.preview, m.from && m.from.name, m.from && m.from.address, ...(m.to || []).map((t) => `${t.name} ${t.address}`)]
-          .join(' ')
-          .toLowerCase()
-          .includes(q)
+      list = list.filter(
+        (m) =>
+          m.older ||
+          [m.subject, m.preview, m.from && m.from.name, m.from && m.from.address, ...[...(m.to || []), ...(m.cc || [])].map((t) => `${t.name} ${t.address}`)]
+            .join(' ')
+            .toLowerCase()
+            .includes(q)
       );
     }
     const order = sort || this.settings.sort;
-    const byDate = (a, b) => b.date - a.date;
-    if (order === 'date-asc') list.sort((a, b) => a.date - b.date);
+    // Mail with the same time goes in the order it arrived in its folder, by uid.
+    const byDate = (a, b) => b.date - a.date || (b.uid || 0) - (a.uid || 0);
+    if (order === 'date-asc') list.sort((a, b) => byDate(b, a));
     else if (order === 'unread') list.sort((a, b) => Number(b.unread) - Number(a.unread) || byDate(a, b));
     else if (order === 'sender') {
       list.sort((a, b) => (a.from.name || a.from.address).localeCompare(b.from.name || b.from.address, getLocale()) || byDate(a, b));
@@ -1165,7 +1296,7 @@ class Engine extends EventEmitter {
     res.all = Object.values(res.accounts).reduce((a, b) => a + b, 0);
     // The list only holds the newest inboxLimit messages of each inbox, so its header names the older unread mail apart.
     res.olderUnread = this.olderUnread(scope);
-    res.inboxLimit = LIMITS.inbox;
+    res.inboxLimit = this.limits.inbox;
     const count = (view, onlyUnread) =>
       this.collect(scope, this.viewPredicate(view)).filter((m) => !onlyUnread || m.unread).length;
     // Only the inbox and Unread add the older mail: VIP picks its mail by sender, and other folders count their cache.
@@ -1192,16 +1323,283 @@ class Engine extends EventEmitter {
     return res;
   }
 
+  // ---------- older mail ----------
+
+  // The synced folders a view lists in an account, as viewPredicate() picks them; 'everything' is a search of all
+  // folders. The cache's order, which starts with the inbox.
+  viewFolders(accountId, view, folder = null) {
+    const cache = this.caches.get(accountId);
+    if (!cache) return [];
+    const role = (p) => (cache.folders.find((f) => f.path === p) || {}).role;
+    const paths = Object.keys(cache.boxes);
+    switch (view) {
+      case 'inbox':
+      case 'unread':
+      case 'vip':
+        return paths.filter((p) => role(p) === 'inbox');
+      case 'folder':
+        return paths.filter((p) => p === folder);
+      case 'starred':
+        return paths.filter((p) => role(p) !== 'trash' && role(p) !== 'junk');
+      case 'everything':
+        return paths;
+      case 'archive':
+        return paths.filter((p) => role(p) === 'archive' || role(p) === 'all');
+      default:
+        return VIEW_ROLES[view] ? paths.filter((p) => role(p) === VIEW_ROLES[view]) : [];
+    }
+  }
+
+  // How many messages of a folder are on the server below the cache's window, as the last sync counted them.
+  olderOnServer(accountId, folderPath) {
+    const box = (this.caches.get(accountId) || { boxes: {} }).boxes[folderPath];
+    return box ? Math.max(0, (box.exists || 0) - this.windowOf(accountId, folderPath)) : 0;
+  }
+
+  // The folders of a view that Load older can widen, with how many messages each has on the server beyond the cache.
+  olderFolders(accountId, view, folder = null) {
+    if (!OLDER_VIEWS.includes(view)) return [];
+    const cache = this.caches.get(accountId);
+    return this.viewFolders(accountId, view, folder)
+      .filter((p) => (cache.boxes[p].extra || 0) < this.limits.extra)
+      .map((p) => ({ path: p, more: this.olderOnServer(accountId, p) }))
+      .filter((f) => f.more > 0);
+  }
+
+  // How many older messages Load older can still bring into a view (the list's scope, view and folder).
+  olderCount({ scope = 'all', view = 'inbox', folder = null } = {}) {
+    let n = 0;
+    for (const acc of this.scopeAccounts(scope)) for (const f of this.olderFolders(acc.id, view, folder)) n += f.more;
+    return n;
+  }
+
+  // For the list on screen: more, what Load older can bring in (olderCount()); server, how many messages of the
+  // folders a search there covers are on the server below the cache, so a search of the server can find any.
+  olderState(opts = {}) {
+    const { scope = 'all', view = 'inbox', folder = null } = opts;
+    let server = 0;
+    if (view !== 'saved') {
+      for (const acc of this.scopeAccounts(scope)) {
+        for (const p of this.viewFolders(acc.id, view, folder)) server += this.olderOnServer(acc.id, p);
+      }
+    }
+    return { more: this.olderCount(opts), server };
+  }
+
+  // Load older at the end of the list: widens the window of each folder the view lists by the next batch of older
+  // messages and syncs it. The wider window stays, also over restarts, up to LIMITS.extra beyond the folder's limit;
+  // new mail moves it along, like the window it widens. A folder that fails keeps its window; the error names its
+  // account. A second call for the same view while one runs waits for that one.
+  loadOlder({ scope = 'all', view = 'inbox', folder = null } = {}) {
+    const key = JSON.stringify([scope, view, folder]);
+    if (this.loading.has(key)) return this.loading.get(key);
+    const job = (async () => {
+      const errors = [];
+      await Promise.all(
+        this.scopeAccounts(scope).map(async (acc) => {
+          for (const { path: p } of this.olderFolders(acc.id, view, folder)) {
+            const box = this.caches.get(acc.id).boxes[p];
+            const before = box.extra || 0;
+            const extra = Math.min(this.limits.extra, before + this.limits.batch);
+            box.extra = extra;
+            try {
+              await this.syncFolderAndNotify(acc, p);
+            } catch (err) {
+              const now = (this.caches.get(acc.id) || { boxes: {} }).boxes[p];
+              if (now && now.extra === extra) now.extra = before;
+              if (this.closed || !this.accounts.includes(acc)) return;
+              errors.push(`${acc.email}: ${friendlyError(err, acc)}`);
+              // The account's next folder would fail the same way.
+              return;
+            }
+          }
+        })
+      );
+      if (errors.length) throw new Error(errors.join('\n'));
+    })().finally(() => this.loading.delete(key));
+    this.loading.set(key, job);
+    return job;
+  }
+
+  foundKey(accountId, folderPath) {
+    return `${accountId}\n${folderPath}`;
+  }
+
+  // The older mail found in a folder, while it belongs to the uids the folder has now; null for none.
+  foundIn(accountId, folderPath) {
+    const entry = this.found.get(this.foundKey(accountId, folderPath));
+    const box = (this.caches.get(accountId) || { boxes: {} }).boxes[folderPath];
+    return entry && box && entry.uidValidity === box.uidValidity ? entry : null;
+  }
+
+  // The older messages the server search found in a folder for query (lower case, trimmed).
+  olderHits(accountId, folderPath, query) {
+    const entry = this.foundIn(accountId, folderPath);
+    if (!entry) return [];
+    const out = [];
+    for (const h of entry.hits.values()) if (h.query === query) out.push(h.msg);
+    return out;
+  }
+
+  // An older message the server search found, by its uid; null when there is none.
+  olderHit(accountId, folderPath, uid) {
+    const entry = this.foundIn(accountId, folderPath);
+    const hit = entry && entry.hits.get(Number(uid));
+    return hit ? hit.msg : null;
+  }
+
+  // After a sync of a folder: older mail found there that is now in the window, or gone from the server, leaves the
+  // found mail. All of it goes when the folder's uids were given out again.
+  pruneFound(accountId, folderPath) {
+    const key = this.foundKey(accountId, folderPath);
+    const entry = this.found.get(key);
+    if (!entry) return;
+    const box = this.caches.get(accountId).boxes[folderPath];
+    if (!box || box.uidValidity !== entry.uidValidity || !box.exists) {
+      this.found.delete(key);
+      return;
+    }
+    // Every message from the oldest the window has upward is in the window.
+    if (!box.messages.length) return;
+    const first = Math.min(...box.messages.map((m) => m.uid));
+    for (const uid of [...entry.hits.keys()]) if (uid >= first) entry.hits.delete(uid);
+  }
+
+  // After a sync of a folder, for the older mail found there that the sync asked about (asked, their uids): what
+  // another device read, starred or deleted shows here too. kept has the flags the server has now, without the
+  // messages it no longer has; an optimistic change still on its way to the server goes over them. Nothing changes
+  // when the server didn't answer (kept not a list). The same object stays, which an open message or an undo may hold.
+  // Older inbox mail needs no recount: the same sync counted the older unread mail on the server again, before any
+  // change still on its way, which carryRecounts() adds.
+  refreshFound(accountId, folderPath, asked, kept) {
+    const entry = this.foundIn(accountId, folderPath);
+    if (!entry || !asked.length || !Array.isArray(kept)) return;
+    const now = new Map(this.applyPending(accountId, folderPath, kept).map((r) => [r.uid, r]));
+    for (const uid of asked) {
+      const hit = entry.hits.get(uid);
+      if (!hit) continue;
+      const row = now.get(uid);
+      if (!row) entry.hits.delete(uid);
+      else for (const k of ['unread', 'starred', 'answered']) if (k in row) hit.msg[k] = row[k];
+    }
+  }
+
+  // Searches the server for mail older than the cache holds, in the folders a search covers: the list's scope, view
+  // and folder as listMessages takes them, where 'everything' searches all synced folders. listMessages lists what it
+  // finds for the same query, until a sync finds it in the window or another search of that folder replaces it.
+  // Folders the cache holds entirely aren't searched, nor are saved emails. One call searches up to SEARCH.folders
+  // folders per account, so a list of results comes back in time; remaining says how many are left. resume: search the
+  // next ones of the same search (scope, view, folder and query) instead of starting again from the first. Returns
+  // more, how many matches beyond the newest SEARCH.hits per folder didn't come back, and errors, one line per account
+  // whose server couldn't be searched; that account's other folders aren't searched.
+  async searchServer({ scope = 'all', view = 'inbox', folder = null, query = '', resume = false } = {}) {
+    const text = String(query || '').trim().slice(0, 500);
+    const key = text.toLowerCase();
+    const out = { more: 0, errors: [], remaining: 0 };
+    if (key.length < this.search.min || view === 'saved') return out;
+    // The views that list mail by a flag ask the server for it too.
+    const criteria = view === 'unread' ? { seen: false } : view === 'starred' ? { flagged: true } : {};
+    const id = JSON.stringify([scope, view, folder, key]);
+    let run = this.searching;
+    if (!resume || !run || run.id !== id) {
+      // The folders to search, by account, in the order viewFolders() gives them: the inbox first.
+      run = { id, queue: new Map() };
+      for (const acc of this.scopeAccounts(scope)) {
+        if (this.caches.get(acc.id)) run.queue.set(acc.id, this.viewFolders(acc.id, view, folder).filter((p) => this.olderOnServer(acc.id, p) > 0));
+      }
+      this.searching = run;
+    }
+    await Promise.all(
+      [...run.queue].map(async ([accountId, paths]) => {
+        const batch = paths.splice(0, this.search.folders);
+        const acc = this.accounts.find((a) => a.id === accountId);
+        const cache = acc && this.caches.get(acc.id);
+        if (!cache) {
+          paths.length = 0;
+          return;
+        }
+        for (const p of batch) {
+          // A newer search started: this one stops, and what it finds would replace that one's results.
+          if (this.searching !== run) return;
+          const box = cache.boxes[p];
+          // Gone since the search started, or all of it in the cache now.
+          if (!box || this.olderOnServer(acc.id, p) === 0) continue;
+          const prior = this.foundIn(acc.id, p);
+          const known = new Map(prior ? [...prior.hits].map(([uid, h]) => [uid, h.msg]) : []);
+          const info = cache.folders.find((f) => f.path === p) || {};
+          let res;
+          try {
+            res = await this.session(acc).searchFolder(p, text, {
+              below: box.messages.length ? Math.min(...box.messages.map((m) => m.uid)) : null,
+              limit: this.search.hits,
+              known,
+              uidValidity: box.uidValidity,
+              signals: info.role === 'inbox',
+              criteria,
+              gmail: info.role !== 'trash' && info.role !== 'junk'
+            });
+          } catch (err) {
+            // The account's next folder would fail the same way.
+            paths.length = 0;
+            if (this.searching !== run || this.closed || !this.accounts.includes(acc)) return;
+            out.errors.push(`${acc.email}: ${friendlyError(err, acc)}`);
+            return;
+          }
+          if (this.searching !== run) return;
+          this.keepHits(acc, p, key, res);
+          out.more += Math.max(0, res.total - res.messages.length);
+        }
+      })
+    );
+    for (const paths of run.queue.values()) out.remaining += paths.length;
+    return out;
+  }
+
+  // Keeps what a server search of a folder found for query (lower case), unless the folder changed meanwhile: its
+  // uids given out again, or the account removed. Mail the window has now stays out. A message found before keeps its
+  // object, which an open message or an undo may hold, with the server's flags.
+  keepHits(acc, folderPath, query, res) {
+    const box = this.accounts.includes(acc) && (this.caches.get(acc.id) || { boxes: {} }).boxes[folderPath];
+    if (!box || box.uidValidity !== res.uidValidity) return;
+    const key = this.foundKey(acc.id, folderPath);
+    let entry = this.found.get(key);
+    if (!entry || entry.uidValidity !== res.uidValidity) {
+      entry = { uidValidity: res.uidValidity, hits: new Map() };
+      this.found.set(key, entry);
+    }
+    // What matched this query before and doesn't now no longer shows for it.
+    for (const h of entry.hits.values()) if (h.query === query) h.query = null;
+    const first = box.messages.length ? Math.min(...box.messages.map((m) => m.uid)) : Infinity;
+    for (const m of this.applyPending(acc.id, folderPath, res.messages)) {
+      if (m.uid >= first) continue;
+      const prior = entry.hits.get(m.uid);
+      const hit = prior || { msg: m, query };
+      if (prior) {
+        Object.assign(prior.msg, m);
+        prior.query = query;
+        entry.hits.delete(m.uid);
+      }
+      entry.hits.set(m.uid, hit);
+    }
+    // The oldest kept go first; what was just found is at the end.
+    for (const uid of [...entry.hits.keys()]) {
+      if (entry.hits.size <= this.search.kept) break;
+      entry.hits.delete(uid);
+    }
+  }
+
   // ---------- messages ----------
 
+  // older: the message is older mail the server search found, outside the cache's window.
   locate(id) {
     const { accountId, folder, uid } = decodeId(id);
     const acc = this.account(accountId);
     const cache = this.caches.get(accountId);
     const box = cache.boxes[folder];
-    const msg = box && box.messages.find((m) => m.uid === uid);
+    const cached = box && box.messages.find((m) => m.uid === uid);
+    const msg = cached || this.olderHit(accountId, folder, uid);
     if (!msg) throw new Error(t('errors.message.missing'));
-    return { acc, cache, box, msg, folder, uid };
+    return { acc, cache, box, msg, folder, uid, older: !cached };
   }
 
   async rawSource(id) {
@@ -1222,12 +1620,15 @@ class Engine extends EventEmitter {
   }
 
   // One download per message at a time. A message the user opens while it waits as background work is fetched
-  // again in the user's turn, rather than behind the rest of the prefetch.
+  // again in the user's turn, rather than behind the rest of the prefetch. What waits for the background download
+  // then has the message as soon as the user's download brings it.
   download(acc, box, folder, uid, file, background) {
     const running = this.downloads.get(file);
     if (running && (background || !running.background)) return running.raw;
     const entry = { background };
-    entry.raw = this.session(acc)
+    entry.raw = new Promise((resolve, reject) => (entry.settle = { resolve, reject }));
+    if (running) entry.raw.then(running.settle.resolve, () => {});
+    this.session(acc)
       .fetchSource(folder, uid, { background })
       .then((raw) => {
         // Not kept for an account removed in the meantime, or a folder whose uids were reassigned: their bodies
@@ -1247,9 +1648,44 @@ class Engine extends EventEmitter {
       })
       .finally(() => {
         if (this.downloads.get(file) === entry) this.downloads.delete(file);
-      });
+      })
+      .then(entry.settle.resolve, entry.settle.reject);
     this.downloads.set(file, entry);
     return entry.raw;
+  }
+
+  // Resolves once the whole message is on disk, so the next getMessage reads it from there: at once when it is, or
+  // when its download lands. That download is background work, or the user's with now (an attachment they opened).
+  // false when it came in but couldn't be kept, on a full disk for example: getMessage without fast then reads it whole
+  // from the server again, and with fast still gives the text alone.
+  async downloaded(id, { now = false } = {}) {
+    if (String(id).startsWith('saved:')) return true;
+    const { acc, box, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    if (!fs.existsSync(file)) await (now ? this.rawSource(id) : this.download(acc, box, folder, uid, file, true));
+    return fs.existsSync(file);
+  }
+
+  // A large message the user opens before it is downloaded: its text, invitation and inline pictures, with the
+  // attachments left empty (ImapAccount.fetchReadable), so the reader shows it without waiting for them. The whole
+  // message follows as background work; downloaded() says when it is in. null to read the whole message now: one that
+  // is saved, small, on disk or on its way in the user's turn, or whose account or server can't split it.
+  async readableSource(id) {
+    if (String(id).startsWith('saved:')) return null;
+    const { acc, box, msg, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    const session = this.session(acc);
+    const running = this.downloads.get(file);
+    if ((msg.size || 0) <= PREFETCH.maxBytes || typeof session.fetchReadable !== 'function' || (running && !running.background) || fs.existsSync(file)) return null;
+    let source = null;
+    try {
+      source = await session.fetchReadable(folder, uid);
+    } catch (_) {
+      // A server that doesn't give the parts: the whole message, as before.
+    }
+    if (!source) return null;
+    this.download(acc, box, folder, uid, file, true).catch(() => {});
+    return source;
   }
 
   // Downloads the newest inbox messages ahead of time, so opening one reads it from disk. The fetches run as
@@ -1286,27 +1722,41 @@ class Engine extends EventEmitter {
     const keep = new Set();
     for (const [folder, box] of Object.entries(cache.boxes)) {
       for (const m of box.messages) keep.add(path.basename(this.bodyFile(acc, box, folder, m.uid)));
+      const found = this.foundIn(acc.id, folder);
+      if (found) for (const uid of found.hits.keys()) keep.add(path.basename(this.bodyFile(acc, box, folder, uid)));
     }
     for (const name of fs.readdirSync(dir)) {
       if (name.endsWith('.eml') && !keep.has(name)) fs.rmSync(path.join(dir, name), { force: true });
     }
   }
 
-  async getMessage(id) {
-    const raw = await this.rawSource(id);
-    const parsed = await simpleParser(raw);
+  // fast: for the reader, which can show a large message before its attachments are in (readableSource). The result
+  // then has partial set, attachment sizes from the server, and nothing in place of the inline pictures that didn't
+  // come with the text. Everything else gets the whole message.
+  async getMessage(id, { fast = false } = {}) {
+    const skeleton = fast ? await this.readableSource(id) : null;
+    const parsed = await simpleParser(skeleton || (await this.rawSource(id)));
+    // The size of an attachment the skeleton left empty.
+    const omitted = (a) => {
+      const v = skeleton && a.headers && typeof a.headers.get === 'function' ? a.headers.get(util.OMITTED.toLowerCase()) : null;
+      return v != null && /^\d+$/.test(String(v)) ? Number(v) : null;
+    };
     const base = String(id).startsWith('saved:')
       ? { ...this.saved.find((s) => s.id === id) }
       : (() => {
           const { acc, folder, msg } = this.locate(id);
           return this.publicMessage(acc, folder, msg);
         })();
-    const html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    let html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    // An inline picture the skeleton left empty is an empty data: address, which shows as a broken image. A blank one
+    // keeps its place until the whole message is in.
+    if (skeleton) html = html.replace(/data:image\/[\w.+-]+;base64,(?=["')\s>]|$)/gi, BLANK_IMAGE);
     // An invitation's calendar part in the body (calendar: true) shows as its card in the reader, not as an attachment;
     // agents still see it as one, as before. An .ics attachment stays a plain attachment.
     const part = invite.calendarPart(parsed.attachments);
     const body = new Set(part ? part.hidden : []);
     return {
+      ...(skeleton ? { partial: true } : {}),
       ...base,
       from: util.addressFromParsed(parsed.from)[0] || base.from,
       to: util.addressFromParsed(parsed.to),
@@ -1328,7 +1778,7 @@ class Engine extends EventEmitter {
           index,
           filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }),
           contentType: a.contentType,
-          size: a.size,
+          size: omitted(a) ?? a.size,
           related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid)),
           ...(body.has(index) ? { calendar: true } : {})
         }))
@@ -1368,53 +1818,157 @@ class Engine extends EventEmitter {
     return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType, charset };
   }
 
+  // One email's flags. An email no longer in the cache, or a server that refuses, throws.
   async setFlags(id, flags) {
-    const { acc, msg, folder, uid } = this.locate(id);
+    this.locate(id);
+    const { error } = await this.setFlagsMany([id], flags);
+    if (error) throw new Error(error);
+  }
+
+  // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
+  // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
+  // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
+  // Emails no longer in the cache are skipped. A failure puts the flag back to what the server last took, unless a
+  // later change has set it since, so a refused Undo of a refused Mark all as read leaves the email as it was.
+  // Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
+  async setFlagsMany(ids, flags) {
     const patch = {};
     for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
-    Object.assign(msg, patch);
-    this.changed(acc.id);
-    try {
-      await this.withPending(acc, folder, uid, patch, () => this.session(acc).setFlags(folder, uid, patch));
-    } catch (err) {
-      // Revert on whatever object the cache holds now; a sync may have replaced it.
+    const found = [];
+    for (const id of new Set(ids)) {
       try {
-        const now = this.locate(id).msg;
-        for (const k of Object.keys(patch)) now[k] = !patch[k];
+        found.push({ id, ...this.locate(id) });
       } catch (_) {
-        // The message left the cache in the meantime.
+        // Moved or deleted since the list showed it.
       }
-      this.changed(acc.id);
-      throw new Error(friendlyError(err));
+    }
+    const accounts = new Set(found.map((f) => f.acc.id));
+    for (const f of found) {
+      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
+      // Older inbox mail the server search found is in the server's count of older unread mail (olderUnread()), which
+      // only the next sync redoes, so the count follows the message here. See recountOf().
+      f.recount = f.older && patch.unread !== undefined ? this.recountOf(f.acc.id, f.folder, f.uid, f.msg) : null;
+      Object.assign(f.msg, patch);
+      if (f.recount) {
+        this.recounts.set(f.recount.key, f.recount);
+        this.recount(f.recount);
+      }
+    }
+    for (const id of accounts) this.changed(id);
+    const done = [];
+    const failed = [];
+    let error = null;
+    for (const f of found) {
+      try {
+        await f.hold.before;
+        await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+        f.hold.confirm();
+        done.push(f.id);
+      } catch (err) {
+        failed.push(f.id);
+        error = error || friendlyError(err);
+        // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again.
+        const back = f.hold.rollback();
+        try {
+          Object.assign(this.locate(f.id).msg, back);
+        } catch (_) {
+          // The message left the cache in the meantime; a move still on its way puts this object back if it fails.
+          Object.assign(f.msg, back);
+        }
+        if (f.recount) this.recount(f.recount);
+      } finally {
+        f.hold.release();
+      }
+    }
+    if (failed.length) for (const id of accounts) this.changed(id);
+    return { done, failed, error };
+  }
+
+  // Changes an inbox's count of older unread mail by n, when the server gave one.
+  recountOlder(box, n) {
+    if (n && box && Number.isInteger(box.olderUnseen)) box.olderUnseen = Math.max(0, box.olderUnseen + n);
+  }
+
+  // The record of what the changes to one older message the server search found did to the folder's count of older
+  // unread mail, while any of them is on its way to the server. One record serves all of the email's changes, flags
+  // and a move alike, and lasts until the last of them settles (holdPending()), so whichever of them fail or get
+  // through, in whatever order, the count ends matching the message. box: whose count, null once it no longer holds
+  // the message (carryRecounts()); basis: whether that count holds the message as unread; applied: what has gone onto
+  // it since. msg: the message (the search results keep the object); out: a move or delete took it out of the folder.
+  // A new record is held once this.recounts has it, which setFlagsMany() and withPending() do.
+  recountOf(accountId, folder, uid, msg) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const held = this.recounts.get(key);
+    if (held) return held;
+    const box = this.caches.get(accountId).boxes[folder];
+    return { key, accountId, folder, uid, msg, out: false, box, basis: Boolean(msg.unread), applied: 0 };
+  }
+
+  // Moves the count to the message as the cache has it now: counted while it is unread and in the folder.
+  recount(r) {
+    const want = (!r.out && r.msg.unread ? 1 : 0) - (r.basis ? 1 : 0);
+    this.recountOlder(r.box, want - r.applied);
+    r.applied = want;
+  }
+
+  // After a sync replaced a folder's box: its count holds each older message as the server had it, which the flags it
+  // brought for the messages with changes still on their way say (kept). Their records start again from there, on the
+  // new box. A message without flags is gone from the server, in the window now, or the folder's uids were given out
+  // again: it no longer changes the count, box null.
+  carryRecounts(accountId, folderPath, kept) {
+    const box = this.caches.get(accountId).boxes[folderPath];
+    const rows = new Map((Array.isArray(kept) ? kept : []).map((k) => [k.uid, k]));
+    for (const r of this.recounts.values()) {
+      if (r.accountId !== accountId || r.folder !== folderPath) continue;
+      const row = rows.get(r.uid);
+      r.box = row ? box : null;
+      r.basis = Boolean(row && row.unread);
+      r.applied = 0;
+      this.recount(r);
     }
   }
 
-  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
-  async markAllRead(scope, view, folder, { category = null } = {}) {
-    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
-    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
-    for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
-    return list.length;
-  }
-
+  // Takes a message out of the cache, as a move or delete does before the server answers, older mail the server
+  // search found included. Returns what puts it back when the server turns the command down, with recount, the
+  // message's record of the inbox's count of older unread mail (recountOf()), for withPending().
   removeFromCache(acc, folder, uid) {
     const cache = this.caches.get(acc.id);
     const box = cache.boxes[folder];
+    const msg = box && box.messages.find((m) => m.uid === uid);
     if (box) box.messages = box.messages.filter((m) => m.uid !== uid);
+    const entry = this.foundIn(acc.id, folder);
+    const hit = entry && entry.hits.get(uid);
+    // Unread older inbox mail leaves the server's count with it.
+    const recount = hit ? this.recountOf(acc.id, folder, uid, hit.msg) : null;
+    if (hit) {
+      entry.hits.delete(uid);
+      recount.out = true;
+      this.recount(recount);
+    }
+    const putBack = () => {
+      const now = (this.caches.get(acc.id) || { boxes: {} }).boxes[folder];
+      if (!now) return;
+      if (msg && !now.messages.some((m) => m.uid === uid)) now.messages.push(msg);
+      if (hit && this.foundIn(acc.id, folder) === entry) {
+        entry.hits.set(uid, hit);
+        recount.out = false;
+        this.recount(recount);
+      }
+    };
+    putBack.recount = recount;
+    return putBack;
   }
 
   async move(id, destination) {
     const { acc, msg, folder, uid } = this.locate(id);
     if (destination === folder) return;
-    this.removeFromCache(acc, folder, uid);
+    const putBack = this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
     let moved;
     try {
-      moved = await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination));
+      moved = await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination), putBack.recount);
     } catch (err) {
-      const box = this.caches.get(acc.id).boxes[folder];
-      if (box) box.messages.push(msg);
+      putBack();
       this.changed(acc.id);
       throw new Error(friendlyError(err));
     }
@@ -1535,16 +2089,16 @@ class Engine extends EventEmitter {
   // Moves to Prullenbak, or deletes for good when the message is already there.
   // Without a Prullenbak it returns 'confirm' and changes nothing until called with force.
   async remove(id, { force = false } = {}) {
-    const { acc, folder, uid, msg } = this.locate(id);
+    const { acc, folder, uid } = this.locate(id);
     const trash = this.folderByRole(acc.id, 'trash');
     if (trash && trash.path !== folder) return this.move(id, trash.path).then(() => 'trash');
     if (!trash && !force) return 'confirm';
-    this.removeFromCache(acc, folder, uid);
+    const putBack = this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
     try {
-      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).deleteForever(folder, uid));
+      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).deleteForever(folder, uid), putBack.recount);
     } catch (err) {
-      this.caches.get(acc.id).boxes[folder].messages.push(msg);
+      putBack();
       this.changed(acc.id);
       throw new Error(friendlyError(err));
     }
@@ -1601,18 +2155,14 @@ class Engine extends EventEmitter {
   // ---------- compose ----------
 
   async buildMail(acc, payload) {
-    const addrs = (list) =>
-      (list || [])
-        .map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a))
-        .filter((a) => a.address);
     const from = this.identity(acc, payload.from || null);
     if (!from) throw new Error(t('errors.send.identity', { address: payload.from }));
     const inline = util.inlineDataImages(payload.html || '');
     return {
       from: { name: from.name || acc.name || '', address: from.address },
-      to: addrs(payload.to),
-      cc: addrs(payload.cc),
-      bcc: addrs(payload.bcc),
+      to: addressList(payload.to),
+      cc: addressList(payload.cc),
+      bcc: addressList(payload.bcc),
       subject: payload.subject || '',
       html: inline.html || undefined,
       text: payload.text || (payload.html ? util.htmlToPlain(payload.html) : ''),
@@ -1746,16 +2296,26 @@ class Engine extends EventEmitter {
     return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'], skipSpam: true });
   }
 
+  // What send() refuses before it builds the mail: an unknown account or sender address, no recipients, an address
+  // that isn't one. Main asks first when Send waits for its Undo notice (outbox.js), so the open editor still shows
+  // the mistake. Returns the account.
+  checkSend(payload) {
+    const acc = this.account(payload.accountId);
+    if (!this.identity(acc, payload.from || null)) throw new Error(t('errors.send.identity', { address: payload.from }));
+    const people = [...addressList(payload.to), ...addressList(payload.cc), ...addressList(payload.bcc)];
+    if (!people.length) throw new Error(t('errors.send.noRecipients'));
+    for (const a of people) {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
+    }
+    return acc;
+  }
+
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
   // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
   async send(payload, { icalEvent = null } = {}) {
-    const acc = this.account(payload.accountId);
+    const acc = this.checkSend(payload);
     const mail = await this.buildMail(acc, payload);
     if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
-    if (!mail.to.length && !mail.cc.length && !mail.bcc.length) throw new Error(t('errors.send.noRecipients'));
-    for (const a of [...mail.to, ...mail.cc, ...mail.bcc]) {
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
-    }
     const raw = await this.session(acc).send(mail);
     // Sending takes a while. New account settings meanwhile close the session it started on, so the Sent copy goes
     // through the session the account has now; an account removed meanwhile keeps no copy.

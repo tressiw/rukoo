@@ -155,7 +155,8 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
     val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
     val subs = if (categories != null && catState.enabled) catState.categories else emptyList()
     // Inbox's count leaves out the unread mail of categories it doesn't show (desktop's inboxUnread); their own
-    // count is the Unread view's. Worked out from the unread inbox mail while one is hidden.
+    // count is the Unread view's. Worked out from the unread inbox mail while one is hidden, plus the unread mail older
+    // than the list, which has no category (counts.olderUnread).
     val hiding = subs.any { !it.inbox }
     val noVersion = remember { MutableStateFlow(0L) }
     val recordsVersion by (app.services.account?.version ?: noVersion).collectAsStateWithLifecycle()
@@ -205,7 +206,7 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
             if (kind == ViewKind.ARCHIVE && !hasArchive) continue
             if (kind == ViewKind.JUNK && !hasJunk) continue
             val view = MailView(kind, scope)
-            val n = (inboxUnread?.takeIf { kind == ViewKind.INBOX } ?: counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
+            val n = (inboxUnread?.takeIf { kind == ViewKind.INBOX }?.plus(counts.olderUnread) ?: counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
             val inbox = kind == ViewKind.INBOX && subs.isNotEmpty()
             NavItem(
                 label = viewTitle(view, folders),

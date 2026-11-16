@@ -959,6 +959,12 @@ test('pdfText stays within its caps on PDFs built to hang it or run it out of me
   assert.ok(r.repeatedStream.maxRss < 250 * 1024 * 1024, `repeatedStream peaked at ${Math.round(r.repeatedStream.maxRss / 1048576)} MB`);
   // A bomb uses up what may still be inflated, so its other references stop at once instead of inflating it again.
   assert.ok(r.rawBomb.cpuMs < 3000, `rawBomb took ${r.rawBomb.cpuMs} ms CPU (${r.rawBomb.ms} ms elapsed)`);
+  // Strings and comments that run on past their object share what they may look through: they use it up, and the
+  // strings after that stay cut and say so.
+  for (const name of ['openStrings', 'farStrings', 'openComments']) {
+    assert.equal(r[name].partial, true, name);
+    assert.ok(r[name].cpuMs < 3000, `${name} took ${r[name].cpuMs} ms CPU (${r[name].ms} ms elapsed)`);
+  }
 });
 
 test('every limit of the reader that drops content says partial, and the text before it stays; short of the limits nothing is partial', async () => {
@@ -1041,8 +1047,6 @@ test('pdfText: only an Encrypt that leads to an encryption dictionary makes a PD
   const locked = { text: '', pages: 0, truncated: false, partial: false, encrypted: true };
   const handler = '9 0 obj<</Filter/Standard/V 1/R 2/P -4>>endobj\n';
   const trailer = (pdf, entries) => Buffer.from(pdf.toString('latin1').replace('trailer<</Root', `trailer<<${entries}/Root`), 'latin1');
-  // The review's case: "12 0 obj" in a title makes the scan end the title there, and the trailer after it shows.
-  assert.deepEqual(pdfText(plainPage(text, { after: '11 0 obj<</Title(12 0 obj trailer<</Encrypt 9 0 R>>)>>endobj\n' })), read);
   // An Encrypt that leads to no object, to a number, or to a stream's dictionary, even one with a Filter.
   assert.deepEqual(pdfText(trailer(plainPage(text), '/Encrypt 9 0 R')), read);
   assert.deepEqual(pdfText(trailer(plainPage(text, { after: '9 0 obj 5 endobj\n' }), '/Encrypt 9 0 R')), read);
@@ -1052,6 +1056,44 @@ test('pdfText: only an Encrypt that leads to an encryption dictionary makes a PD
   assert.deepEqual(pdfText(trailer(plainPage(text), '/Encrypt<</Filter/Standard/V 1/R 2/P -4>>')), locked);
   const xref = '20 0 obj<</Type/XRef/Size 21/W[1 2 1]/Encrypt 9 0 R/Length 0>>stream\n\nendstream\nendobj\n';
   assert.deepEqual(pdfText(plainPage(text, { after: handler + xref })), locked);
+});
+
+test('pdfText: "endobj" or an object header in a string or comment is part of it, so no trailer or object inside one counts', () => {
+  const { plainPage } = require('./fixtures/make-pdf');
+  const text = 'BT /F1 12 Tf 72 700 Td (text) Tj ET';
+  const read = { text: 'text', pages: 1, truncated: false, partial: false, encrypted: false };
+  const locked = { text: '', pages: 0, truncated: false, partial: false, encrypted: true };
+  const fake = 'trailer<</Encrypt<</Filter/Standard>>>>';
+  // The issue's case: "12 0 obj" in a title ended the object there, so the trailer after it counted and the file
+  // read as encrypted. Also with endobj, with both, in two strings of one object, as the object itself, and in the
+  // dictionary of a stream: the page's own content.
+  for (const title of [`(12 0 obj ${fake})`, `(endobj ${fake})`, `(x endobj 12 0 obj ${fake})`]) {
+    assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj<</Title${title}>>endobj\n` })), read, title);
+  }
+  assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj<</Title(12 0 obj x)/Subject(13 0 obj ${fake})>>endobj\n` })), read);
+  assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj(12 0 obj ${fake})endobj\n` })), read);
+  assert.deepEqual(pdfText(plainPage(text, { stream: `/Title(13 0 obj ${fake})` })), read);
+  // The same in a comment: in the dictionary, after it, and after a number, which looks ahead for "0 R".
+  for (const obj of [`<</A 1 % 12 0 obj ${fake}\n>>`, `<</A 1>> % 12 0 obj ${fake}\n`, `5 % 12 0 obj ${fake}\n`]) {
+    assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj ${obj}endobj\n` })), read, obj);
+  }
+  // An object in a title or a comment doesn't replace the real one: font 5 again with "t" as "x".
+  const font = '5 0 obj<</Type/Font/Subtype/Type1/Encoding<</Differences[116/x]>>>>endobj';
+  for (const obj of [`<</Title(${font})>>`, `<</A 1 % ${font}\n>>`]) assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj${obj}endobj\n` })), read, obj);
+  // An encrypted file stays encrypted: with a trailer in a title before its own, and with an object 9 in a title
+  // after its encryption dictionary, which replaced it.
+  const handler = '9 0 obj<</Filter/Standard/V 1/R 2/P -4>>endobj\n';
+  const lock = (pdf) => {
+    const s = pdf.toString('latin1');
+    const at = s.lastIndexOf('trailer<</Root');
+    return Buffer.from(`${s.slice(0, at)}trailer<</Encrypt 9 0 R${s.slice(at + 9)}`, 'latin1');
+  };
+  assert.deepEqual(pdfText(lock(plainPage(text, { after: `${handler}11 0 obj<</Title(12 0 obj endobj trailer<</Root 1 0 R>>)>>endobj\n` }))), locked);
+  assert.deepEqual(pdfText(lock(plainPage(text, { after: `${handler}11 0 obj<</Title(9 0 obj<</Size 1>>endobj)>>endobj\n` }))), locked);
+  // A string a broken writer never closed still ends where its object does, even when a ")" further on would close
+  // it: what follows that ")" is no object's end, so it can't take in the page's content.
+  assert.deepEqual(pdfText(plainPage(`${text} )`, { before: '11 0 obj<</Title(open endobj\n' })), read);
+  assert.deepEqual(pdfText(plainPage(text, { before: '11 0 obj<</Title(open endobj\n', after: '12 0 obj<</Title(x)) /A 1 endobj\n' })), read);
 });
 
 test('pdfText reads a stream Length kept in an object of its own, so "endstream" in the data does not end it', () => {

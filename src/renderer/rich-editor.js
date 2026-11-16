@@ -1,7 +1,8 @@
 // Formatting, selection and link editing shared by mail and meeting notes.
 import { t } from './i18n.js';
 import { icons } from './icons.js';
-import { esc, dialog } from './ui.js';
+import { esc } from './ui.js';
+import { mountEditorLinks } from './editor-links.js';
 
 // Shared with the signature editor in Settings (signature.js).
 export const formatButtons = () => `
@@ -34,26 +35,9 @@ export function mountRichEditor(page, editor, { onChange = () => {}, onSelection
     return sel.rangeCount && editor.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
   };
 
-  async function insertLink() {
-    const range = editorRange();
-    const selected = range ? range.toString() : '';
-    const url = await dialog({
-      title: t('composer.link.title'),
-      buttons: [
-        { get label() { return t('common.actions.cancel'); }, value: null },
-        { get label() { return t('composer.link.insert'); }, value: (scrim) => scrim.querySelector('input').value.trim(), primary: true }
-      ],
-      render(body) {
-        body.innerHTML = `<div class="form" style="padding:0"><label data-i18n="composer.link.address">${esc(t('composer.link.address'))}<input class="form-input" type="text" placeholder="https://" value="${/^https?:\/\//.test(selected) ? esc(selected) : ''}"/></label></div>`;
-      }
-    });
-    if (!url) return restoreRange(range);
-    const href = /^(https?:|mailto:)/i.test(url) ? url : `https://${url}`;
-    restoreRange(range);
-    if (range && !range.collapsed) document.execCommand('createLink', false, href);
-    else document.execCommand('insertHTML', false, `<a href="${esc(href)}">${esc(url)}</a>`);
-    onChange();
-  }
+  const links = mountEditorLinks(editor, { editorRange, restoreRange, onChange });
+  cleanups.push(() => links.dispose());
+  const { insertLink } = links;
   const updateToolbar = () => {
     for (const cmd of ['bold', 'italic', 'underline', 'insertOrderedList', 'insertUnorderedList']) {
       const on = document.queryCommandState(cmd);

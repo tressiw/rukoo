@@ -228,8 +228,8 @@
     <string name="settings_phone_tools_openclaw">OpenClaw Rukoo op deze telefoon laten gebruiken</string>
     <string name="settings_phone_tools_openclaw_help">Voor een gateway in je tailnet. Voer de instellingen hieronder uit op de computer van de gateway.</string>
     <string name="settings_phone_tools_openclaw_needs_token">OpenClaw meldt zich aan met een token dat Rukoo maakt van het gateway-token. Vul dat eerst in onder Agents.</string>
-    <string name="settings_phone_tools_copy_open_claw_help">Een opdracht voor de computer van de gateway, met het Tailscale-adres van deze telefoon. Hij vervangt Rukoo op je computer in de tools van OpenClaw, en er staat een token in, deel hem dus niet.</string>
-    <string name="settings_phone_tools_copied_open_claw">Gekopieerd met %1$s. Voer het uit op de computer van de gateway en start daarna de OpenClaw-gateway opnieuw.</string>
+    <string name="settings_phone_tools_copy_open_claw_help">Twee stappen voor de computer van de gateway: een regel met het token voor het .env-bestand van OpenClaw, en een opdracht met het Tailscale-adres van deze telefoon. De opdracht vervangt Rukoo op je computer in de tools van OpenClaw. Deel het token niet.</string>
+    <string name="settings_phone_tools_copied_open_claw">Twee stappen gekopieerd met %1$s: een regel voor het .env-bestand van OpenClaw en een opdracht, allebei voor de computer van de gateway. Start daarna de gateway opnieuw.</string>
     <string name="settings_phone_tools_battery">Batterij</string>
     <string name="settings_phone_tools_battery_row">Batterijgebruik</string>
     <string name="settings_phone_tools_battery_help">Samsung stopt apps op de achtergrond om batterij te sparen, en dan kunnen agents Rukoo niet bereiken. Open de batterijpagina en kies Onbeperkt.</string>

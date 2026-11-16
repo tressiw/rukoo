@@ -434,8 +434,8 @@ class AccountService extends EventEmitter {
     const { authKey } = await this.authFor(this.state.email, password);
     if (typeof this.beforeDelete === 'function') {
       // The server checks the password only in the last call, and what beforeDelete removes (the booking page and
-      // its bookings) doesn't come back: a mistyped password has to stop before it.
-      await this.checkPassword(authKey);
+      // its bookings) doesn't come back: a mistyped password, or a session locked after too many, stops before it.
+      await this.checkPassword(authKey, session);
       await this.beforeDelete();
     }
     // The key to take the booking page's handle back with an account made again here: the server keeps the handle
@@ -465,10 +465,18 @@ class AccountService extends EventEmitter {
     this.saveState();
   }
 
-  // Whether authKey is this account's password, without changing anything there: a sign-in of its own (the route
-  // that answers a wrong password with 401), whose session ends at once. A wrong one throws wrong_password, as
-  // DELETE /v1/account would; it counts toward the same lock as any sign-in.
-  async checkPassword(authKey) {
+  // Whether authKey is this account's password, without changing anything there. POST /v1/password/check asks on the
+  // deleting session and counts a wrong password toward that session's lock, which DELETE /v1/account uses too, so
+  // the deletion would answer the same: wrong_password or locked. A server from before that call answers 404. There a
+  // sign-in of its own checks the password (that route answers a wrong one with 401) and its session ends at once;
+  // such a server counts the deletion toward the same account lock as that sign-in.
+  async checkPassword(authKey, session = this.session) {
+    try {
+      await this.call('POST', '/v1/password/check', { authKey: keys.b64u(authKey) }, { auth: true, session });
+      return;
+    } catch (err) {
+      if (!err || err.status !== 404) throw err;
+    }
     let res;
     try {
       res = await this.call('POST', '/v1/login', { email: this.state.email, authKey: keys.b64u(authKey), device: this.device() });
