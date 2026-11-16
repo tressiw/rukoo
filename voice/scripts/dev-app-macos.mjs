@@ -38,7 +38,9 @@
 // The app runs with RUKOO_VOICE_DATA_DIR=tmp/voice-dev/data and RUKOO_VOICE_BRIDGE=tmp/voice-dev/bridge.json, and
 // its log is tmp/voice-dev/data/logs/app.log. `--data` and `--bridge` override those paths. `--fake-engine`,
 // `--dev-hooks` and `--self-test` pass through to the app, with relative folders made absolute, because the working
-// directory of an app started with `open` is not the repository. The app's pid goes into tmp/voice-dev/pids.json;
+// directory of an app started with `open` is not the repository. RUKOO_VOICE_DUMP_EMPTY_DICTATION from this script's
+// own environment goes to the app as one more `--env`; no other variable does, and when it isn't set the `open` call
+// is the same as before. The app's pid goes into tmp/voice-dev/pids.json;
 // `open` hands back no pid, so the script finds the process by this bundle's exact executable path. `--stop` ends every
 // program running from this bundle, the app and the four helpers of every copy, found the same way, so a recording
 // meeting ends too: SIGTERM, then SIGKILL after five seconds. Nothing is stopped by name.
@@ -49,7 +51,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { alive, copyOf, iconChange, iconStamp, processTable, runningFrom, terminate } from './lib/dev-app.mjs';
+import { alive, copyOf, iconChange, iconStamp, openArgs, processTable, runningFrom, terminate } from './lib/dev-app.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -490,13 +492,14 @@ function openBundle(before) {
   fs.mkdirSync(DATA, { recursive: true });
   fs.mkdirSync(path.dirname(BRIDGE), { recursive: true });
   if (before.length) console.log(`another copy from this bundle runs as pid ${before.join(', ')}; starting one next to it`);
-  const args = [
-    '-n',
-    '--env', `RUKOO_VOICE_DATA_DIR=${DATA}`,
-    '--env', `RUKOO_VOICE_BRIDGE=${BRIDGE}`,
-    BUNDLE,
-  ];
-  if (ARGS.forward.length) args.push('--args', ...ARGS.forward);
+  const args = openArgs({
+    bundle: BUNDLE,
+    data: DATA,
+    bridge: BRIDGE,
+    forward: ARGS.forward,
+    // An app started with `open` doesn't inherit this shell's environment, so the switch is handed over explicitly.
+    dumpEmptyDictation: process.env.RUKOO_VOICE_DUMP_EMPTY_DICTATION,
+  });
   console.log(`opening ${BUNDLE}`);
   const out = spawnSync('open', args, { encoding: 'utf8' });
   if (out.status !== 0) throw new Error(`open failed: ${(out.stderr || '').trim() || `exit ${out.status}`}`);

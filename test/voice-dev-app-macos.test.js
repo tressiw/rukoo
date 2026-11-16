@@ -53,6 +53,31 @@ test('copyOf takes the recorded app and its workers, and nothing else from the b
   assert.deepEqual(copyOf(table, 99, app, [local]), []);
 });
 
+test('the open arguments carry the dev folders and the dictation dump switch only when it is set', async () => {
+  const { openArgs } = await lib();
+  const bundle = '/b/Rukoo Voice Dev.app';
+  const folders = [
+    '-n',
+    '--env', 'RUKOO_VOICE_DATA_DIR=/d/data',
+    '--env', 'RUKOO_VOICE_BRIDGE=/d/bridge.json',
+  ];
+  const paths = { bundle, data: '/d/data', bridge: '/d/bridge.json' };
+  assert.deepEqual(openArgs(paths), [...folders, bundle]);
+  // `open` doesn't hand the shell's environment to the app, so a set switch goes on the command line.
+  assert.deepEqual(openArgs({ ...paths, dumpEmptyDictation: '1' }), [
+    ...folders,
+    '--env', 'RUKOO_VOICE_DUMP_EMPTY_DICTATION=1',
+    bundle,
+  ]);
+  assert.deepEqual(openArgs({ ...paths, dumpEmptyDictation: '' }), [
+    ...folders,
+    '--env', 'RUKOO_VOICE_DUMP_EMPTY_DICTATION=',
+    bundle,
+  ]);
+  // The app's own flags stay behind `--args`, after the bundle.
+  assert.deepEqual(openArgs({ ...paths, forward: ['--fake-engine'] }), [...folders, bundle, '--args', '--fake-engine']);
+});
+
 test('a rebuild stops the recorded copy and its worker, and leaves its recorder and another copy running', { skip: process.platform !== 'darwin' && 'ps comm holds the full path on macOS only' }, async (t) => {
   const { alive, copyOf, processTable, runningFrom, terminate } = await lib();
   const macos = path.join(folder(t), 'Rukoo Voice Dev.app', 'Contents', 'MacOS');

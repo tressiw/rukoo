@@ -32,7 +32,7 @@ use crate::api::{Activity, PillPhase};
 use crate::engine::Core;
 use crate::meetings::tap::{self, TapEnd};
 use crate::pill::{self, notices};
-use crate::services::{AudioSink, MicLost, MicStream};
+use crate::services::{AudioSink, MicLost, MicOpen, MicStream};
 
 /// Ownkey's micro-tap gates (`ownkey.py:3189-3196`): under 800 WAV bytes (378 samples after the
 /// 44-byte header), or under 0.10 s without anything heard, nothing is sent anywhere.
@@ -95,6 +95,9 @@ struct Captured {
     closed: bool,
     /// How often Voice's own microphone was opened again after it stopped mid-dictation.
     reopens: u32,
+    /// Which open of this dictation's capture this is: 1 from the press, so a capture opened
+    /// after a lost stream or an ended tap logs as reopen 1. Only the capture's log line reads it.
+    mic_opens: u32,
 }
 
 struct Job {
@@ -483,16 +486,21 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         last_push: None,
         closed: false,
         reopens: 0,
+        mic_opens: 1,
     }));
     let make_sink = || audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
     let on_end = tap_ended(core, id, Arc::clone(&captured));
     let opened = match core.meetings.open_tap(make_sink(), on_end) {
-        Some(Ok(stream)) => Ok(stream),
+        Some(Ok(stream)) => {
+            log::info!("{}", tap_line(id));
+            Ok(stream)
+        }
         // The recorder's tap failed: dictation still works on its own capture.
-        Some(Err(_)) | None => core
-            .svc
-            .microphone
-            .open_watched(make_sink(), mic_lost(core, id, Arc::clone(&captured))),
+        Some(Err(_)) | None => core.svc.microphone.open_watched(
+            make_sink(),
+            mic_lost(core, id, Arc::clone(&captured)),
+            MicOpen::first(id),
+        ),
     };
     match opened {
         Ok(stream) => {
@@ -665,11 +673,18 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
 /// Opens Voice's own microphone into recording `id`'s buffer and puts it in place of the stream
 /// that ended, which is dropped here.
 fn reopen(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Result<(), String> {
+    // The opens number themselves over the whole dictation, whether the tap or a lost stream
+    // ended the one before, so the capture's lines read in the order they happened.
+    let about = {
+        let mut c = lock(&captured);
+        c.mic_opens += 1;
+        MicOpen::reopen(id, c.mic_opens - 1)
+    };
     let sink = audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
     let stream = core
         .svc
         .microphone
-        .open_watched(sink, mic_lost(core, id, captured))?;
+        .open_watched(sink, mic_lost(core, id, captured), about)?;
     let old = match lock(&core.dictation.recording)
         .as_mut()
         .filter(|r| r.id == id)
@@ -1011,6 +1026,16 @@ fn outcome_line(
 /// How much audio a recording holds. Every capture delivers 16 kHz mono samples.
 fn audio_of(pcm: &[i16]) -> Duration {
     Duration::from_secs_f64(pcm.len() as f64 / f64::from(voice_audio::SAMPLE_RATE))
+}
+
+/// The one line a dictation logs when it takes the meeting recorder's tap instead of opening a
+/// device of its own, so a reader can tell that path from a capture that opened a headset. The
+/// tap delivers 16 kHz mono already, so there is nothing to convert.
+fn tap_line(id: u64) -> String {
+    format!(
+        "dictation {id} capture open (meeting tap): the recorder's microphone tap at {} Hz",
+        voice_audio::SAMPLE_RATE
+    )
 }
 
 /// Whether a key that isn't a modifier went down while `key` was held for `held`, from how long
@@ -1711,6 +1736,15 @@ mod tests {
         assert_eq!(
             line,
             "dictation 5 ended: empty transcript (10.4 s held, 10.0 s of audio, peak -96 dBFS)"
+        );
+    }
+
+    /// A dictation during a meeting says that it takes the recorder's tap, and at which rate.
+    #[test]
+    fn a_tap_open_says_the_tap_is_used() {
+        assert_eq!(
+            tap_line(7),
+            "dictation 7 capture open (meeting tap): the recorder's microphone tap at 16000 Hz"
         );
     }
 

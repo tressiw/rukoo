@@ -1,5 +1,5 @@
-// The parts of voice/scripts/dev-app-macos.mjs that find and stop processes and fingerprint the icon, apart from the
-// script so test/voice-dev-app-macos.test.js can run them on processes it started itself.
+// The parts of voice/scripts/dev-app-macos.mjs that build `open`'s arguments, find and stop processes and fingerprint
+// the icon, apart from the script so test/voice-dev-app-macos.test.js can run them on processes it started itself.
 
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -7,6 +7,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The arguments `open` gets for a development copy: `-n` starts another copy, and the data folder and the discovery
+// file go in as `--env`, because an app started with `open` doesn't inherit the environment of the shell that ran the
+// script. `dumpEmptyDictation` travels the same way when the script's environment sets it, and is left out entirely
+// when it doesn't. App flags stay behind `--args`.
+export function openArgs({ bundle, data, bridge, forward = [], dumpEmptyDictation }) {
+  const args = ['-n', '--env', `RUKOO_VOICE_DATA_DIR=${data}`, '--env', `RUKOO_VOICE_BRIDGE=${bridge}`];
+  if (dumpEmptyDictation !== undefined) {
+    args.push('--env', `RUKOO_VOICE_DUMP_EMPTY_DICTATION=${dumpEmptyDictation}`);
+  }
+  args.push(bundle);
+  if (forward.length) args.push('--args', ...forward);
+  return args;
+}
 
 // Every process with its parent and executable. `ps` on macOS reports the full executable path in comm, so a match on
 // it never matches a process name or another Voice.
