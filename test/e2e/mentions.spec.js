@@ -48,12 +48,18 @@ async function newMessage() {
   await win.waitForSelector('.composer .editor');
 }
 
-// The field's own suggestions turn a known address into the person's name.
-async function addRecipient(page, field, address) {
+// The field's own suggestions turn a known address into the person's name. Enter picks the suggestion only while the
+// field has the focus; typed text that is left behind becomes a recipient without a name. So the helper checks both
+// ends: a pick that didn't happen fails here, where it happened, and not at the next check of the recipients (#194).
+async function addRecipient(page, field, address, name) {
   if (field !== 'to') await page.click(`[data-c="${field}"]`);
-  await page.fill(`[data-rinput="${field}"]`, address);
+  const input = page.locator(`[data-rinput="${field}"]`);
+  await input.fill(address);
   await expect(page.locator(`[data-rfield="${field}"] .suggest [role="option"]`).first()).toContainText(address);
+  await expect(input).toBeFocused();
   await page.keyboard.press('Enter');
+  await expect(chips(page, field).last()).toHaveText(name);
+  await expect(input).toHaveValue('');
 }
 
 // The stored copy of a message, by subject, as the reader gets it.
@@ -121,7 +127,7 @@ test('a bare @ in a reply offers the thread; a pick of a recipient only inserts 
 test('someone not on the email yet goes to Cc; Backspace takes the mention off and leaves them there', async () => {
   await launch();
   await newMessage();
-  await addRecipient(win, 'to', 'joris@example.com');
+  await addRecipient(win, 'to', 'joris@example.com', 'Joris Bakker');
   await win.click('.composer .editor');
   await win.keyboard.type('Hello @vande');
   await expect(names(win)).toHaveText(['Vandebron']);
@@ -204,7 +210,7 @@ test('an address in the text, quoted text and the signature open nothing; Escape
 test('a saved draft keeps its mentions after reopening; the stored mail has no editor locks', async () => {
   await launch();
   await newMessage();
-  await addRecipient(win, 'to', 'joris@example.com');
+  await addRecipient(win, 'to', 'joris@example.com', 'Joris Bakker');
   await win.fill('[data-field="subject"]', 'Mention draft');
   await win.click('.composer .editor');
   await win.keyboard.type('@sa');
@@ -234,8 +240,8 @@ test('a saved draft keeps its mentions after reopening; the stored mail has no e
 test('the sent mail links mentions of people in To and Cc, and names someone in Bcc without the address', async () => {
   await launch();
   await newMessage();
-  await addRecipient(win, 'to', 'joris@example.com');
-  await addRecipient(win, 'bcc', 'sanne@example.com');
+  await addRecipient(win, 'to', 'joris@example.com', 'Joris Bakker');
+  await addRecipient(win, 'bcc', 'sanne@example.com', 'Sanne de Vries');
   // Someone in Bcc without a name: the mention reads the part before the @.
   await win.fill('[data-rinput="bcc"]', 'hidden@example.org');
   await win.keyboard.press('Enter');
@@ -341,7 +347,7 @@ test('in a low compose window at 200 percent the list fits and scrolls to the ac
 test('the suggestions and the Cc notice speak Dutch', async () => {
   await launch('nl');
   await newMessage();
-  await addRecipient(win, 'to', 'joris@example.com');
+  await addRecipient(win, 'to', 'joris@example.com', 'Joris Bakker');
   await win.click('.composer .editor');
   await win.keyboard.type('@vande');
   await expect(list(win)).toHaveAttribute('aria-label', 'Personen om te vermelden');
@@ -352,4 +358,59 @@ test('the suggestions and the Cc notice speak Dutch', async () => {
   const tag = win.locator('.mention-suggest .mention-tag');
   await expect(tag).toHaveText(['Aan']);
   await expect(tag).toHaveAttribute('title', 'Staat al in Aan');
+});
+
+// A recipient field that loses the focus closes its suggestions a moment later, so a click on one still picks it. That
+// moment once closed the next field's list too, opened in the meantime, and Enter then added the typed address
+// without its name. The clock stands still until the list is open, then moves past that moment.
+for (const surface of ['inline', 'window']) {
+  test(`suggestions opened right after another recipient field lost the focus stay open (${surface})`, async () => {
+    await launch();
+    let page = win;
+    if (surface === 'inline') await newMessage();
+    else {
+      [page] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+      await page.waitForSelector('.composer .editor');
+    }
+    await expect(page.locator('[data-rinput="to"]')).toBeFocused();
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1000);
+    // Bcc takes the focus from To, which sets To's close going.
+    await page.click('[data-c="bcc"]');
+    await page.fill('[data-rinput="bcc"]', 'sanne@example.com');
+    const options = page.locator('[data-rfield="bcc"] .suggest [role="option"]');
+    await expect(options.first()).toContainText('sanne@example.com');
+    await page.clock.runFor(1000);
+    await expect(options).toHaveCount(1);
+    await page.keyboard.press('Enter');
+    await expect(chips(page, 'bcc')).toHaveText(['Sanne de Vries']);
+  });
+}
+
+// WCAG's contrast ratio between two computed colors, such as 'rgb(37, 38, 45)'.
+function contrast(a, b) {
+  const luminance = (color) => {
+    const [r, g, bl] = color
+      .match(/\d+(\.\d+)?/g)
+      .slice(0, 3)
+      .map((v) => Number(v) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// The row Enter picks has the selected-row grey. The hover grey it had is darker than the list in the dark theme,
+// 1.02 to 1, so nothing showed which recipient Enter would add.
+test('the recipient suggestion Enter picks stands out from the list in the dark theme', async () => {
+  await launch();
+  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
+  await expect(win.locator('html')).not.toHaveClass(/light/);
+  await newMessage();
+  await win.fill('[data-rinput="to"]', 'joris');
+  const active = win.locator('[data-rfield="to"] .suggest button.active');
+  await expect(active).toContainText('joris@example.com');
+  const [row, list] = await active.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el.parentElement).backgroundColor]);
+  expect(contrast(row, list)).toBeGreaterThanOrEqual(1.1);
 });

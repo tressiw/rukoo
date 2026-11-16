@@ -58,14 +58,15 @@ object ListModel {
         return out.ifEmpty { text.trim() }
     }
 
-    fun applyFilter(list: List<MessageSummary>, filter: ListFilter): List<MessageSummary> = when (filter) {
+    /** [list] under a quick filter. Unread also keeps [keptId], the email opened while unread (app.js rows). */
+    fun applyFilter(list: List<MessageSummary>, filter: ListFilter, keptId: String? = null): List<MessageSummary> = when (filter) {
         ListFilter.ALL -> list
-        ListFilter.UNREAD -> list.filter { it.unread }
+        ListFilter.UNREAD -> list.filter { it.unread || it.id == keptId }
         ListFilter.STARRED -> list.filter { it.starred }
         ListFilter.ATTACHMENTS -> list.filter { it.hasAttachments }
     }
 
-    /** Counts after each quick filter's label, over the loaded list. */
+    /** Counts after each quick filter's label, over the loaded list. Unread counts only unread mail, without the kept email. */
     fun filterCount(list: List<MessageSummary>, filter: ListFilter): Int = if (filter == ListFilter.ALL) 0 else applyFilter(list, filter).size
 
     /**

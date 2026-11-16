@@ -67,7 +67,7 @@ During a call, Voice tells the voices on the call apart: Speaker 1, Speaker 2 an
 
 A meeting can't be repeated, so losing a recording is the worst thing Voice can do.
 
-- A small recorder process captures and writes to disk, and nothing else. Transcription, speaker labels, dictation, the tray and Rukoo can all crash while the recording goes on. Transcription reads the recorded files and can always start over from them.
+- A small recorder process captures and writes to disk, and nothing else. Transcription, speaker labels, dictation, the tray and Rukoo can all crash while the recording goes on. Transcription reads the recorded files and can always start over from them. The recorder waits for the disk on a thread of its own, so a slow disk never delays its audio or its heartbeats.
 - Every file survives a hard kill. Audio goes to disk in short segments, video as fragmented MP4 with a fragment every second or two, and the transcript into SQLite. A crash loses at most the last fragment.
 - A watchdog restarts a crashed recorder into the same meeting and marks the gap. On the next start, Voice finishes processing any meeting that was cut off.
 - The screen process runs detached like the recorder, with its own watchdog. A crashed screen process restarts into the same meeting, and the transcript marks the gap in the screen.

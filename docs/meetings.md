@@ -48,7 +48,7 @@ Beside the transcript:
 
 - **Calendar event**: the event the meeting is linked to. Change picks another event within 15 minutes of the start, or unlinks it, and a click on the title opens the event in the calendar.
 - **People**: the voices Voice heard. Your microphone is You. With speaker labels on in Rukoo Voice, each voice on the call gets its own row, Speaker 1, Speaker 2 and so on; without them the whole call is one voice, Speaker 1. Pick who each one is from the linked event's guests, or type a name. A guest you already picked for another voice is marked. Rukoo fills in a name by itself only when the call has one voice and the event exactly one other guest; when a second voice turns up later, Rukoo asks you to check that name. A name stays on its voice for the whole meeting, also when Voice settles later who said a passage.
-- **Your notes**: use the composer's formatting toolbar and shortcuts for headings, lists, bold text and links. Notes save as Markdown a moment after you stop typing and when you leave the editor. The wider side editor keeps the transcript visible; the Notes tab gives you the full width. Your agent reads the saved Markdown.
+- **Your notes**: use the composer's formatting toolbar and shortcuts for headings, lists, bold text and links. Web addresses become links as you paste or type them, as [in mail](mail.md#writing). Notes save as Markdown a moment after you stop typing and when you leave the editor. The wider side editor keeps the transcript visible; the Notes tab gives you the full width. Your agent reads the saved Markdown.
 
 The Transcript, Notes and Details tabs are available at every width. In a narrow window each tab takes the whole view.
 

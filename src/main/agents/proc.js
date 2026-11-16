@@ -51,20 +51,50 @@ function isExecutable(file) {
   }
 }
 
+// The bin folders of the Node versions nvm installed, newest version first. npm puts global packages
+// such as Claude Code in the bin folder of the version that was active, so every version is searched.
+function nvmBins(home, readdir) {
+  const root = path.posix.join(home, '.nvm', 'versions', 'node');
+  let names;
+  try {
+    names = readdir(root);
+  } catch {
+    return [];
+  }
+  const versions = [];
+  for (const name of names) {
+    const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(String(name));
+    if (match) versions.push({ name: String(name), parts: match.slice(1).map(Number) });
+  }
+  versions.sort((a, b) => b.parts[0] - a.parts[0] || b.parts[1] - a.parts[1] || b.parts[2] - a.parts[2]);
+  return versions.map(({ name }) => path.posix.join(root, name, 'bin'));
+}
+
 // Finder starts apps with a short PATH. Keep inherited precedence and add the common CLI locations
-// for discovery AND child processes, so npm launchers using /usr/bin/env node can run too. No shell
+// for discovery AND child processes, so npm launchers using /usr/bin/env node can run too: Homebrew,
+// ~/.local/bin, and the Node version managers Volta, fnm (its default version) and nvm. No shell
 // startup files are evaluated. Other platforms keep their environment unchanged.
-function cliPath(env = process.env, { platform = process.platform, home = os.homedir() } = {}) {
+function cliPath(env = process.env, { platform = process.platform, home = os.homedir(), readdir = fs.readdirSync } = {}) {
   if (platform !== 'darwin') return env.PATH;
   const inherited = env.PATH ? env.PATH.split(':') : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
-  return [...new Set([...inherited, path.posix.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'])].join(':');
+  const fnmDefault = (dir) => path.posix.join(home, ...dir, 'fnm', 'aliases', 'default', 'bin');
+  return [...new Set([
+    ...inherited,
+    path.posix.join(home, '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    path.posix.join(home, '.volta', 'bin'),
+    fnmDefault(['.local', 'share']),
+    fnmDefault(['Library', 'Application Support']),
+    ...nvmBins(home, readdir)
+  ])].join(':');
 }
 
 // Desktop Linux installations need not have `which`. Walk PATH directly there, preserving spaces
 // and accepting executable symlinks and shebang scripts (such as npm's Codex launcher).
-function onPath(name, { env = process.env, platform = process.platform, home = os.homedir() } = {}) {
+function onPath(name, { env = process.env, platform = process.platform, home = os.homedir(), readdir } = {}) {
   if (platform !== 'win32') {
-    const files = (cliPath(env, { platform, home }) || '').split(':').map((dir) => path.resolve(dir || '.', name));
+    const files = (cliPath(env, { platform, home, readdir }) || '').split(':').map((dir) => path.resolve(dir || '.', name));
     return Promise.resolve([...new Set(files)].filter(isExecutable));
   }
   return new Promise((resolve) => {

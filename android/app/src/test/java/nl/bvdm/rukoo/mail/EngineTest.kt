@@ -190,6 +190,47 @@ class EngineTest {
     }
 
     @Test
+    fun `unread inbox mail older than the cached window counts in Inbox, Unread, the badge and the folder`() = runBlocking {
+        // 305 messages: the cache keeps the newest 300 (6..305), so 1..5 are older. Of those 1, 3 and 5 are unread; in
+        // the window only 300 is.
+        val server = server(inbox = 0)
+        val unread = setOf(1L, 3L, 5L, 300L)
+        for (uid in 1L..305) server.add("INBOX", ServerMessage(uid, "Message $uid", flags = if (uid in unread) emptySet() else setOf("\\Seen")))
+        val dir = tmp.newFolder("older")
+        val engine = engine(server, dir)
+        val acc = added(engine)
+        assertEquals("only the inbox asks", listOf("INBOX"), server.olderAsked.distinct())
+        assertEquals(300, engine.inbox().size)
+        assertEquals(1, engine.inbox().count { it.unread })
+
+        val counts = engine.counts(acc.id).first { it.olderUnread == 3 }
+        assertEquals(4, counts.views[ViewKind.INBOX])
+        assertEquals(4, counts.views[ViewKind.UNREAD])
+        assertEquals("VIP picks its mail by sender, so the older mail stays out", 0, counts.views[ViewKind.VIP])
+        assertEquals(4, counts.accounts[acc.id])
+        assertEquals(4, counts.all)
+        assertEquals(4, counts.folders["INBOX"])
+        assertEquals(0, counts.folders["Sent"])
+        assertEquals("what the inbox's note says Rukoo keeps", 300, counts.inboxLimit)
+        assertEquals(4, engine.counts(null).first { it.olderUnread == 3 }.views[ViewKind.INBOX])
+        assertEquals(4, engine.unreadCount.first { it == 4 })
+
+        // Reading the cached one counts at once; the older ones stay until the next sync says otherwise.
+        engine.setFlags(listOf(engine.inbox().first { it.unread }.id), unread = false)
+        assertEquals(3, engine.counts(acc.id).first { it.views[ViewKind.INBOX] == 3 }.olderUnread)
+
+        // The count is kept with the cache, so a restart shows it before the first sync.
+        engine.flush()
+        val again = engine(server, dir)
+        assertEquals(3, again.counts(acc.id).first { it.olderUnread > 0 }.views[ViewKind.INBOX])
+
+        // A server that turns the search down: the count is unknown, and nothing is added.
+        server.olderUnseenRefused = true
+        again.refresh(acc.id)
+        assertEquals(0, again.counts(acc.id).first { it.olderUnread == 0 }.views[ViewKind.INBOX])
+    }
+
+    @Test
     fun `a sync that fails because the engine closed opens no new session for the next folder`() = runBlocking {
         val server = server()
         val engine = engine(server)

@@ -1095,7 +1095,9 @@ async function check() {
 }
 
 // Run with reduced motion asked for (the script emulates it): what moves must stop. A pending attachment's name
-// stays still, dimmed as at the start of its shimmer.
+// stays still in the supporting text colour. Its shimmer is switched off, so the check reads the style at once: a
+// shortened animation is in getAnimations() until a frame has run it, and the script's off-screen window may not
+// draw one in time.
 async function checkReducedMotion() {
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) return ['reduced motion is not being emulated'];
   const fails = [];
@@ -1106,8 +1108,9 @@ async function checkReducedMotion() {
   const pend = bui.attachmentChip({ label: 'b.png', sub: '2 KB', pending: true, busy: 'Adding b.png' });
   scratch.append(pend);
   const name = pend.querySelector('.bui-entity__name');
-  await sleep(100);
-  if (name.getAnimations().length) fails.push('a pending attachment name still shimmers with reduced motion');
+  const style = getComputedStyle(name);
+  if (style.animationName !== 'none' || name.getAnimations().length) fails.push('a pending attachment name still shimmers with reduced motion');
+  if (style.backgroundImage !== 'none' || /^rgba\(.*, 0\)$|^transparent$/.test(style.color)) fails.push('a pending attachment name is drawn in one solid colour with reduced motion');
   if (pend.getAttribute('aria-label') !== 'Adding b.png') fails.push('a pending attachment keeps its name with reduced motion');
   scratch.remove();
   return fails;

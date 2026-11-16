@@ -108,4 +108,41 @@ function macMenu(t, edit, zoom) {
   ];
 }
 
-module.exports = { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu };
+// Settings > General's test notification: shows one and says what came of it. 'unavailable' where the system offers
+// Rukoo no notifications, 'failed' with the system's reason (only Windows gives one), else 'sent' once the system shows
+// it, or after wait ms without an answer. Sent means the system took it: a Mac that doesn't allow Rukoo's notifications,
+// or an unsigned build, can still drop it without a word. keep holds the notification until it closes, so Windows
+// doesn't drop its click handler with it.
+function testNotice(Notification, options, { keep = new Set(), onClick = () => {}, wait = 5000 } = {}) {
+  if (!Notification.isSupported()) return Promise.resolve({ result: 'unavailable' });
+  return new Promise((resolve) => {
+    const n = new Notification(options);
+    keep.add(n);
+    const drop = () => keep.delete(n);
+    let timer = null;
+    const answer = (value) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const failed = (error) => {
+      drop();
+      answer({ result: 'failed', error: String(error || '').slice(0, 300) });
+    };
+    n.on('show', () => answer({ result: 'sent' }));
+    n.on('failed', (_event, error) => failed(error));
+    n.on('close', drop);
+    n.on('click', () => {
+      drop();
+      onClick();
+    });
+    timer = setTimeout(() => answer({ result: 'sent' }), wait);
+    if (timer.unref) timer.unref();
+    try {
+      n.show();
+    } catch (err) {
+      failed(err && err.message);
+    }
+  });
+}
+
+module.exports = { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice };

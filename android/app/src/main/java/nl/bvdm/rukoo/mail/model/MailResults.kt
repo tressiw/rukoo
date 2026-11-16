@@ -15,15 +15,19 @@ data class SyncStatus(
 }
 
 /**
- * Unread and total counts, desktop's counts(scope) (engine.js:857-885): [accounts] is the unread
+ * Unread and total counts, desktop's counts(scope) (engine.js:1159-1193): [accounts] is the unread
  * inbox count per account, [all] their sum, [views] unread for INBOX/UNREAD/VIP/JUNK/ARCHIVE and the
  * total for STARRED/DRAFTS/SENT/TRASH, [folders] the unread count per cached folder path (one account).
+ * The inbox counts include [olderUnread], the unread inbox mail older than the newest [inboxLimit]
+ * messages of each inbox, which the lists don't hold.
  */
 data class MailCounts(
     val accounts: Map<String, Int> = emptyMap(),
     val all: Int = 0,
     val views: Map<ViewKind, Int> = emptyMap(),
     val folders: Map<String, Int> = emptyMap(),
+    val olderUnread: Int = 0,
+    val inboxLimit: Int = 0,
 )
 
 /** One moved message: its id before the move, its new id when the server reported it, and whether undo can bring it back. */

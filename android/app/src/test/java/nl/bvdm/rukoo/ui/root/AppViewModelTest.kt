@@ -124,6 +124,36 @@ class AppViewModelTest {
     }
 
     @Test
+    fun anEmailOpenedWhileUnreadIsKeptBeforeItIsMarkedRead() = runTest(main) {
+        val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+        lateinit var vm: AppViewModel
+        // What the Unread filter would have kept when the read flag reached the list.
+        var keptWhenRead: String? = "not marked"
+        val mail = object : MailEngine by preview {
+            override suspend fun setFlags(ids: List<String>, unread: Boolean?, starred: Boolean?, answered: Boolean?) {
+                if (unread == false) keptWhenRead = vm.state.value.keptId
+                preview.setFlags(ids, unread, starred, answered)
+            }
+        }
+        val (s, model) = setup(preview = preview, mail = mail)
+        vm = model
+        vm.setFilter(nl.bvdm.rukoo.mail.model.QuickFilter.UNREAD)
+        val list = s.mail.listMessages(MailView.AllInboxes)
+        val first = list.first { it.unread }
+        vm.openMessage(first.id)
+        assertEquals(first.id, keptWhenRead)
+        assertFalse(s.mail.summary(first.id)!!.unread)
+        // Another unread email takes its place; a read one is kept by nobody.
+        val second = list.last { it.unread && it.id != first.id }
+        vm.openMessage(second.id)
+        assertEquals(second.id, vm.state.value.keptId)
+        keptWhenRead = "not marked"
+        vm.openMessage(list.first { !it.unread }.id)
+        assertNull(vm.state.value.keptId)
+        assertEquals("a read email isn't marked again", "not marked", keptWhenRead)
+    }
+
+    @Test
     fun archivingTheOpenEmailGoesOnToTheNextAndUndoBringsItBack() = runTest(main) {
         val (s, vm) = setup(twoPane = true)
         val list = s.mail.listMessages(MailView.AllInboxes)

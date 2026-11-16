@@ -159,7 +159,7 @@ The guest cancels or picks another time with the links in the invitation, from t
 
 ## Email footer and composer
 
-Settings → General → Booking link under signature adds a line with your link after your signature. The default text, in the page's language, is "Want to meet with me? Pick a time, or share this link with your agent:" followed by the link. You can write your own text; keep `{url}` where the link goes. The link shows as its address, so it also works in the plain-text part of the mail. Each account's settings can follow the general choice, turn the line on or off, or give it its own text. Add to signature, after turning the page on, switches it on.
+Settings → Signatures → Booking link under signature adds a line with your link after your signature. The default text, in the page's language, is "Want to meet with me? Pick a time, or share this link with your agent:" followed by the link. You can write your own text; keep `{url}` where the link goes. The link shows as its address, so it also works in the plain-text part of the mail. Each account's settings can follow the general choice, turn the line on or off, or give it its own text. Add to signature, after turning the page on, switches it on.
 
 In the composer, the calendar button has Insert booking link and Insert my free times…. The second opens a dialog with the length, period, hours and time zone, and a preview of the list it inserts. With "Add my booking link", the times follow the page's hours and the chosen type's default duration and minimum notice, and the link goes under them. The page may still offer fewer times, because free time around meetings and the limits per day only count there. Both work in the reading pane and in a separate compose window.
 

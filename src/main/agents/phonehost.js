@@ -616,7 +616,7 @@ class PhoneHost {
   bundle() {
     const { engine, cfg } = this.hub;
     const s = (engine && engine.settings) || {};
-    const keys = ['defaultAccountId', 'language', 'theme', 'signature', 'signatureHtml', 'vips', 'spam', 'syncInterval', 'hiddenViews', 'darkEmails', 'swipeActions', 'notifications', 'sort', 'density'];
+    const keys = ['defaultAccountId', 'language', 'theme', 'signature', 'signatureHtml', 'vips', 'spam', 'syncInterval', 'hiddenViews', 'darkEmails', 'swipeActions', 'swipeRight', 'swipeLeft', 'notifications', 'sort', 'density'];
     const settings = {};
     for (const k of keys) if (k in s) settings[k] = JSON.parse(JSON.stringify(s[k]));
     let client = null;

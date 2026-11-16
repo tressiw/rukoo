@@ -542,11 +542,16 @@ class RukooMailEngine(
         val known = prev?.messages?.associateBy { it.uid }.orEmpty()
         val limit = if (info?.role == FolderRole.INBOX) Limits.INBOX else Limits.DEFAULT
         val inbox = info?.role == FolderRole.INBOX
-        // What inbox categories sort by (categories/): the headers that say what kind of mail it is, and Gmail's tab.
-        val res = session(acc).syncFolder(path, limit, known, prev?.uidValidity, background, signals = inbox, gmailTabs = inbox && acc.provider == "google")
+        // What inbox categories sort by (categories/): the headers that say what kind of mail it is, and Gmail's tab. The
+        // inbox also asks how much older mail is unread, which its unread count adds (MailViews.olderUnread).
+        val res = session(acc).syncFolder(
+            path, limit, known, prev?.uidValidity, background,
+            signals = inbox, gmailTabs = inbox && acc.provider == "google", olderUnseen = inbox,
+        )
         val sameValidity = prev != null && prev.uidValidity == res.uidValidity
         mutate(acc.id, persist = false) { c ->
-            c.copy(boxes = c.boxes + (path to CachedBox(res.uidValidity, res.exists, clock.now(), CacheOps.applyPending(acc.id, path, res.messages, pending))))
+            val messages = CacheOps.applyPending(acc.id, path, res.messages, pending)
+            c.copy(boxes = c.boxes + (path to CachedBox(res.uidValidity, res.exists, clock.now(), messages, res.olderUnseen.takeIf { inbox })))
         }
         if (!sameValidity && prev != null) {
             // Old uids point at other messages now: their bodies and undo records are worthless.

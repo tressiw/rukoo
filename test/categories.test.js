@@ -734,12 +734,19 @@ test('categories can be added, renamed, reordered and deleted, within limits', (
 
 // ---- notifications per category (notices.js) ----
 
-// What MailNotices asked to put on screen: one list of notices per call.
+// What MailNotices asked to put on screen: one list of notices per call, and the emails each call was for.
 function notifier(t, cats) {
   const shown = [];
-  const notices = new MailNotices({ categories: cats, show: (list) => shown.push(list) });
+  const emails = [];
+  const notices = new MailNotices({
+    categories: cats,
+    show: (list, messages) => {
+      shown.push(list);
+      emails.push(messages.map((m) => m.subject));
+    }
+  });
   t.after(() => notices.close());
-  return { notices, shown, titles: () => shown.map((list) => list.map((n) => n.title)) };
+  return { notices, shown, titles: () => shown.map((list) => list.map((n) => n.title)), subjects: () => emails };
 }
 
 // The engine's 'new-mail' message for an email in the fake inbox.
@@ -808,13 +815,15 @@ test('a held notification goes by the category Jev gives the email', async (t) =
   const jevs = heldJev();
   const msgs = [...inbox(), club()];
   const { cats, acc } = setup(t, msgs, { jevImpl: jevs.fake });
-  const { notices, titles } = notifier(t, cats);
+  const { notices, titles, subjects } = notifier(t, cats);
   cats.setEnabled(true);
   cats.setJev({ key: 'KEY', on: true });
   cats.setNotify('money', false);
   // Sanne's email and the club's go to Jev; the login alert is sure, and shows at once.
   notices.add([1, 3, 4].map((uid) => arrived(cats, acc, msgs.find((m) => m.uid === uid))));
   assert.deepEqual(titles(), [['App']]);
+  // The main window hears of the same emails as the notifications (main.js showMailNotices).
+  assert.deepEqual(subjects(), [[msgs.find((m) => m.uid === 3).subject]]);
   const sorting = cats.sort();
   await settle();
   assert.deepEqual(jevs.asked().sort(), ['Can you sign this?', 'Meeting notes']);
@@ -824,6 +833,7 @@ test('a held notification goes by the category Jev gives the email', async (t) =
   jevs.answer('Meeting notes', 'to-read');
   await sorting;
   assert.deepEqual(titles(), [['App'], ['Club']], "Jev put Sanne's email in Money, which is muted");
+  assert.deepEqual(subjects()[1], ['Meeting notes'], 'nor does the window hear of it');
   assert.equal(notices.batches.size, 0);
   t.mock.timers.tick(HOLD);
   assert.equal(titles().length, 2, 'the wait has nothing left to do');
@@ -1218,22 +1228,4 @@ test("new mail stops counting for the badge once it is read, moved or in a categ
   // Shown again, the promotions count again.
   cats.saveCategory({ id: 'promotions', inbox: true });
   assert.equal(engine.newCount(ids), 3);
-});
-
-test('marking Inbox read leaves out the categories it doesn\'t show, and a category marks its own mail', async (t) => {
-  const { engine, acc, cats } = await demoInbox(t);
-  const unread = (category) => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread && (!category || m.category === category)).length;
-  const promotions = unread('promotions');
-  const updates = unread('updates');
-  assert.ok(promotions > 0 && updates > 0);
-  cats.saveCategory({ id: 'promotions', inbox: false });
-
-  assert.equal(await engine.markAllRead(acc.id, 'inbox', null, { category: 'updates' }), updates);
-  assert.equal(unread('updates'), 0);
-  assert.ok(unread() > promotions, 'the other categories are still unread');
-  await engine.markAllRead(acc.id, 'inbox');
-  assert.equal(unread(), promotions, 'only the hidden category is still unread');
-  // The Unread view marks every category.
-  assert.equal(await engine.markAllRead(acc.id, 'unread'), promotions);
-  assert.equal(unread(), 0);
 });

@@ -182,7 +182,7 @@ fun PhoneToolsPage(app: AppViewModel) {
                 leading = { RowIcon(PanelIcons.Copy) },
                 enabled = gatewayToken,
                 onClick = {
-                    // The server words the command (with the token): one setup for Settings and the debug tools alike.
+                    // The server words the two steps (with the token): one setup for Settings and the debug tools alike.
                     val command = if (gatewayToken) s.mcp.openClawSetup() else null
                     when {
                         !gatewayToken -> toast.showError(needToken)
@@ -190,7 +190,7 @@ fun PhoneToolsPage(app: AppViewModel) {
                         else -> {
                             copySensitive(context, copyLabel, command)
                             val url = PhoneToolsTexts.setupUrl(command).orEmpty()
-                            toast.showToast(context.getString(R.string.settings_phone_tools_copied_open_claw, url), durationMs = 6000L)
+                            toast.showToast(context.getString(R.string.settings_phone_tools_copied_open_claw, url), durationMs = 8000L)
                         }
                     }
                 },

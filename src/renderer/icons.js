@@ -14,6 +14,8 @@ export const icons = {
   collapse: p('<path d="M20 4l-6 6M14 5v5h5M4 20l6-6M10 19v-5H5"/>'),
   up: p('<path d="m5 15 7-7 7 7"/>'),
   down: p('<path d="m5 9 7 7 7-7"/>'),
+  // A pile of emails: a folded stack in the list.
+  stack: p('<rect x="4" y="10" width="16" height="10" rx="2.5"/><path d="M6.5 6.5h11M9 3.5h6"/>'),
   back: p('<path d="m15 4-8 8 8 8"/>'),
   close: p('<path d="M5 5l14 14M19 5 5 19"/>'),
   reply: p('<path d="M20 7v4a4 4 0 0 1-4 4H5"/><path d="m9 11-4 4 4 4"/>'),

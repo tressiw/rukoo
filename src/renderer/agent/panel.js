@@ -936,6 +936,9 @@ export function mountAgentPanel(ctx) {
   // lookups: only the searches for the chat of the email on screen.
   let turn = 0;
   let lookups = 0;
+  // started: the chats the user started here. A lookup that was out when one started leaves that chat on screen,
+  // since showing it doesn't count as a newer request.
+  let started = 0;
   // The last time sync() went to find the chat for the email on screen, until that chat shows: "Add to chat" waits
   // for it, so it checks the emails against the chat they land in. Read before this, the panel may still show the
   // chat of an email from before it was opened.
@@ -975,6 +978,7 @@ export function mountAgentPanel(ctx) {
     }
     const mine = ++turn;
     const look = ++lookups;
+    const began = started;
     let found = null;
     let related = null;
     try {
@@ -992,6 +996,9 @@ export function mountAgentPanel(ctx) {
       }
     }
     if (mine !== turn || look !== lookups) return;
+    // The user started a chat about this email while main was looking: it stays, also over an older chat main found.
+    // Without P.conv it is still being created and shows when it is.
+    if (started !== began && (!P.conv || (P.conv.message && P.conv.message.id === m.id))) return refreshComposer();
     if (found && found.id) {
       if (P.conv && P.conv.id === found.id) return refreshComposer();
       return openConversation(found.id);
@@ -1027,6 +1034,7 @@ export function mountAgentPanel(ctx) {
     P.keepMeeting = null;
     const mine = ++turn;
     const look = ++lookups;
+    const began = started;
     let found = null;
     try {
       found = await api('agentFindForMeeting', m.id);
@@ -1034,6 +1042,8 @@ export function mountAgentPanel(ctx) {
       found = null;
     }
     if (mine !== turn || look !== lookups) return;
+    // As for an email: a chat about this meeting the user started meanwhile stays.
+    if (started !== began && (!P.conv || (P.conv.meeting && P.conv.meeting.id === m.id))) return refreshComposer();
     if (found && found.id) {
       if (P.conv && P.conv.id === found.id) return refreshComposer();
       return openConversation(found.id);
@@ -1126,6 +1136,7 @@ export function mountAgentPanel(ctx) {
 
   async function ensureConversation() {
     if (P.conv) return P.conv;
+    started++;
     const meeting = contextMeeting();
     const m = meeting ? null : contextEmail();
     // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind.
@@ -2238,7 +2249,7 @@ export function mountAgentPanel(ctx) {
   function onItem({ conversationId, item }) {
     // An agent waiting for you in a chat that is not on screen: say so instead of letting it hang.
     if (item.type === 'approval' && item.status === 'pending' && (!ctx.agentOpen() || !P.conv || P.conv.id !== conversationId)) {
-      toast(t('agent.panel.needsYou'), { action: { label: t('agent.panel.show'), run: () => reveal(conversationId) } });
+      toast(t('agent.panel.needsYou'), { action: { label: t('agent.panel.show'), shortcut: false, run: () => reveal(conversationId) } });
     }
     // A message moves its chat up the list (main's lastMessageAt), and an approval card waits for the user. New text
     // comes as deltas, which leave the order alone.
@@ -2347,7 +2358,7 @@ export function mountAgentPanel(ctx) {
     const isBackground = () => !(P.conv && P.conv.id === cid) || !ctx.agentOpen() || P.conv.origin === 'external';
     const background = isBackground();
     const blocked = () => {
-      if (background) toast(t('agent.panel.draftBlocked', { name }), { action: { label: t('agent.panel.show'), run: () => reveal(cid) } });
+      if (background) toast(t('agent.panel.draftBlocked', { name }), { action: { label: t('agent.panel.show'), shortcut: false, run: () => reveal(cid) } });
       return busy();
     };
     let c = S.composer;

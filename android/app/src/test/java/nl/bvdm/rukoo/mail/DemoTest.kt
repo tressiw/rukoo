@@ -130,6 +130,17 @@ class DemoTest {
     }
 
     @Test
+    fun `the demo server counts unread mail older than a sync's window, as a real one does`() = runBlocking {
+        val demo = DemoSession(File(tmp.newFolder("server"), DemoSession.FILE_NAME), TestStrings, Clock { now }, zone)
+        // The seed's inbox holds 1..16; a window of ten leaves 1..6 older, of which 1..5 are unread.
+        val res = demo.syncFolder("INBOX", 10, emptyMap(), null, olderUnseen = true)
+        assertEquals((7L..16L).toList(), res.messages.map { it.uid })
+        assertEquals(5, res.olderUnseen)
+        assertEquals(0, demo.syncFolder("INBOX", 300, emptyMap(), null, olderUnseen = true).olderUnseen)
+        assertEquals(null, demo.syncFolder("INBOX", 10, emptyMap(), null).olderUnseen)
+    }
+
+    @Test
     fun `mail to the demo address arrives as new mail, and moves persist in the server file`() = runBlocking {
         val dir = tmp.newFolder("demo")
         val engine = engine(dir)

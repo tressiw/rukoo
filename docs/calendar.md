@@ -12,6 +12,18 @@ Each calendar can be switched on and off. It shows in the color it has in Google
 
 Search (`/`) finds events by title, place, description and guests.
 
+## Other people's calendars
+
+A colleague's calendar shows in Rukoo when your account can already see it. It sits in the sidebar with your own calendars, and Rukoo reads the list of calendars again at every sync.
+
+A Google or Google Workspace account brings every calendar in its Google Calendar list whose event details you can see. To see a colleague's calendar, add it in Google Calendar first, under Other calendars; it shows in Rukoo at the next sync, or after `F5`. Rukoo can't add it for you: that needs a wider Google scope than `calendar.calendarlist.readonly`, and asking for one more scope would send every Google account through sign-in again. A calendar that is switched off in Google Calendar starts switched off in Rukoo, so switch it on in the sidebar. A calendar shared with you as "See only free/busy (hide details)" doesn't show in Rukoo.
+
+A CalDAV account brings every calendar in your calendar home on the server, including the ones others share with you there. A calendar the server keeps only in someone else's calendar home, such as one you reach as their delegate, doesn't show. What you may change comes from the privileges the server reports; on a server that reports none, Rukoo treats every calendar as writable and only finds out it isn't when the server refuses a change.
+
+A calendar shared with you to view only is read-only in Rukoo: Settings → Calendar marks it Read-only, new events can't go into it and its events can't be changed. It doesn't count toward your availability until you turn that on in its menu in the sidebar or in Settings → Calendar.
+
+Microsoft 365 and Outlook calendars aren't supported yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)).
+
 ## Making and changing events
 
 Drag on the week or day grid to make an event, drag an event to another time or day, or drag its bottom edge to change its length. In the month view you drag across days for an all-day event, or drag an event to another day. Undo, or `Ctrl+Z`, puts a moved or resized event back.
@@ -116,6 +128,7 @@ Rukoo keeps the weeks you looked at in `%APPDATA%\Rukoo Mail\data\calendar` and 
 ## Limits
 
 - Calendars of Microsoft accounts aren't supported yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)).
+- A Google calendar shared with you as free/busy only doesn't show, and Rukoo can't add someone else's Google calendar by address. See [Other people's calendars](#other-peoples-calendars).
 - Guests can't be added on a CalDAV calendar whose server doesn't send invitations.
 - An answer to an invitation that goes by email doesn't change a copy of the event in a CalDAV calendar whose server doesn't send invitations. A counter-proposal (a new time) can't be sent.
 - The portable build adds itself under "Open with" for .ics files only when you choose Rukoo for email links in Settings.

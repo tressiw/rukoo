@@ -17,7 +17,7 @@
     "dist": "electron-builder",
     "dist:win": "electron-builder --win --x64",
     "dist:linux": "electron-builder --linux --x64",
-    "dist:mac": "electron-builder --mac --arm64 --x64"
+    "dist:mac": "electron-builder --mac --arm64 --x64 --config.mac.identity=- --config.mac.notarize=false"
   },
   "author": "Bart van der Meeren",
   "license": "MIT",

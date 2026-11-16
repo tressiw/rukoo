@@ -119,7 +119,8 @@ function badPublish(body, now) {
   );
 }
 
-function startAccountServer({ signups = 'open', invites = [], limit = 1000, jurisdiction = 'eu', kdf = DEFAULT_KDF, features = ['booking'] } = {}) {
+// passwordCheck: false plays a server from before POST /v1/password/check, which answers 404 there.
+function startAccountServer({ signups = 'open', invites = [], limit = 1000, jurisdiction = 'eu', kdf = DEFAULT_KDF, features = ['booking'], passwordCheck = true } = {}) {
   const accounts = new Map();
   const sessions = new Map();
   const calls = [];
@@ -158,6 +159,23 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
   };
   const endSessions = (email, keep) => {
     for (const [tok, s] of sessions) if (s.email === email && tok !== keep) sessions.delete(tok);
+  };
+  // The signed-in calls that ask for the password again count wrong ones per session: the tenth within 15 minutes
+  // locks that session's checks for 15 minutes, also for the right password (PROTOCOL.md, POST /v1/password). The
+  // answer to send instead, or null when authKey is right.
+  const wrongPassword = (acc, session, authKey) => {
+    const now = control.now();
+    if ((session.lockedUntil || 0) > now) return [429, { error: 'locked' }];
+    if (acc.auth === sha(authKey)) {
+      session.failures = 0;
+      return null;
+    }
+    const fresh = now - (session.failedAt || 0) >= QUARTER;
+    session.failures = fresh ? 1 : session.failures + 1;
+    if (fresh) session.failedAt = now;
+    if (session.failures < 10) return [403, { error: 'wrong_password' }];
+    Object.assign(session, { failures: 0, failedAt: 0, lockedUntil: now + QUARTER });
+    return [429, { error: 'locked' }];
   };
 
   // ---- booking pages ----
@@ -266,6 +284,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       return [200, ownerJson(acc, session, page)];
     },
     'DELETE /v1/booking': ({ acc, session }) => {
+      // A session whose password checks are locked deletes nothing (PROTOCOL.md, DELETE /v1/booking).
+      if ((session.lockedUntil || 0) > control.now()) return [429, { error: 'locked' }];
       const page = pageOf(acc);
       if (page && page !== 'lost') {
         // The booking device, or the one an earlier turn-off left unaware; never the session that turns it off now.
@@ -506,19 +526,23 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       return [204];
     },
     'GET /v1/account': ({ acc, tok }) => [200, accountView(acc, tok)],
-    'POST /v1/password': ({ acc, tok, body }) => {
-      if (acc.auth !== sha(body.authKey)) return [403, { error: 'wrong_password' }];
+    'POST /v1/password': ({ acc, tok, session, body }) => {
+      const wrong = wrongPassword(acc, session, body.authKey);
+      if (wrong) return wrong;
       Object.assign(acc, { kdf: body.kdf, salt: body.salt, auth: sha(body.newAuthKey), wrappedKey: body.wrappedKey });
       endSessions(acc.email, tok);
       return [204];
     },
-    'POST /v1/recovery': ({ acc, body }) => {
-      if (acc.auth !== sha(body.authKey)) return [403, { error: 'wrong_password' }];
+    'POST /v1/password/check': ({ acc, session, body }) => wrongPassword(acc, session, body.authKey) || [204],
+    'POST /v1/recovery': ({ acc, session, body }) => {
+      const wrong = wrongPassword(acc, session, body.authKey);
+      if (wrong) return wrong;
       Object.assign(acc, { recovery: sha(body.recoveryAuth), recoveryWrappedKey: body.recoveryWrappedKey });
       return [204];
     },
-    'DELETE /v1/account': ({ acc, body }) => {
-      if (acc.auth !== sha(body.authKey)) return [403, { error: 'wrong_password' }];
+    'DELETE /v1/account': ({ acc, session, body }) => {
+      const wrong = wrongPassword(acc, session, body.authKey);
+      if (wrong) return wrong;
       accounts.delete(acc.email);
       endSessions(acc.email, null);
       // The Worker wipes a deleted account's page as well; its handle stays reserved.
@@ -546,6 +570,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       return [200, { results, seq: acc.seq }];
     }
   };
+
+  if (!passwordCheck) delete routes['POST /v1/password/check'];
 
   // Routes with a value at the end of the path: the route without it, and the value.
   const PREFIXED = [

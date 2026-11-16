@@ -499,7 +499,7 @@ test('export: one shot in the window after pairing, with the secrets; closed aft
   const env = await setup(t, {
     secrets: SECRETS,
     accounts: ACCOUNTS,
-    settings: { vips: ['boss@example.com'], spam: ['spam@example.com'], language: 'nl', syncInterval: 15, darkEmails: false },
+    settings: { vips: ['boss@example.com'], spam: ['spam@example.com'], language: 'nl', syncInterval: 15, darkEmails: false, swipeActions: false, swipeRight: 'archive', swipeLeft: 'star' },
     google: { client: () => ({ id: 'client.apps.googleusercontent.com', secret: 'client-secret' }) }
   });
   env.hub.setSecret('clark', 'hermes-key');
@@ -539,6 +539,10 @@ test('export: one shot in the window after pairing, with the secrets; closed aft
   assert.equal(b.settings.language, 'nl');
   assert.equal(b.settings.syncInterval, 15);
   assert.equal(b.settings.darkEmails, false);
+  // The phone takes the swipe actions too (DesktopImport.kt).
+  assert.equal(b.settings.swipeActions, false);
+  assert.equal(b.settings.swipeRight, 'archive');
+  assert.equal(b.settings.swipeLeft, 'star');
   assert.equal(b.agents.defaultAgent, 'claude');
   assert.deepEqual(b.agents.clark, { enabled: true, name: 'Hermes', url: '', key: 'hermes-key', model: '' });
   assert.equal(b.agents.openclaw.key, 'gateway-token');
@@ -563,6 +567,14 @@ test('export: one shot in the window after pairing, with the secrets; closed aft
 
   const only = await pair(env);
   assert.equal((await call(env.remote, 'GET', '/phone/v1/export', { token: only.token })).status, 403, 'Pair only sends nothing');
+});
+
+test('export: swipe actions the user never changed go as the desktop defaults', async (t) => {
+  const env = await setup(t);
+  const { settings } = env.hub.phoneHost.bundle();
+  assert.equal(settings.swipeActions, true);
+  assert.equal(settings.swipeRight, 'read');
+  assert.equal(settings.swipeLeft, 'delete');
 });
 
 // ---------- turns ----------

@@ -30,8 +30,17 @@
     <!-- phone: the engine's "everything" view, the scope of a search in all folders -->
     <string name="mailbox_folders_everything">All folders</string>
     <string name="mailbox_layout_folders">Folders</string>
+    <!-- Under the inbox's last row when the server counted unread mail older than the list holds (desktop's tooltip on the inbox subtitle): how many messages of each inbox Rukoo keeps (300), the older unread mail -->
+    <plurals name="mailbox_list_older_unread_hint">
+        <item quantity="one">Rukoo keeps the newest %1$d messages of each inbox. %2$d unread message is older than those. It stays on the server, counts toward the Inbox total and isn\'t in this list, so Mark all as read doesn\'t reach it.</item>
+        <item quantity="other">Rukoo keeps the newest %1$d messages of each inbox. %2$d unread messages are older than those. They stay on the server, count toward the Inbox total and aren\'t in this list, so Mark all as read doesn\'t reach them.</item>
+    </plurals>
+    <!-- Inbox header when every email in the list is read but the server counted unread mail older than it: that count, the account address or All accounts -->
+    <string name="mailbox_list_older_unread_summary">%1$d unread in older mail · %2$s</string>
     <string name="mailbox_list_sent_to">To: %1$s</string>
     <string name="mailbox_list_unread_summary">%1$d unread · %2$s</string>
+    <!-- Inbox header when the server counted unread mail older than the list holds: the list's unread mail, the older unread mail (together the drawer's Inbox count), the account address or All accounts -->
+    <string name="mailbox_list_unread_summary_older">%1$d unread, %2$d more in older mail · %3$s</string>
     <string name="mailbox_message_attachment">Attachment</string>
     <string name="mailbox_message_collapse">Collapse</string>
     <string name="mailbox_message_no_recipient">(No recipient)</string>

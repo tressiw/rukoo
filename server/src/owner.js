@@ -159,8 +159,12 @@ export async function putBooking(request, env, url) {
 // Turns the page off and deletes what is on it; the handle stays this account's. Works from any session, and a page
 // that isn't this account's (any more) has nothing of it to delete. Turned off from another session than the booking
 // device's, the page refuses that device's publishes without takeover until it has read GET /v1/booking.
+// A session whose password checks are locked gets 429 locked instead, before anything goes. Rukoo for desktop from
+// 2.1.0 checks the password with a sign-in of its own, deletes the page and then deletes the account on this session;
+// the lock would refuse that last step after the bookings were already gone.
 export async function deleteBooking(request, env) {
   const { auth } = await signedIn(request, env);
+  if (auth.passwordLock) return send(auth.passwordLock);
   if (auth.handle) await bookingObject(env, auth.handle).wipe(auth.name, auth.deviceId);
   return new Response(null, { status: 204, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
 }

@@ -3,7 +3,7 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 // compose window (compose.js). Either way it saves drafts as you write.
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
@@ -167,6 +167,7 @@ export function signatureBlockHtml(acc, data) {
 
 // Cc, Bcc and a rich body can be seeded too (by an agent); they come on top of what the mode filled in.
 function initialState(data, opts, m) {
+  if (opts.restore) return restoredState(data, opts, m);
   const s = modeState(data, opts, m);
   for (const [field, show] of [['cc', 'showCc'], ['bcc', 'showBcc']]) {
     const list = addressList(opts[field]);
@@ -183,6 +184,51 @@ function prefilled(st, opts) {
   if (st.mode !== 'new') return false;
   const text = opts.html != null ? new DOMParser().parseFromString(sanitizeAgentHtml(opts.html), 'text/html').body.textContent : opts.body;
   return Boolean(st.subject.trim() || st.cc.length || st.bcc.length || String(text || '').trim());
+}
+
+const COMPOSE_MODES = ['new', 'reply', 'replyAll', 'forward', 'draft'];
+const textOr = (v, fallback = null) => (typeof v === 'string' ? v : fallback);
+// Recipients as the editor held them, every one and as typed. The limits of addressList() are for what an agent
+// hands in.
+const keptPeople = (list) =>
+  (Array.isArray(list) ? list : [])
+    .filter((a) => a && typeof a.address === 'string' && a.address.trim())
+    .map((a) => ({ name: textOr(a.name, ''), address: a.address }));
+
+// An editor that opens again after Undo send, or after the server refused an email that waited: what undoState()
+// kept, on top of what its mode fills in. m: the email a reply or forward answers, kept with it. It came back
+// through the main process, so each field is checked again; the text is cleaned like a reopened draft's.
+function restoredState(data, opts, m) {
+  const r = opts.restore;
+  const kept = r.state && typeof r.state === 'object' ? r.state : {};
+  const mode = COMPOSE_MODES.includes(opts.mode) ? opts.mode : 'new';
+  const s = modeState(data, { ...opts, mode, to: [], subject: '', body: '', html: null }, m && typeof m === 'object' ? m : null);
+  // An account removed meanwhile leaves the default account's sender.
+  const acc = data.accounts.find((a) => a.id === kept.accountId);
+  if (acc) {
+    s.accountId = acc.id;
+    const own = acc.identities.find((i) => sameAddress(i.address, kept.from));
+    s.from = own ? own.address : acc.defaultFrom;
+  }
+  s.to = keptPeople(kept.to);
+  s.cc = keptPeople(kept.cc);
+  s.bcc = keptPeople(kept.bcc);
+  s.showCc = kept.showCc === true || s.cc.length > 0;
+  s.showBcc = kept.showBcc === true || s.bcc.length > 0;
+  s.subject = textOr(kept.subject, '');
+  s.attachments = (Array.isArray(kept.attachments) ? kept.attachments : [])
+    .filter((a) => a && typeof a.filename === 'string' && (typeof a.path === 'string' || Number.isInteger(a.forwardIndex)))
+    .map((a) => keyed(typeof a.path === 'string' ? { path: a.path, filename: a.filename, size: Number(a.size) || 0 } : { forwardIndex: a.forwardIndex, filename: a.filename, size: Number(a.size) || 0 }));
+  s.include = kept.include !== false;
+  const q = kept.quoted;
+  s.quoted = q && typeof q.head === 'string' && typeof q.html === 'string' ? { head: q.head, html: q.html } : null;
+  s.inReplyTo = textOr(kept.inReplyTo);
+  s.references = Array.isArray(kept.references) ? kept.references.filter((x) => typeof x === 'string') : [];
+  s.draftId = textOr(kept.draftId);
+  s.replyToId = textOr(kept.replyToId);
+  s.forwardId = textOr(kept.forwardId);
+  s.bodyHtml = cleanDraftHtml(textOr(r.html, '')) || '<div><br></div>';
+  return s;
 }
 
 function modeState(data, opts, m) {
@@ -309,7 +355,7 @@ function recipientsHtml(list) {
   return list
     .map(
       (a, i) =>
-        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
+        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" draggable="true" data-chip="${i}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
     )
     .join('');
 }
@@ -343,11 +389,13 @@ function template(data, st, inline) {
       ? `<span class="cc-links from-default" data-default-link hidden><button class="link-btn" data-c="make-default" data-i18n="composer.actions.makeDefault">${esc(t('composer.actions.makeDefault'))}</button></span>`
       : '';
   const quoteHead = st.original ? quoteHeader(st.original) : st.quoted ? st.quoted.head : '';
+  // Left out (st.include false) only in an editor that opens again after Undo send.
+  const out = st.include ? '' : 'excluded';
   const quote = st.original || st.quoted
     ? `<div class="quote-zone">
-        <button class="quote-pill" data-c="quote" data-i18n-title="composer.quote.show" title="${esc(t('composer.quote.show'))}" aria-expanded="false">···</button>
-        <div class="quote" hidden>
-          <div class="quote-bar"><span data-i18n="composer.quote.title">${esc(t('composer.quote.title'))}</span><button class="link-btn" data-c="include" data-i18n="composer.quote.exclude">${esc(t('composer.quote.exclude'))}</button></div>
+        <button class="quote-pill ${out}" data-c="quote" data-i18n-title="composer.quote.show" title="${esc(t('composer.quote.show'))}" aria-expanded="false">${st.include ? '···' : esc(t('composer.quote.excludedPill'))}</button>
+        <div class="quote ${out}" hidden>
+          <div class="quote-bar"><span data-i18n="composer.quote.title">${esc(t('composer.quote.title'))}</span><button class="link-btn" data-c="include">${esc(t(st.include ? 'composer.quote.exclude' : 'composer.quote.include'))}</button></div>
           <div class="quote-head">${esc(quoteHead)}</div>
           <iframe class="quote-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" data-i18n-title="composer.quote.title" title="${esc(t('composer.quote.title'))}"></iframe>
         </div>
@@ -408,6 +456,14 @@ function template(data, st, inline) {
 // options: { data, opts, message, inline, onDone(), onPopOut(opts), onTitle(text) }
 export function mountComposer(host, { data, opts, message, inline, onDone, onPopOut, onTitle }) {
   const st = initialState(data, opts, message);
+  // Opened again after Undo send (opts.restore), or after the server refused the email that waited (opts.sendError
+  // too). From here on it is an ordinary editor: popping it out or a later Undo send starts from what it holds then.
+  const restored = Boolean(opts.restore);
+  const sendError = opts.sendError || null;
+  // Saved to Drafts after this editor had closed (outbox.js savedToDrafts): its attachments still point at the draft
+  // that save replaced, until settleAttachments() points them at st.draftId.
+  const savedElsewhere = restored && Boolean(opts.restore.state && opts.restore.state.pendingRemap === true);
+  if (restored) opts = { ...opts, restore: null, sendError: null };
   // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
   const key = crypto.randomUUID();
   // Set once the draft is deleted or sent, so nothing points at a stored draft that is gone.
@@ -655,7 +711,14 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         t.value = '';
         renderRecipients(t.dataset.rinput);
       }
-      if (t.dataset && t.dataset.rinput) setTimeout(closeSuggest, 120);
+      // A moment later, so a click on a suggestion still picks it. Only the list that was open then: one that another
+      // recipient field opened in the meantime stays, or Enter there would add the typed address without its name.
+      if (t.dataset && t.dataset.rinput) {
+        const open = suggest;
+        setTimeout(() => {
+          if (suggest === open) closeSuggest();
+        }, 120);
+      }
     },
     true
   );
@@ -1018,20 +1081,113 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     }
   }
 
-  // Files dropped on the editor become attachments.
-  const dropTarget = inline ? page : document;
-  listen(dropTarget, 'dragover', (e) => {
-    if ([...e.dataTransfer.types].includes('Files')) {
-      e.preventDefault();
-      page.classList.add('drop-files');
-    }
+  // A recipient dragged from one of To, Cc and Bcc onto another moves there. The Cc and Bcc links beside To take
+  // a drop too, opening the field they name. Only this composer's own chips are accepted, never text or files, and
+  // only on those fields and links: let go over Send, the text or another control, the recipient stays where it was.
+  const CHIP_TYPE = 'application/x-rukoo-recipient';
+  const RECIPIENT_FIELDS = ['to', 'cc', 'bcc'];
+  // { from, address, token } while one of this composer's chips is dragged. The address rather than the chip's place
+  // in its list: an agent can write the recipients while the chip is on its way. The token is the drag's CHIP_TYPE
+  // data, and a drop moves a recipient only when it brings that token back: a drag whose end never arrived leaves
+  // `dragged` set, and a chip from another compose window has the same type. Drag data can only be read on drop.
+  let dragged = null;
+  // Where a chip let go here goes: { to, mark } with the field and the element that shows it, or null.
+  const dropField = (e) => {
+    if (!dragged || ![...(e.dataTransfer?.types || [])].includes(CHIP_TYPE)) return null;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target || !page.contains(target) || editor.contains(target)) return null;
+    const link = target.closest('[data-rfield="to"] .cc-links [data-c]');
+    if (link) return RECIPIENT_FIELDS.includes(link.dataset.c) ? { to: link.dataset.c, mark: link } : null;
+    const field = target.closest('.field[data-rfield]');
+    return field && RECIPIENT_FIELDS.includes(field.dataset.rfield) ? { to: field.dataset.rfield, mark: field } : null;
+  };
+  const clearDropMarks = () => page.querySelectorAll('.drop-recipient').forEach((el) => el.classList.remove('drop-recipient'));
+  const endChipDrag = () => {
+    dragged = null;
+    clearDropMarks();
+    page.querySelectorAll('.recipient.dragging').forEach((el) => el.classList.remove('dragging'));
+  };
+  page.addEventListener('dragstart', (e) => {
+    // Whatever the drag before this one left behind is over now.
+    if (dragged) endChipDrag();
+    const chip = e.target.closest?.('.recipient[data-chip]');
+    const from = chip && !editor.contains(chip) ? chip.closest('.field[data-rfield]')?.dataset.rfield : null;
+    const entry = RECIPIENT_FIELDS.includes(from) ? st[from][Number(chip.dataset.chip)] : null;
+    if (!entry) return;
+    const drag = { from, address: entry.address, token: crypto.randomUUID() };
+    dragged = drag;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(CHIP_TYPE, drag.token);
+    chip.classList.add('dragging');
+    closeSuggest();
+    afterDrag(() => dragged === drag && endChipDrag());
   });
+  // Taken on dragenter as well as dragover, as in the chat panel (agent/panel.js): Chromium refuses a drop when the
+  // last update before it was a dragenter nobody took.
+  const acceptChip = (e) => {
+    if (!dragged) return;
+    const target = dropField(e);
+    clearDropMarks();
+    if (!target) return;
+    e.preventDefault();
+    const own = target.to === dragged.from;
+    e.dataTransfer.dropEffect = own ? 'none' : 'move';
+    if (!own) target.mark.classList.add('drop-recipient');
+  };
+  page.addEventListener('dragenter', acceptChip);
+  page.addEventListener('dragover', acceptChip);
+  page.addEventListener('dragleave', (e) => {
+    if (dragged && (!e.relatedTarget || !page.contains(e.relatedTarget))) clearDropMarks();
+  });
+  page.addEventListener('drop', (e) => {
+    const target = dropField(e);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { from, address, token } = dragged;
+    const { to } = target;
+    // A chip from somewhere else: whatever drag `dragged` was left from is over, and no list changes.
+    const ours = e.dataTransfer.getData(CHIP_TYPE) === token;
+    endChipDrag();
+    if (!ours) return;
+    const index = st[from].findIndex((a) => sameAddress(a.address, address));
+    if (to === from || index < 0) return;
+    const [moved] = st[from].splice(index, 1);
+    if (!st[to].some((a) => sameAddress(a.address, moved.address))) st[to].push(moved);
+    if (to !== 'to') showField(to, true);
+    changed();
+    renderRecipients(from);
+    renderRecipients(to).focus();
+  });
+
+  // Files dropped on the editor become attachments. Taken on dragenter as well as dragover, for the same reason as a
+  // recipient above. While files are over the composer, the composer itself is the drop target rather than what is in
+  // it (styles.css), so a drop never goes to an element that was drawn again just before it.
+  const dropTarget = inline ? page : document;
+  page.dataset.dropHint = t('composer.attachments.dropHint');
+  // A drag that began in the composer, such as an image moved within the text, is left to the editor. Chromium gives a
+  // dragged image Files too, but it is no file to attach. Such a drag carries a mark of its own rather than setting a
+  // flag here: a drag whose source was drawn again ends without a dragend reaching the composer, and a flag left set
+  // would turn away the next files from Explorer.
+  const INNER_TYPE = 'application/x-rukoo-composer';
+  page.addEventListener('dragstart', (e) => e.dataTransfer?.setData(INNER_TYPE, '1'));
+  const filesDrag = (e) => {
+    const types = [...(e.dataTransfer?.types || [])];
+    return types.includes('Files') && !types.includes(INNER_TYPE);
+  };
+  const acceptFiles = (e) => {
+    if (!filesDrag(e)) return;
+    e.preventDefault();
+    page.classList.add('drop-files');
+  };
+  listen(dropTarget, 'dragenter', acceptFiles);
+  listen(dropTarget, 'dragover', acceptFiles);
   listen(dropTarget, 'dragleave', (e) => {
     if (!e.relatedTarget || !page.contains(e.relatedTarget)) page.classList.remove('drop-files');
   });
   listen(dropTarget, 'drop', (e) => {
     page.classList.remove('drop-files');
-    const files = [...(e.dataTransfer.files || [])];
+    const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
     for (const f of files) {
@@ -1105,8 +1261,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     return true;
   }
 
-  // Set after a save whose attachments could not be read back yet; settled before the next save or send.
-  let pendingRemap = null;
+  // Set after a save whose attachments could not be read back yet; settled before the next save or send. Also set
+  // from the start for an editor that opens again on a draft main saved for it.
+  let pendingRemap = savedElsewhere && st.attachments.length ? { id: st.draftId, sent: st.attachments.slice() } : null;
   async function settleAttachments() {
     if (!pendingRemap) return;
     const { id, sent } = pendingRemap;
@@ -1119,8 +1276,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     renderAttachments();
   }
 
-  // Saves run one at a time; a save requested during another runs after it.
-  let saving = Promise.resolve(true);
+  // Saves run one at a time; a save requested during another runs after it. An editor that opens again on a draft
+  // main saved for it first points its attachments at that draft; when that can't be done now, the next save or send
+  // tries again and says so.
+  let saving = pendingRemap ? settleAttachments().catch(() => {}).then(() => true) : Promise.resolve(true);
   function saveDraft({ auto }) {
     clearTimeout(autosaveTimer);
     saving = saving.then(async () => {
@@ -1176,6 +1335,34 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     api('composeClose');
   }
 
+  // This editor as it is now, for Undo send: main keeps it while the email waits, and restoredState() opens the
+  // editor from it again. Plain data only. original: the email a reply or forward answers, for its quote.
+  function undoState() {
+    return {
+      opts: { mode: st.mode, id: opts.id || null, accountId: opts.accountId || null },
+      original: st.original || null,
+      html: editor.innerHTML,
+      state: {
+        accountId: st.accountId,
+        from: st.from,
+        to: st.to,
+        cc: st.cc,
+        bcc: st.bcc,
+        showCc: st.showCc,
+        showBcc: st.showBcc,
+        subject: st.subject,
+        attachments: st.attachments.map(({ key: _key, ...a }) => a),
+        include: st.include,
+        quoted: st.quoted,
+        inReplyTo: st.inReplyTo,
+        references: st.references,
+        draftId: st.draftId,
+        replyToId: st.replyToId,
+        forwardId: st.forwardId
+      }
+    };
+  }
+
   let sending = false;
   // While sending: resolves to true once the message is sent and the editor closed, false when it stays open.
   let sent = null;
@@ -1215,10 +1402,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       page.inert = true;
       await saving;
       await settleAttachments();
-      await api('send', payload(undefined, { sending: true }));
+      const res = await api('send', payload(undefined, { sending: true }), undoState());
       done = true;
-      gone = true;
-      finish(inline ? t('composer.status.sent') : null);
+      // A held email's draft stays on the server until it goes; main tells the chat's draft cards then.
+      gone = !(res && res.queued);
+      // Held for Undo send: the main window says so, with Undo, and says "Email sent" once it went.
+      finish(res && res.queued ? null : inline ? t('composer.status.sent') : null);
     } catch (err) {
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
     } finally {
@@ -1531,6 +1720,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   if (opts.focus !== false) focusStart();
   // Seeded by an agent: dirty from the start, so closing or moving on keeps it as a draft.
   if (opts.agent) changed({ by: opts.agent });
+  // Back after Undo send: what it holds may be saved nowhere, so closing asks and autosave keeps it.
+  else if (restored) {
+    st.dirty = true;
+    describeSaved();
+    armAutosave();
+    if (sendError) dialog({ title: t('composer.errors.send'), body: `<p>${esc(sendError)}</p>` });
+  }
   // Filled in by a mailto: link (or an unsubscribe by email): there is something to lose before anyone types, so
   // closing asks and autosave keeps it. Not through changed(), which would count the link's words as the user's own
   // edits. Recipients alone don't count, so a new message to a contact leaves no empty draft behind. A reply or
@@ -1573,6 +1769,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         syncDefault(next.accounts);
       }
       localize(page);
+      page.dataset.dropHint = t('composer.attachments.dropHint');
       page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
       const heading = page.querySelector('.composer-title');
       if (heading) heading.textContent = COMPOSE_TITLES[st.mode] || t('composer.titles.new');

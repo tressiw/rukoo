@@ -91,14 +91,18 @@ class SettingsRulesTest {
 
     @Test
     fun openClawSetupMatchesDesktop() {
-        // Settings copies the server's command (McpController.openClawSetup); its token must be desktop's:
+        // Settings copies the server's two steps (McpController.openClawSetup). Its token must be desktop's:
         // node -e "crypto.createHmac('sha256', key).update('rukoo-mcp-openclaw-remote-v1').digest('base64url')"
+        // and the text the same as desktop's, word for word (test/agent-openclaw.test.js pins this one too).
         val command = McpSetup.openClaw("http://100.64.0.3:47800/mcp", "gw-token-123")
         assertEquals(
-            "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds\"}}'\n",
+            "# Step 1, not a command: put this line in the OpenClaw .env file, ~/.openclaw/.env or \$OPENCLAW_STATE_DIR/.env, in place of any older RUKOO_MCP_TOKEN line.\n" +
+                "RUKOO_MCP_TOKEN=zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds\n" +
+                "# Step 2: run this command where the gateway runs, then restart the gateway.\n" +
+                "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer \${RUKOO_MCP_TOKEN}\"}}'\n",
             command,
         )
-        assertTrue(McpSetup.openClaw("http://100.64.0.3:47800/mcp", "another token")!!.contains("Bearer T0Gh5h4y3LVvMxbJkiUVk0Krw5zpm84nlAUq-yp7xAI"))
+        assertTrue(McpSetup.openClaw("http://100.64.0.3:47800/mcp", "another token")!!.contains("RUKOO_MCP_TOKEN=T0Gh5h4y3LVvMxbJkiUVk0Krw5zpm84nlAUq-yp7xAI\n"))
         assertNull(McpSetup.openClaw("http://100.64.0.3:47800/mcp", ""))
         // The toast says where the command points.
         assertEquals("http://100.64.0.3:47800/mcp", PhoneToolsTexts.setupUrl(command!!))

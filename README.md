@@ -25,18 +25,18 @@ The builds aren't signed yet, so Windows SmartScreen warns before the first star
 
 No mail account at hand? Pick the demo account during setup. It has sample mail and a sample calendar.
 
-Few people have used Rukoo on a real Mac so far, and Mac builds are only notarized when the release notes say so. If you try it, please tell us what works and what breaks in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74). [Platforms](docs/platforms.md) covers the tray, email links and profile folders on each system.
+Few people have used Rukoo on a real Mac so far, and Mac builds are only notarized when the release notes say so. If you try it, please tell us what works and what breaks in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74). Notifications may not appear on an ad-hoc signed Mac build; Settings → General → Send a test notification shows whether they do. [Platforms](docs/platforms.md) covers the tray, email links, notifications and profile folders on each system.
 
 ## What it does
 
 ### Mail
 
 - Gmail and Google Workspace accounts use Sign in with Google. Yahoo, Outlook, Exchange and other providers connect over IMAP and SMTP.
-- One inbox for all your accounts, or one account at a time. Search covers the folder, the account or every account.
+- One inbox for all your accounts, or one account at a time. Search covers the folder, the account or every account, and also finds older mail on the server than Rukoo keeps.
 - Inbox categories split the inbox like Gmail's tabs, on every account: Needs you, To read, Money, Updates, Promotions and your own. Nothing changes on the mail server. With your own TypeSafe API key, Jev sorts the mail that Rukoo's rules aren't sure about.
 - Every email has its own row, and the reading pane lists its related emails, such as your answer in Sent. Newsletters get an Unsubscribe button.
 - You write in the reading pane or in a separate window. Drafts save to the server while you type, and each account can have its own formatted signature.
-- You can undo a delete, archive or move with `Ctrl+Z`. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
+- You can undo a delete, archive or move with `Ctrl+Z`, and take an email back for a few seconds after Send. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
 
 More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 
@@ -92,7 +92,7 @@ More screens are in [docs/screenshots](docs/screenshots), in light and dark mode
 
 - Google sign-in needs your own OAuth client from Google Cloud. Neither this repository nor the release builds include one. [Google sign-in](docs/mail.md#google-sign-in) explains how to add it.
 - Most Outlook.com and many Microsoft 365 mailboxes need OAuth, which Rukoo doesn't support yet. Microsoft calendars aren't supported either ([#17](https://github.com/MajesteitBart/rukoo/issues/17)).
-- Rukoo keeps the newest 300 inbox messages and 100 per other folder on your computer. Older mail stays on the server.
+- Rukoo keeps the newest 300 inbox messages and 100 per other folder on your computer. Older mail stays on the server: "Load older emails" at the end of a folder brings it in, 100 at a time, and a search also looks for it on the server. See [What Rukoo keeps on your computer](docs/mail.md#what-rukoo-keeps-on-your-computer).
 - Bookings reach your calendar only while Rukoo runs on the computer that handles your booking page. Until then the server holds them.
 - Rukoo for Android has no calendar or push mail yet.
 - A message with a large attachment downloads in full before its text shows ([#56](https://github.com/MajesteitBart/rukoo/issues/56)).

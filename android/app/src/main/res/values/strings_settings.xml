@@ -242,8 +242,8 @@
     <string name="settings_phone_tools_openclaw">Let OpenClaw use Rukoo on this phone</string>
     <string name="settings_phone_tools_openclaw_help">For a gateway in your tailnet. Run the setup below on the gateway\'s computer.</string>
     <string name="settings_phone_tools_openclaw_needs_token">OpenClaw signs in with a token Rukoo makes from the gateway token. Enter that under Agents first.</string>
-    <string name="settings_phone_tools_copy_open_claw_help">A command for the gateway\'s computer, with this phone\'s Tailscale address. It replaces Rukoo on your computer in OpenClaw\'s tools, and it holds a token, so don\'t share it.</string>
-    <string name="settings_phone_tools_copied_open_claw">Copied with %1$s. Run it on the gateway\'s computer, then restart the OpenClaw gateway.</string>
+    <string name="settings_phone_tools_copy_open_claw_help">Two steps for the gateway\'s computer: a line with the token for OpenClaw\'s .env file, and a command with this phone\'s Tailscale address. The command replaces Rukoo on your computer in OpenClaw\'s tools. Don\'t share the token.</string>
+    <string name="settings_phone_tools_copied_open_claw">Copied two steps with %1$s: a line for OpenClaw\'s .env file and a command, both for the gateway\'s computer. Restart the gateway afterwards.</string>
     <string name="settings_phone_tools_battery">Battery</string>
     <string name="settings_phone_tools_battery_row">Battery use</string>
     <string name="settings_phone_tools_battery_help">Samsung stops apps in the background to save battery, and then agents can\'t reach Rukoo. Open the battery page and choose Unrestricted.</string>

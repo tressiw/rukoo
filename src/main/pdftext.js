@@ -72,6 +72,12 @@ class Lexer {
     this.flags = flags;
     // Content streams have no references; skipping the look-ahead keeps them fast.
     this.refs = true;
+    // Set by Doc.scan(): a string or comment that the end cuts may run on past it (see past in scan), and grown
+    // says one did. ended: a token was asked for at the end, or a string stayed cut there, so a value that holds
+    // either was cut.
+    this.past = null;
+    this.grown = false;
+    this.ended = false;
   }
 
   skip() {
@@ -80,8 +86,13 @@ class Lexer {
     while (i < this.end) {
       const c = s.charCodeAt(i);
       if (isWs(c)) i++;
-      else if (c === 37) while (i < this.end && s.charCodeAt(i) !== 10 && s.charCodeAt(i) !== 13) i++;
-      else break;
+      else if (c === 37) {
+        while (i < this.end && s.charCodeAt(i) !== 10 && s.charCodeAt(i) !== 13) i++;
+        if (i >= this.end && this.past) {
+          const eol = this.past(this, i, (from, limit) => lineEnd(s, from, limit));
+          if (eol >= 0) i = eol;
+        }
+      } else break;
     }
     this.pos = i;
   }
@@ -90,7 +101,10 @@ class Lexer {
     this.skip();
     const s = this.s;
     const i = this.pos;
-    if (i >= this.end) return null;
+    if (i >= this.end) {
+      this.ended = true;
+      return null;
+    }
     const c = s.charCodeAt(i);
     if (c === 47) {
       let j = i + 1;
@@ -137,6 +151,15 @@ class Lexer {
       } else if (c === 40) depth++;
       else if (c === 41 && --depth === 0) break;
     }
+    if (depth > 0 && this.past) {
+      const close = this.past(this, i, (from, limit) => closing(s, from, limit, depth));
+      if (close >= 0) {
+        i = close;
+        escapes = true;
+        depth = 0;
+      }
+    }
+    if (depth > 0) this.ended = true;
     const stop = Math.min(i, this.end);
     // Never past the end: a scan goes on from here, and the end can be where the next object starts.
     this.pos = Math.min(i + 1, this.end);
@@ -179,6 +202,27 @@ class Lexer {
   }
 }
 
+// Where a literal string goes on to close: the index of its ")" from i on, with depth parentheses open, or -1 if it
+// does not close before end.
+function closing(s, i, end, depth) {
+  for (; i < end; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 92) i++;
+    else if (c === 40) depth++;
+    else if (c === 41 && --depth === 0) return i;
+  }
+  return -1;
+}
+
+// Where a comment goes on to end: the index of the line break from i on, or -1 if there is none before end.
+function lineEnd(s, i, end) {
+  for (; i < end; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 10 || c === 13) return i;
+  }
+  return -1;
+}
+
 // One value: a number, a reference ("12 0 R"), an array, a dictionary (a Map), null, or the token itself. Past
 // NEST_MAX an item is null, and past ITEMS_MAX it is left out; either marks lex.flags partial. A dictionary entry
 // whose value is null is no entry, as the PDF specification says: /Filter null is no filter.
@@ -187,9 +231,11 @@ function value(lex, tok, depth = 0) {
   if (typeof tok === 'number') {
     if (lex.refs && Number.isInteger(tok) && tok >= 0) {
       const save = lex.pos;
+      const ended = lex.ended;
       const gen = lex.token();
       if (Number.isInteger(gen) && lex.token() === 'R') return new Ref(tok);
       lex.pos = save;
+      lex.ended = ended;
     }
     return tok;
   }
@@ -303,6 +349,10 @@ class Doc {
   // data is skipped, so bytes inside it never pass for an object. A value ends at its endobj or where the next
   // object starts, whichever comes first, and the scan goes on after it: a broken object can't take in the
   // objects after it, and one that never closes is read once, not again from every header inside it.
+  // A string or comment can hold "endobj" or "12 0 obj" itself, such as a title. One that such words cut runs on to
+  // its own end, and the object then ends at the first endobj or header after that (past). That reading is kept
+  // only when the value closes before that end and endobj or stream follows it; else the object is read as if
+  // nothing ran on, so a string that a broken writer never closed still can't take in the objects after it.
   // known: stream lengths read in a first scan, by the number of their object. Without it, returns the streams
   // whose length is an object that was not there yet.
   scan(known = null) {
@@ -315,8 +365,38 @@ class Doc {
     // Not inside a run of digits: retried at each of its digits, a long run took quadratic time.
     const re = /(?<!\d)(\d+)\s+\d+\s+obj\b/g;
     const ahead = new RegExp(re.source, 'g');
+    const bound = new RegExp(`${re.source}|endobj`, 'g');
     let endobj = -1;
     let next = -1;
+    // The bytes strings and comments may still run on past where their object seemed to end, all together: four
+    // times the file. Each run on spends what it looks through, also when it finds no end, so strings that never
+    // close can't each look through the rest of the file, while the few a broken writer left open still leave room.
+    // A string that this leaves cut makes the text partial, and spent keeps that when the object is then read as if
+    // nothing ran on: a string that ran on to its end before it doesn't undo the loss.
+    let room = 4 * s.length;
+    let spent = false;
+    // Runs a string or comment that the end of lex cut on, from from: find(from, limit) says where it ends, and
+    // lex.end moves to the first endobj or header after that. Returns where it ends, or -1 where it doesn't.
+    const past = (lex, from, find) => {
+      if (from >= s.length) return -1;
+      if (room <= 0) {
+        spent = this.partial = true;
+        return -1;
+      }
+      const limit = Math.min(s.length, from + room);
+      const at = find(from, limit);
+      if (at < 0) {
+        room -= limit - from;
+        if (limit < s.length) spent = this.partial = true;
+        return -1;
+      }
+      bound.lastIndex = at + 1;
+      const b = bound.exec(s);
+      lex.end = b ? b.index : s.length;
+      room -= lex.end - from;
+      lex.grown = true;
+      return at;
+    };
     for (let m = re.exec(s); m; m = re.exec(s)) {
       if (this.count >= OBJECTS_MAX) {
         this.partial = true;
@@ -333,10 +413,23 @@ class Doc {
         const n = ahead.exec(s);
         next = n ? n.index : s.length;
       }
-      const lex = new Lexer(s, at, Math.min(endobj, next), this);
-      const entry = { value: value(lex, lex.token()), start: -1, end: -1 };
-      re.lastIndex = Math.max(re.lastIndex, Math.min(lex.pos, s.length));
+      const partial = this.partial;
+      let lex = new Lexer(s, at, Math.min(endobj, next), this);
+      lex.past = past;
+      let entry = { value: value(lex, lex.token()), start: -1, end: -1 };
+      let valueEnd = lex.pos;
       lex.skip();
+      if (lex.grown) {
+        if (!lex.ended && (s.startsWith('endobj', lex.pos) || s.startsWith('stream', lex.pos))) valueEnd = lex.pos;
+        else {
+          this.partial = partial || spent;
+          lex = new Lexer(s, at, Math.min(endobj, next), this);
+          entry = { value: value(lex, lex.token()), start: -1, end: -1 };
+          valueEnd = lex.pos;
+          lex.skip();
+        }
+      }
+      re.lastIndex = Math.max(re.lastIndex, Math.min(valueEnd, s.length));
       if (s.startsWith('stream', lex.pos)) {
         let start = lex.pos + 6;
         if (s[start] === '\r') start++;
@@ -558,8 +651,8 @@ class Doc {
   }
 
   // Encrypted when an Encrypt leads to an encryption dictionary: a dictionary, not a stream's, whose Filter names
-  // its security handler. One that leads nowhere encrypts nothing, such as a trailer in a string that a header-like
-  // "12 0 obj" in it made the scan take apart.
+  // its security handler. One that leads nowhere encrypts nothing, such as a trailer that a broken object let the
+  // scan find.
   encrypted() {
     const handler = (v) => {
       let dict = v;

@@ -2,6 +2,7 @@ package nl.bvdm.rukoo.account
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -11,12 +12,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.RukooJson
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -41,9 +45,9 @@ class AccountError(val code: String, val status: Int = 0, message: String? = nul
 }
 
 /**
- * One call to an account server: the JSON it answered (null for an empty body), or an [AccountError]. Each byte of the
- * answer's body is added to [meter], so a caller can bound a run of calls by what they downloaded rather than by the
- * parts it reads.
+ * One call to an account server: the JSON it answered (null for an empty body), or an [AccountError]. Each byte read
+ * for the answer, headers and HTTP framing included, is added to [meter], so a caller can bound a run of calls by what
+ * they downloaded rather than by the parts it reads.
  */
 fun interface AccountHttp {
     suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement?
@@ -76,7 +80,12 @@ object AccountServers {
 
 /**
  * The account server over OkHttp: 20-second connect, read and write timeouts and a 40-second call timeout, no
- * redirects, no compression, at most 32 MiB of response body. HTTP framing isn't counted or capped (see #123).
+ * redirects, no compression, at most 32 MiB of response body, and at most [RAW_LIMIT] bytes read off the connection
+ * for one answer, headers and HTTP framing such as chunk extensions included.
+ *
+ * Each call has a connection of its own, as on desktop (src/main/account/client.js), so every byte read on it belongs
+ * to that answer. That costs a TLS handshake per call; a sync makes only a few. The base client's socket factory is
+ * replaced by a counting one, and a SOCKS proxy skips it: then only the body counts, as before.
  */
 class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
     private val client = base.newBuilder()
@@ -87,6 +96,8 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         // A redirect could take the session to another address, or from https to http.
         .followRedirects(false)
         .followSslRedirects(false)
+        // HTTP/2 would carry several calls on one connection.
+        .protocols(listOf(Protocol.HTTP_1_1))
         .build()
 
     // The answer is read off the main thread: OkHttp hands over the headers, and the body still has to come.
@@ -103,40 +114,64 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
             // asks for gzip and unpacks it first, and a few bytes of JSON can come with megabytes of padding in a gzip
             // header.
             .header("Accept-Encoding", "identity")
+            // The connection is this call's own and ends with its answer.
+            .header("Connection", "close")
             .apply { if (token != null) header("Authorization", "Bearer $token") }
             .method(method, payload)
             .build()
-        val response = try {
-            client.newCall(request).await()
-        } catch (e: IOException) {
-            throw AccountError("network", 0, e.message)
-        }
-        response.use { res ->
-            // An answer compressed anyway can't be read, so it isn't downloaded either.
-            val encodings = res.headers("Content-Encoding").flatMap { it.split(',') }.map { it.trim() }
-            if (encodings.any { it.isNotEmpty() && !it.equals("identity", ignoreCase = true) }) throw AccountError("server", res.code)
-            val text = try {
-                val source = res.body?.source()
-                if (source == null) {
-                    ""
-                } else {
-                    source.request(MAX_BYTES + 1)
-                    // The body only: OkHttp doesn't report the bytes of HTTP framing around it, such as chunk extensions,
-                    // which desktop counts. Those are bounded by the call timeout, not by bytes.
-                    meter?.addAndGet(source.buffer.size)
-                    if (source.buffer.size > MAX_BYTES) throw AccountError("too_large", res.code)
-                    source.buffer.readUtf8()
-                }
+        // The answer counts as it comes off the connection, so a server can't hide megabytes in a chunk extension or a
+        // header in front of a small body. OkHttp reads a chunk extension of any length.
+        val sockets = MeteredSocketFactory(RAW_LIMIT)
+        val own = client.newBuilder()
+            .socketFactory(sockets)
+            // A pool of its own, empty, so no other call's connection is used and this one isn't kept.
+            .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
+            .build()
+        var body = 0L
+        try {
+            val response = try {
+                own.newCall(request).await()
             } catch (e: IOException) {
-                throw AccountError("network", 0, e.message)
+                throw failed(sockets, e)
             }
-            val json = text.takeIf { it.isNotEmpty() }?.let { runCatching { RukooJson.parseToJsonElement(it) }.getOrNull() }
-            if (res.code in 200..299) return json
-            val error = json as? JsonObject
-            val code = (error?.get("error") as? JsonPrimitive)?.takeIf { it.isString }?.content
-            val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
-            throw AccountError(code ?: "server", res.code, message)
+            response.use { res ->
+                // An answer compressed anyway can't be read, so it isn't downloaded either.
+                val encodings = res.headers("Content-Encoding").flatMap { it.split(',') }.map { it.trim() }
+                if (encodings.any { it.isNotEmpty() && !it.equals("identity", ignoreCase = true) }) throw AccountError("server", res.code)
+                val text = try {
+                    val source = res.body?.source()
+                    if (source == null) {
+                        ""
+                    } else {
+                        source.request(MAX_BYTES + 1)
+                        body = source.buffer.size
+                        if (body > MAX_BYTES) throw AccountError("too_large", res.code)
+                        source.buffer.readUtf8()
+                    }
+                } catch (e: IOException) {
+                    throw failed(sockets, e)
+                }
+                val json = text.takeIf { it.isNotEmpty() }?.let { runCatching { RukooJson.parseToJsonElement(it) }.getOrNull() }
+                if (res.code in 200..299) return json
+                val error = json as? JsonObject
+                val code = (error?.get("error") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                throw AccountError(code ?: "server", res.code, message)
+            }
+        } finally {
+            meter?.addAndGet(counted(sockets.read.get(), body))
         }
+    }
+
+    private fun failed(sockets: MeteredSocketFactory, e: IOException) = AccountError(if (sockets.over) "too_large" else "network", 0, e.message)
+
+    /**
+     * What one answer adds to the meter: the bytes read off its connection, or its body when that is more. The body is
+     * more only when something read the connection around the counting socket, such as a SOCKS proxy.
+     */
+    private fun counted(raw: Long, body: Long): Long {
+        if (raw < body && bypassNoted.compareAndSet(false, true)) AppLog.w(TAG, "account answers count by their body only: the connection's bytes weren't seen")
+        return maxOf(raw, body)
     }
 
     private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
@@ -153,9 +188,17 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         cont.invokeOnCancellation { runCatching { cancel() } }
     }
 
-    private companion object {
-        const val TIMEOUT_S = 20L
+    internal companion object {
+        private const val TIMEOUT_S = 20L
         const val MAX_BYTES = 32L * 1024 * 1024
-        val JSON = "application/json".toMediaType()
+
+        /**
+         * The most read off the connection for one answer: a body of [MAX_BYTES] with room for headers (OkHttp takes up
+         * to 256 KiB of them) and, under TLS, the handshake and the encryption's few bytes per record.
+         */
+        const val RAW_LIMIT = MAX_BYTES + 512L * 1024
+        private const val TAG = "Account"
+        private val JSON = "application/json".toMediaType()
+        private val bypassNoted = AtomicBoolean(false)
     }
 }

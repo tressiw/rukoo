@@ -37,8 +37,9 @@ async function init() {
     window.addEventListener('focus', update);
     return;
   }
-  let message = null;
-  if (opts.id) {
+  // An editor that opens again after Undo send keeps the email it answers, which may have moved meanwhile.
+  let message = opts.restore ? opts.restore.original || null : null;
+  if (opts.id && !opts.restore) {
     try {
       message = await api('get', opts.id);
     } catch (err) {

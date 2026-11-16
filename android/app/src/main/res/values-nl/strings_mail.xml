@@ -27,8 +27,14 @@
     <string name="mailbox_folders_vip">VIP\'s</string>
     <string name="mailbox_folders_everything">Alle mappen</string>
     <string name="mailbox_layout_folders">Mappen</string>
+    <plurals name="mailbox_list_older_unread_hint">
+        <item quantity="one">Rukoo bewaart van elke inbox de nieuwste %1$d berichten. %2$d ongelezen bericht is ouder. Het blijft op de server, telt mee in het totaal van Postvak IN en staat niet in deze lijst, dus Alles als gelezen markeren bereikt het niet.</item>
+        <item quantity="other">Rukoo bewaart van elke inbox de nieuwste %1$d berichten. %2$d ongelezen berichten zijn ouder. Ze blijven op de server, tellen mee in het totaal van Postvak IN en staan niet in deze lijst, dus Alles als gelezen markeren bereikt ze niet.</item>
+    </plurals>
+    <string name="mailbox_list_older_unread_summary">%1$d ongelezen in oudere mail · %2$s</string>
     <string name="mailbox_list_sent_to">Aan: %1$s</string>
     <string name="mailbox_list_unread_summary">%1$d ongelezen · %2$s</string>
+    <string name="mailbox_list_unread_summary_older">%1$d ongelezen, nog %2$d in oudere mail · %3$s</string>
     <string name="mailbox_message_attachment">Bijlage</string>
     <string name="mailbox_message_collapse">Inklappen</string>
     <string name="mailbox_message_no_recipient">(Geen ontvanger)</string>

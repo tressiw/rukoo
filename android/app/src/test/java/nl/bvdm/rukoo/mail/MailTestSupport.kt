@@ -95,6 +95,12 @@ class FakeServer(val folders: List<FolderRecord>) {
     /** How long a folder sync takes, to close the engine while one runs. */
     var syncDelayMs = 0L
 
+    /** The folders whose syncs asked how much mail older than the window is unread. */
+    val olderAsked = mutableListOf<String>()
+
+    /** Answer that question with null, as when a server turns the search down. */
+    var olderUnseenRefused = false
+
     /** The sessions made so far; like a real one, a closed session syncs no more. */
     var sessionsMade = 0
     val sent = mutableListOf<ComposedMail>()
@@ -129,7 +135,16 @@ class FakeServer(val folders: List<FolderRecord>) {
             return name
         }
 
-        override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean, signals: Boolean, gmailTabs: Boolean): FolderSync {
+        override suspend fun syncFolder(
+            path: String,
+            limit: Int,
+            known: Map<Long, CachedMessage>,
+            uidValidity: String?,
+            background: Boolean,
+            signals: Boolean,
+            gmailTabs: Boolean,
+            olderUnseen: Boolean,
+        ): FolderSync {
             if (syncDelayMs > 0) kotlinx.coroutines.delay(syncDelayMs)
             if (closed) throw IllegalStateException("this session is closed")
             maybeFail("syncFolder")
@@ -137,6 +152,7 @@ class FakeServer(val folders: List<FolderRecord>) {
             val box = box(path)
             val useKnown = if (uidValidity == box.uidValidity) known else emptyMap()
             val window = box.messages.takeLast(limit)
+            if (olderUnseen) olderAsked += path
             return FolderSync(
                 box.uidValidity,
                 box.messages.size,
@@ -150,6 +166,7 @@ class FakeServer(val folders: List<FolderRecord>) {
                         )
                     }
                 },
+                olderUnseen = if (!olderUnseen || olderUnseenRefused) null else box.messages.dropLast(limit).count { "\\Seen" !in it.flags },
             )
         }
 

@@ -60,6 +60,23 @@ test('Outlook, Apple Mail and Thunderbird bind their own keys', async () => {
   assert.equal(k.keymap(), 'rukoo');
 });
 
+test('Shift+Esc marks the list read in every scheme, Thunderbird adds Shift+C, and neither acts while typing', async () => {
+  const k = await keymap();
+  for (const scheme of k.SCHEMES) {
+    k.setKeymap(scheme);
+    assert.equal(k.actionFor(key('Escape', { shiftKey: true })), 'readAll', scheme);
+    assert.equal(k.actionFor(key('Escape')), null, `${scheme}: Esc alone still closes and clears`);
+    assert.equal(k.actionFor(key('Escape', { shiftKey: true }), { typing: true }), null, scheme);
+  }
+  k.setKeymap('rukoo');
+  assert.equal(k.keyLabel('readAll'), 'Shift+Esc');
+  k.setKeymap('thunderbird');
+  assert.equal(k.actionFor(key('C', { shiftKey: true })), 'readAll');
+  assert.equal(k.actionFor(key('c')), null);
+  assert.equal(k.keyLabel('readAll'), 'Shift+C');
+  assert.ok(k.ACTIONS.includes('readAll'), 'Settings lists it');
+});
+
 test("on a Mac, Ctrl means Command and labels use the Mac's symbols", async () => {
   const k = await keymap('darwin');
   k.setKeymap('apple');
@@ -70,4 +87,6 @@ test("on a Mac, Ctrl means Command and labels use the Mac's symbols", async () =
   k.setKeymap('rukoo');
   assert.equal(k.actionFor(key('u', { metaKey: true, shiftKey: true })), 'read');
   assert.equal(k.actionFor(key('r', { ctrlKey: true })), 'reply', 'Control still works for Command, as before');
+  assert.equal(k.keyLabel('readAll'), '⇧Esc');
+  assert.equal(k.actionFor(key('Escape', { shiftKey: true })), 'readAll');
 });

@@ -1,4 +1,4 @@
-import { t, languages, setLanguage, localize } from './i18n.js';
+import { t, languages, setLanguage, localize, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm, KEEP_OPEN } from './ui.js';
 import { icon as panelIcon } from './agent/bui.js';
@@ -50,6 +50,12 @@ const INTERVALS = [
   { value: 15, get label() { return t('settings.sync.fifteenMinutes'); } },
   { value: 30, get label() { return t('settings.sync.thirtyMinutes'); } },
   { value: 60, get label() { return t('settings.sync.hour'); } }
+];
+// Settings > General > Undo send: seconds an email waits after Send (main's outbox.js). Main allows the same values
+// (engine.js UNDO_SEND_SECONDS).
+const UNDO_SEND = [
+  { value: 0, get label() { return t('settings.undoSend.off'); } },
+  ...[5, 10, 20, 30].map((count) => ({ value: count, get label() { return t('settings.undoSend.seconds', { count }); } }))
 ];
 // Settings > About: which releases the update check offers (main's updates.js).
 const CHANNELS = [
@@ -264,6 +270,18 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   };
   // While the pairing code shows: what the dialog does with the phone events from main (paired, expired, burned).
   let pairWatch = null;
+  // The test notification row: whether this system offers Rukoo notifications at all (main's
+  // Notification.isSupported()), and what the last test came to (desktop.js testNotice), or testing while one is on its
+  // way. Whether the system allows them can't be asked, so the test is how to find out.
+  const notices = { supported: null, test: null, testing: false };
+  const noticesDesc = () => {
+    const r = notices.test;
+    if (notices.testing) return t('settings.general.testNotificationSending');
+    if ((r && r.result === 'unavailable') || notices.supported === false) return t('settings.general.notificationsUnavailable');
+    if (r && r.result === 'sent') return t('settings.general.testNotificationSent');
+    if (r && r.result === 'failed') return r.error ? t('settings.general.testNotificationFailedReason', { reason: r.error }) : t('settings.general.testNotificationFailed');
+    return t('settings.general.testNotificationHelp');
+  };
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
   const unsubscribe = window.mail.on(({ type, payload }) => {
@@ -328,6 +346,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
   // Marks the default account in the overview and the default address on the sender addresses page.
   const defaultBadge = () => `<span class="default-badge">${esc(t('settings.account.defaultBadge'))}</span>`;
+  // An account's first letter in its color, in the overview and on the Signatures page.
+  const accountAvatar = (a) => `<div class="avatar small" style="--accent:${esc(a.color)}">${esc((a.name || a.email).trim()[0] || '?').toUpperCase()}</div>`;
 
   // The Rukoo account's pages (rukoo-account.js).
   // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
@@ -341,13 +361,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const meetingPage = meetingSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   // Settings > Video meetings (video-settings.js), beside the booking page.
   const videoPage = videoPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
-  // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
-  // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
+  // A redraw of the screen already showing keeps its scroll position on the pages with calendar, booking and signature
+  // rows: the booking page changes while it is open, and a switch or a saved signature near the bottom shouldn't send
+  // the page back to the top.
   // Another page, or the booking page's setup becoming the page, starts at the top.
   const scrollKept = { key: null, top: 0 };
   function keepScroll(view) {
     const scroller = page.querySelector('.page-scroll');
-    const kept = view === 'main' || view === 'account' || CALENDAR_VIEWS.includes(view) || BOOKING_VIEWS.includes(view);
+    const kept = view === 'main' || view === 'account' || view === 'signatures' || CALENDAR_VIEWS.includes(view) || BOOKING_VIEWS.includes(view);
     const key = !kept || !scroller ? null : BOOKING_VIEWS.includes(view) ? bookingPage.screen() : `${view}:${params.id || ''}`;
     if (key && key === scrollKept.key && scrollKept.top > 0) {
       const top = scrollKept.top;
@@ -359,23 +380,33 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (key) scroller.addEventListener('scroll', () => scrollKept.key === key && (scrollKept.top = scroller.scrollTop), { passive: true });
   }
 
-  // A signature row: the signature as it will be sent, or None.
-  const signatureRow = (html, action) =>
-    row({ title: t('settings.general.signature'), value: html ? '' : esc(t('common.values.none')), preview: html && signaturePreview(html), action });
-  // An account without a signature of its own: says so, and shows the general one.
-  const generalSignatureRow = (html) =>
-    row({
-      title: t('settings.general.signature'),
-      value: esc(html ? t('settings.signature.usesGeneral') : t('settings.signature.generalValue', { signature: t('common.values.noneLower') })),
-      preview: html && signaturePreview(html),
-      action: 'acc-signature'
-    });
+  // The general signature's value and preview: the signature as it will be sent, or None.
+  const generalSignatureFields = (s) => {
+    const html = signatureHtml(s.signature, s.signatureHtml);
+    return { value: html ? '' : esc(t('common.values.none')), preview: html && signaturePreview(html) };
+  };
+  // What an account sends under its mail: its own signature (own: what the value says then), None, or the general
+  // one, which the value names.
+  const accountSignatureFields = (a, s, own = '') => {
+    if (usesGeneralSignature(a)) {
+      const html = signatureHtml(s.signature, s.signatureHtml);
+      return {
+        value: esc(html ? t('settings.signature.usesGeneral') : t('settings.signature.generalValue', { signature: t('common.values.noneLower') })),
+        preview: html && signaturePreview(html)
+      };
+    }
+    const html = accountSignatureHtml(a, s);
+    return { value: html ? own : esc(t('common.values.none')), preview: html && signaturePreview(html) };
+  };
+  // An account's row on its own page, and on its sender addresses page with a title that says which addresses send it.
+  const accountSignatureRow = (a, s, title = esc(t('settings.general.signature'))) =>
+    row({ title, ...accountSignatureFields(a, s), action: `acc-signature:${encodeURIComponent(a.id)}` });
 
   // A static row, because the reset button can't sit inside a row button.
   const zoomRow = (level) => `
     <div class="row static" data-zoom>
       <div class="text"><div class="title">${esc(t('settings.general.zoom'))}</div>
-        <div class="desc">${esc(t('settings.general.zoomHelp'))}</div>
+        <div class="desc">${esc(t(window.mail.platform === 'darwin' ? 'settings.general.macZoomHelp' : 'settings.general.zoomHelp'))}</div>
         <div class="value" data-zoom-value>${esc(t('settings.general.zoomValue', { percent: level }))}</div></div>
       <button class="btn sm secondary" data-a="zoom-reset" ${level === 100 ? 'disabled' : ''}>${esc(t('settings.general.zoomReset'))}</button>
     </div>`;
@@ -522,7 +553,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
     return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
   };
-  // Which command the copy row puts on the clipboard: for this computer, or for the gateway's computer.
+  // Which setup the copy row puts on the clipboard (a token line and a command): for this computer, or for the
+  // gateway's computer.
   const openclawCopyDesc = () => t(agentState.config.openclaw.remote ? 'settings.agents.copyOpenClawRemoteHelp' : 'settings.agents.copyOpenClawHelp');
   // Both cards show the Tailscale listener; a toggle on one can open or close it for the other.
   const showAddresses = () => {
@@ -1063,9 +1095,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
-      view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
+      view === 'main' || view === 'account' || view === 'signatures' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
       view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
+      view === 'main' ? api('notificationState').then((n) => (notices.supported = n.supported)).catch(() => null) : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -1088,15 +1121,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
             : `<button class="btn sm secondary" data-a="acc-make-default:${esc(a.id)}" aria-describedby="acc-email-${esc(a.id)}">${esc(t('settings.accounts.makeDefault'))}</button>`;
           return `<div class="row static indent acc-row">
             <button class="acc-main" data-a="account:${esc(a.id)}">
-              <div class="avatar small" style="--accent:${esc(a.color)}">${esc((a.name || a.email).trim()[0] || '?').toUpperCase()}</div>
+              ${accountAvatar(a)}
               <div class="text"><div class="title acc-title"><span class="acc-email" id="acc-email-${esc(a.id)}">${esc(a.email)}</span>${a.isDefault ? defaultBadge() : ''}</div>
               <div class="desc">${status}</div></div>
             </button>${side}
           </div>`;
         })
         .join('');
-      // The booking link goes beside the signature; Calendar and the booking page get a group after General.
-      const footerRow = bookingPage.footerRow(s);
+      // Calendar and the booking page get a group after General.
       const calendarGroup = `
         <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
         <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}${videoPage.rowHtml()}</div>`;
@@ -1104,6 +1136,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
           ${row({ title: t('settings.accounts.add'), action: 'add', cls: 'indent', lead: `<span class="add-ic">${icons.plus}</span>` })}
+          ${row({ title: esc(t('settings.signatures.title')), desc: esc(t('settings.signatures.rowHelp')), action: 'signatures', cls: 'indent', lead: `<span class="sig-ic">${icons.edit}</span>` })}
         </div>
         <div class="settings-group-title" data-i18n="settings.groups.general">${esc(t('settings.groups.general'))}</div>
         <div class="card">
@@ -1120,13 +1153,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.fit'), desc: t('settings.general.fitHelp'), action: 'toggle:fitContent', toggle: s.fitContent })}
           ${row({ title: t('settings.general.logos'), desc: t('settings.general.logosHelp'), action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
+          ${row({ title: t('settings.general.newMailSound'), desc: t('settings.general.newMailSoundHelp'), action: 'toggle:newMailSound', toggle: s.newMailSound === true })}
+          ${row({ title: t('settings.general.testNotification'), desc: esc(noticesDesc()), action: 'notify-test' })}
           ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
-          ${signatureRow(signatureHtml(s.signature, s.signatureHtml), 'signature')}
-          ${footerRow}
+          ${row({ title: t('settings.general.undoSend'), desc: t('settings.general.undoSendHelp'), value: labelOf(UNDO_SEND, Number(s.undoSend)), action: 'undo-send' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
@@ -1160,18 +1194,18 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const defaultRow = a.isDefault
         ? `<div class="row static" data-default-account><div class="text"><div class="title">${esc(t('settings.account.isDefault'))}</div><div class="desc">${esc(t('settings.account.makeDefaultHelp'))}</div></div></div>`
         : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' });
-      // The booking link under this account's signature, after its signature row.
+      // The signature and the booking link under it come after the addresses that send them.
       const accountFooterRow = bookingPage.accountFooterRow(a, s);
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
           ${defaultRow}
           ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
-          ${usesGeneralSignature(a) ? generalSignatureRow(signatureHtml(s.signature, s.signatureHtml)) : signatureRow(accountSignatureHtml(a, s), 'acc-signature')}
-          ${accountFooterRow}
           ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
           ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
+          ${accountSignatureRow(a, s)}
+          ${accountFooterRow}
           ${row({ title: t('settings.account.sync'), desc: a.lastSync ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) }) : '', action: 'acc-sync' })}
           ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? t('settings.account.googleReauth') : t('settings.account.googleSwitch'), desc: a.auth === 'oauth2' ? t('settings.account.googleReauthHelp') : t('settings.account.googleSwitchHelp'), action: 'acc-google' }) : ''}
           ${a.type === 'imap' ? row({ title: t('settings.account.server'), desc: [a.imap.host, a.smtp.host, a.caldav && hostOf(a.caldav.url)].filter(Boolean).map(esc).join(' / '), action: 'acc-server' }) : ''}
@@ -1237,6 +1271,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
       title = t('settings.account.identities');
+      // Under the addresses: the signature all of them send, since an account has one for all its addresses.
+      const sentFrom = a.identities.length > 1 ? t('settings.aliases.signatureAll', { count: a.identities.length }) : t('settings.aliases.signatureOne');
       body = `
         <div class="settings-group-title" data-i18n="settings.aliases.sendAs">${esc(t('settings.aliases.sendAs'))}</div>
         <div class="card">
@@ -1252,7 +1288,36 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.aliases.add'), action: 'alias-add', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
           ${a.auth === 'oauth2' ? row({ title: t('settings.aliases.fetch'), desc: t('settings.aliases.fetchHelp'), action: 'alias-gmail' }) : ''}
         </div>
-        <p class="empty" style="padding:24px 40px;text-align:left" data-i18n="settings.aliases.help">${esc(t('settings.aliases.help'))}</p>`;
+        <p class="settings-text" data-i18n="settings.aliases.help">${esc(t('settings.aliases.help'))}</p>
+        <div class="settings-group-title" data-i18n="settings.general.signature">${esc(t('settings.general.signature'))}</div>
+        <div class="card">${accountSignatureRow(a, s, esc(sentFrom))}</div>`;
+    }
+
+    if (view === 'signatures') {
+      title = t('settings.signatures.title');
+      // Each account with the addresses it sends from and what goes under their mail; an account without a signature
+      // of its own shows the general one.
+      const list = new Intl.ListFormat(getLocale(), { type: 'conjunction' });
+      const accountRows = state.accounts
+        .map((a) => {
+          const aliases = a.identities.filter((i) => !i.primary && i.address !== a.email).map((i) => i.address);
+          return row({
+            title: `<span class="acc-title"><span class="acc-email">${esc(a.email)}</span>${a.isDefault ? defaultBadge() : ''}</span>`,
+            desc: aliases.length ? esc(t('settings.signatures.aliases', { addresses: list.format(aliases) })) : '',
+            ...accountSignatureFields(a, s, esc(t('settings.signatures.own'))),
+            action: `acc-signature:${encodeURIComponent(a.id)}`,
+            cls: 'indent sig-account',
+            lead: accountAvatar(a)
+          });
+        })
+        .join('');
+      body = `
+        <div class="card">
+          ${row({ title: esc(t('settings.signatures.general')), desc: esc(t('settings.signatures.generalHelp')), ...generalSignatureFields(s), action: 'signature' })}
+          ${bookingPage.footerRow(s)}
+        </div>
+        <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
+        <div class="card">${accountRows}</div>`;
     }
 
     if (view === 'folders') {
@@ -1393,6 +1458,15 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('video-') && (await videoPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
+    if (a === 'notify-test') {
+      if (notices.testing) return;
+      notices.testing = true;
+      const desc = b.querySelector('.desc');
+      if (desc) desc.textContent = noticesDesc();
+      notices.test = await api('testNotification').catch((err) => ({ result: 'failed', error: err.message }));
+      notices.testing = false;
+      return render();
+    }
     if (a === 'mailto-use') {
       b.disabled = true;
       try {
@@ -1410,6 +1484,25 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       return ctx.openSetup({ first: false });
     }
     if (a.startsWith('account:')) return go('account', { id: a.slice(8) });
+    // An account's signature, from its page, its sender addresses or the Signatures page. Use general signature takes
+    // its own away.
+    if (a.startsWith('acc-signature:')) {
+      const acc = ctx.S.data.accounts.find((x) => x.id === decodeURIComponent(a.slice(14)));
+      if (!acc) return;
+      const v = await editSignature({
+        html: accountSignatureHtml(acc, s),
+        title: t('settings.signature.accountTitle', { email: acc.email }),
+        buttons: [{ get label() { return t('settings.signature.useGeneral'); }, value: { reset: true }, left: true }]
+      });
+      if (!v) return;
+      try {
+        await api('updateAccount', acc.id, v.reset ? { signature: null } : { signatureHtml: v.html });
+      } catch (err) {
+        return toast(err.message, 5000);
+      }
+      await render();
+      return ctx.refresh();
+    }
     if (a.startsWith('acc-make-default:')) {
       const id = a.slice(17);
       try {
@@ -1502,6 +1595,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'vips':
       case 'keyboard':
       case 'swipe':
+      case 'signatures':
         return go(a);
       case 'swipe-right':
       case 'swipe-left': {
@@ -1551,8 +1645,13 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         if (v !== null && v !== undefined) set({ syncInterval: v });
         return;
       }
+      case 'undo-send': {
+        const v = await choiceDialog(t('settings.general.undoSend'), UNDO_SEND, Number(s.undoSend));
+        if (v !== null && v !== undefined) set({ undoSend: v });
+        return;
+      }
       case 'signature': {
-        const v = await editSignature({ html: signatureHtml(s.signature, s.signatureHtml) });
+        const v = await editSignature({ html: signatureHtml(s.signature, s.signatureHtml), title: t('settings.signatures.general') });
         if (!v) return;
         try {
           await set({ signatureHtml: v.html });
@@ -1583,15 +1682,6 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'acc-name': {
         const v = await promptDialog(t('settings.account.name'), acc.name || '');
         if (v !== null) update({ name: v.trim() });
-        return;
-      }
-      case 'acc-signature': {
-        const v = await editSignature({
-          html: accountSignatureHtml(acc, s),
-          buttons: [{ get label() { return t('settings.signature.useGeneral'); }, value: { reset: true }, left: true }]
-        });
-        if (!v) return;
-        update(v.reset ? { signature: null } : { signatureHtml: v.html });
         return;
       }
       case 'acc-color': {

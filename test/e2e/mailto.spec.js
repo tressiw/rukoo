@@ -160,6 +160,8 @@ test('the compose window for a link before any account can be closed', async () 
 });
 
 test('a link still opens after the main window closed while a compose window stayed open', async () => {
+  // The close button only hides the main window on a Mac; macos.spec.js covers closing it and links there.
+  test.skip(process.platform === 'darwin', 'the main window never closes on macOS');
   await withDemo();
   await quit();
   const win = await launch([], { closeToTray: false, minimizeToTray: false });
@@ -272,9 +274,22 @@ test('an unsubscribe email in the reading pane counts as written, while a reply 
   await expect(win.locator('.scrim')).toHaveCount(0);
 });
 
+// What a run from source says instead of offering itself, per platform. A Mac asks for a copy in Applications.
+const unavailable = {
+  en: {
+    linux: 'Install the .deb package to use Rukoo Mail for email links.',
+    darwin: 'Move Rukoo Mail to Applications and open it there to use it for email links.',
+    win32: 'Only in the installed or portable app'
+  },
+  nl: {
+    linux: 'Installeer het .deb-pakket om Rukoo Mail voor e-maillinks te gebruiken.',
+    darwin: 'Verplaats Rukoo Mail naar Programma’s en open de app daar om e-maillinks ermee te openen.',
+    win32: 'Alleen in de geïnstalleerde of draagbare app'
+  }
+};
 for (const [language, title, value] of [
-  ['en', 'Email links', process.platform === 'linux' ? 'Install the .deb package to use Rukoo Mail for email links.' : 'Only in the installed or portable app'],
-  ['nl', 'E-maillinks', process.platform === 'linux' ? 'Installeer het .deb-pakket om Rukoo Mail voor e-maillinks te gebruiken.' : 'Alleen in de geïnstalleerde of draagbare app']
+  ['en', 'Email links', unavailable.en[process.platform] || unavailable.en.win32],
+  ['nl', 'E-maillinks', unavailable.nl[process.platform] || unavailable.nl.win32]
 ]) {
   test(`Settings shows Email links, and a run from source can't offer itself (${language})`, async () => {
     await withDemo();

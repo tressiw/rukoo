@@ -28,8 +28,20 @@ async function launch(size = [1500, 950]) {
   delete env.RUKOO_VOICE_BRIDGE;
   app = await electron.launch({ args: ['.'], cwd: ROOT, env });
   win = await app.firstWindow();
+  // Rukoo links a meeting Voice starts to the one calendar event around its start and names a 1:1's voice after the
+  // guest. The demo calendar's events sit at fixed times of the week, so a meeting that starts "now" would be linked
+  // or not depending on the clock (#216). Here it isn't, unless the test calls linkEvents(); again after each launch.
+  await expect.poll(() => app.evaluate(() => Boolean(global.__semVoice))).toBe(true);
+  await app.evaluate(() => {
+    const v = global.__semVoice;
+    const link = v.linkEvent.bind(v);
+    v.linkEvent = async (id) => (global.__semLinkEvents ? link(id) : undefined);
+  });
   await setSize(...size);
 }
+
+// Lets Rukoo link the meetings Voice starts from now on, as it does outside the tests, until the next launch.
+const linkEvents = () => app.evaluate(() => (global.__semLinkEvents = true));
 
 const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
 const connected = () => app.evaluate(() => global.__semVoice.connected);
@@ -143,6 +155,7 @@ const callVoice = (n) => ({ id: `call-${n}`, track: 'call', label: `Speaker ${n}
 
 // A meeting Voice starts on its own, as from its pill: the events Voice sends. screen: what it records of the screen.
 // speakers: the voices it sends at the start; without speaker labels that is you and the whole call as one voice.
+// Rukoo doesn't link it to a calendar event unless the test called linkEvents() first.
 function voiceStarts({ title = '', startedAt = Date.now(), context = null, screen = 'off', speakers = [MIC, CALL_1] } = {}) {
   const id = voice.meetingId();
   voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen, startedBy: 'voice', context });
@@ -175,6 +188,16 @@ function standupAt(now = new Date()) {
     do d.setDate(d.getDate() + 1);
     while (!weekday(d));
   }
+  return d.getTime();
+}
+
+// One minute into the demo calendar's "Quarterly planning follow-up", a 1:1 with Joris on next week's Thursday at
+// 11:00: the same arithmetic as the demo's seed(). Always days ahead, so no other demo event is within reach of it.
+function followUpAt(now = new Date()) {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + 10);
+  d.setHours(11, 1, 0, 0);
   return d.getTime();
 }
 
@@ -531,8 +554,8 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await notes().press('Enter');
   await win.keyboard.type('Publish the checklist');
   await notes().press('Control+k');
-  await win.locator('.dialog input').fill('https://example.com/checklist');
-  await win.locator('.dialog .buttons .primary').click();
+  await win.locator('.link-pop [data-f="url"]').fill('https://example.com/checklist');
+  await win.locator('.link-pop [data-f="url"]').press('Enter');
   await notes().blur();
   await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
   const stored = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
@@ -580,6 +603,58 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await expect(notes().locator('li')).toHaveCount(2);
   await expect(notes().locator('a')).toHaveAttribute('href', 'https://example.com/checklist');
   expect(await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe(stored);
+});
+
+test('notes link typed and pasted addresses as mail does, save them as Markdown links and keep them across a restart', async () => {
+  const id = voiceStarts({ title: 'Links in notes' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  const links = () => notes().evaluate((el) => [...el.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]));
+  const stored = () => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  await notes().click();
+  await win.keyboard.type('Agenda at www.example.com ');
+  await expect.poll(links).toEqual([['https://www.example.com', 'www.example.com']]);
+  // An address pasted over selected words links them.
+  await win.keyboard.type('and the plan');
+  await notes().evaluate((el) => {
+    const text = [...el.querySelectorAll('*'), el].flatMap((n) => [...n.childNodes]).find((n) => n.nodeType === Node.TEXT_NODE && n.data.includes('the plan'));
+    const range = document.createRange();
+    range.setStart(text, text.data.indexOf('the plan'));
+    range.setEnd(text, text.data.indexOf('the plan') + 8);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await app.evaluate(({ clipboard, ClipboardItem }) => clipboard.write([new ClipboardItem({ 'text/plain': 'https://example.com/plan' })]));
+  await win.keyboard.press('ControlOrMeta+v');
+  await expect.poll(links).toEqual([
+    ['https://www.example.com', 'www.example.com'],
+    ['https://example.com/plan', 'the plan']
+  ]);
+  await win.keyboard.press('ControlOrMeta+z');
+  await expect.poll(links).toEqual([['https://www.example.com', 'www.example.com']]);
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  expect(await stored()).toBe('Agenda at [www.example.com](<https://www.example.com>) and the plan');
+
+  // The bubble under a link works here too: Remove keeps the text.
+  await notes().locator('a').click();
+  await expect(win.locator('.meeting .link-bubble')).toBeVisible();
+  await expect(win.locator('.meeting .link-bubble .link-go-url')).toHaveText('https://www.example.com');
+  await win.keyboard.press('ControlOrMeta+k');
+  await win.locator('.meeting .link-pop [data-f="text"]').fill('the agenda');
+  await win.locator('.meeting .link-pop [data-f="text"]').press('Enter');
+  await expect.poll(links).toEqual([['https://www.example.com', 'the agenda']]);
+  await notes().blur();
+  await expect.poll(stored).toBe('Agenda at [the agenda](<https://www.example.com>) and the plan');
+
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Links in notes');
+  await expect.poll(links).toEqual([['https://www.example.com', 'the agenda']]);
+  await notes().locator('a').click();
+  await win.locator('.meeting .link-bubble [data-a="remove"]').click();
+  await expect.poll(links).toEqual([]);
+  await expect(notes()).toHaveText('Agenda at the agenda and the plan');
 });
 
 test('notes Markdown round trips editor structures and sanitizes pasted controls and links', async () => {
@@ -635,6 +710,49 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   for (const [first, second] of result.variants) expect(second).toBe(first);
   expect(result.blocks).toEqual(['First\nSecond', 'First\nSecond', 'First\nSecond', 'First\n\nThird']);
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
+});
+
+test('notes link addresses with backticks and backslashes keep them when the notes are read back', async () => {
+  const result = await win.evaluate(async () => {
+    const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
+    const editor = document.createElement('div');
+    // [address, code after it on the line]
+    const cases = [
+      ['https://a.example/`x`', 'npm start'],
+      ['https://a.example/a\\*b\\_c', 'npm start'],
+      ['https://a.example/q?a=``1``&b=2', 'npm start'],
+      ['https://a.example/`x', '']
+    ];
+    const links = cases.map(([href, code]) => {
+      editor.innerHTML = `<div>See <a></a> and ${code ? `<code>${code}</code>` : 'more'} after</div>`;
+      const a = editor.querySelector('a');
+      a.setAttribute('href', href);
+      a.textContent = href;
+      const markdown = notesToMarkdown(editor);
+      editor.innerHTML = markdownToNotes(markdown);
+      return { href, read: editor.querySelector('a')?.getAttribute('href'), text: editor.textContent, want: `See ${href} and ${code || 'more'} after`, code: editor.querySelector('code')?.textContent || '', wantCode: code, again: notesToMarkdown(editor) === markdown };
+    });
+    // Link syntax inside a code span stays code, also when it looks like an address that runs past the code.
+    editor.innerHTML = markdownToNotes('`[x](<https://a.example/>)` and [y](<https://b.example/`z`>)');
+    const code = [editor.querySelector('code')?.textContent, [...editor.querySelectorAll('a')].map((a) => a.getAttribute('href'))];
+    editor.innerHTML = '<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>';
+    const crossing = notesToMarkdown(editor);
+    editor.innerHTML = markdownToNotes(crossing);
+    const crossed = [editor.innerHTML, notesToMarkdown(editor) === crossing];
+    // A NUL in the Markdown can't pose as one of the reader's own placeholders.
+    editor.innerHTML = markdownToNotes('[t](<https://a.example/\u00000\u0000>)');
+    const nul = [...editor.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]);
+    return { links, code, crossed, nul };
+  });
+  for (const link of result.links) {
+    expect(link.read, link.href).toBe(link.href);
+    expect(link.text, link.href).toBe(link.want);
+    expect(link.code, link.href).toBe(link.wantCode);
+    expect(link.again, link.href).toBe(true);
+  }
+  expect(result.code).toEqual(['[x](<https://a.example/>)', ['https://b.example/`z`']]);
+  expect(result.crossed).toEqual(['<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>', true]);
+  expect(result.nul).toEqual([['https://a.example/0', 't']]);
 });
 
 test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {
@@ -903,6 +1021,7 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
 
 test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the names picked from its guests survive a restart', async () => {
   test.setTimeout(120000);
+  await linkEvents();
   await openMeetings();
   await expect(view().locator('.mt-empty .t')).toHaveText('Record a meeting');
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000 });
@@ -966,6 +1085,7 @@ test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the name
 
 test('three voices on the call keep their names', async () => {
   test.setTimeout(180000);
+  await linkEvents();
   await openMeetings();
   // With speaker labels Voice sends a call voice right before its first passage: at the start there is only you.
   const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
@@ -1044,6 +1164,7 @@ test('three voices on the call keep their names', async () => {
 });
 
 test("a 1:1's guessed name stays when a second voice joins, and the People card asks to check it", async () => {
+  await linkEvents();
   await openMeetings();
   // The Stand-up as if only Sanne were invited: one voice on the call and one guest, so Rukoo fills in her name.
   await app.evaluate(() => {
@@ -1079,6 +1200,30 @@ test("a 1:1's guessed name stays when a second voice joins, and the People card 
   await person('call-1').click();
   await win.locator('.menu button', { hasText: 'Sanne de Vries' }).click();
   await expect(person('call-1').locator('.mt-person-sub')).toHaveText('sanne@example.com');
+});
+
+test("a meeting during a 1:1 keeps Voice's labels here until the test turns the linking on", async () => {
+  await openMeetings();
+  const at = followUpAt();
+  const names = () => view().locator('.mt-people .mt-person-name');
+  const eventOf = (id) => app.evaluate((_e, id) => global.__semVoice.get(id).meeting.eventId || null, id);
+
+  // As in every other test here: no event, so the call keeps its label whatever the demo calendar has at that time.
+  const first = voiceStarts({ title: 'Unlinked follow-up', startedAt: at });
+  await expect(view().locator('.mt-title')).toHaveText('Unlinked follow-up');
+  await expect(names()).toHaveText(['You', 'Speaker 1']);
+  voice.append('meeting.state', first, { state: 'done', at: 5000, endedAt: at + 5000 });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(indicator()).toBeHidden();
+
+  // With the linking on, a meeting at the same moment is the 1:1 with Joris, so that moment does fall in an event.
+  await linkEvents();
+  const second = voiceStarts({ title: 'Linked follow-up', startedAt: at });
+  await expect(view().locator('.mt-title')).toHaveText('Linked follow-up');
+  await expect(view().locator('.mt-event-title')).toHaveText('Quarterly planning follow-up', { timeout: 10000 });
+  await expect(names()).toHaveText(['You', 'Joris Bakker']);
+  expect(await eventOf(second)).toBeTruthy();
+  expect(await eventOf(first)).toBe(null);
 });
 
 test('the chat follows the meeting: the fake agent reads the transcript, and its second turn gets only what is new', async () => {
@@ -1409,13 +1554,14 @@ test('frames sit between the lines at their moments, load as they come into view
   await expect(frame(297500)).toHaveClass(/is-open/);
   await expect(frame(297500).locator('.mt-frame-full')).toBeVisible();
   await expect(frame(297500).locator('.mt-frame-full')).toHaveText('Next steps\nWrite the follow-up');
-  // The row draws again as it opens: measure the image once it is laid out at its new width.
-  await expect.poll(async () => (await frame(297500).locator('.mt-shot').boundingBox())?.width ?? 0).toBeGreaterThan(300);
-  const wide = await frame(297500).locator('.mt-shot').boundingBox();
-  expect(wide.width).toBeGreaterThan(300);
+  // The row draws again as it opens, so measure within one poll: between two reads the image can be gone for a moment.
   // The row was the last one in view; the opened image scrolled into view instead of growing below it.
-  const port = await view().locator('.mt-scroll').boundingBox();
-  expect(wide.y + wide.height).toBeLessThanOrEqual(port.y + port.height + 1);
+  const opened = async () => {
+    const wide = await frame(297500).locator('.mt-shot').boundingBox();
+    const port = await view().locator('.mt-scroll').boundingBox();
+    return Boolean(wide && port && wide.width > 300 && wide.y + wide.height <= port.y + port.height + 1);
+  };
+  await expect.poll(opened).toBe(true);
   await shot('frame-open');
   await frame(297500).focus();
   await win.keyboard.press('Enter');
@@ -1702,6 +1848,43 @@ test('mail notifications wait while a meeting records the screen; the badge stil
   await app.evaluate(() => global.__semEngine.emit('new-mail', [{ id: 'demo:held-1', subject: 'Invoice for October', from: { name: 'Demo', address: 'demo@example.com' } }]));
   await expect.poll(() => app.evaluate(() => global.__semHeldNotices || 0)).toBe(before + 1);
   expect(await app.evaluate(() => global.__semShown)).toEqual([]);
+});
+
+test('the sound for new mail stays quiet while a meeting records, and plays again after it', async () => {
+  await app.evaluate(({ Notification }) => {
+    global.__semShown = [];
+    Notification.prototype.show = function () {
+      global.__semShown.push(this.title);
+    };
+  });
+  // The sound is counted, never played, and the window's word from main is kept.
+  await win.evaluate(() => {
+    window.__coos = 0;
+    HTMLMediaElement.prototype.play = function () {
+      window.__coos++;
+      return Promise.resolve();
+    };
+    window.__newMail = [];
+    window.mail.on(({ type, payload }) => type === 'new-mail' && window.__newMail.push(payload));
+  });
+  await win.evaluate(() => window.mail.call('updateSettings', { newMailSound: true }));
+  const mail = (id) => app.evaluate((_e, id) => global.__semEngine.emit('new-mail', [{ id, subject: 'Invoice for October', from: { name: 'Demo', address: 'demo@example.com' } }]), id);
+  const heard = () => win.evaluate(() => window.__newMail.map((p) => p.sound));
+
+  // A meeting without the screen: the mail shows as usual, without the sound, which its call track would record.
+  const id = voiceStarts({ title: 'Weekly', screen: 'off' });
+  await expect.poll(() => app.evaluate(() => global.__semVoice.recording())).toBe(id);
+  expect(await app.evaluate(() => global.__semVoice.screenRecording())).toBe(false);
+  await mail('demo:quiet-1');
+  await expect.poll(heard).toEqual([false]);
+  expect(await win.evaluate(() => window.__coos)).toBe(0);
+
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect.poll(() => app.evaluate(() => global.__semVoice.recording())).toBe(null);
+  await mail('demo:quiet-2');
+  await expect.poll(heard).toEqual([false, true]);
+  await expect.poll(() => win.evaluate(() => window.__coos)).toBe(1);
 });
 
 test('screenshots: screen frames, the record and screen menus and the chips, in both themes and languages, wide and narrow', async () => {

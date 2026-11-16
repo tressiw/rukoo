@@ -16,9 +16,11 @@ use voice_audio::{Resampler, SegmentWriter, SAMPLE_RATE};
 
 use crate::clock::{self, wall_ms, MeetingClock, Stamp, HEARTBEAT};
 use crate::control::{self, Command, Reply};
+use crate::disk;
 use crate::meeting::{self, RecorderFile};
 use crate::silence::{self, SilenceCheck, Verdict};
 use crate::source::{Backend, Capture, DeviceInfo, Failure, Opened, Sink, SourceSpec, StreamFlags};
+use crate::syncer::{self, Syncer};
 use crate::timeline::{self, samples_to_ms, History, Line, TimelineWriter};
 use crate::{token, ExitError, VERSION};
 
@@ -56,6 +58,8 @@ pub const WAITING_FOR_TAP: &str = "Waiting for macOS to start recording system a
 const WAITING: &str = "The device is taking long to open.";
 /// How often the silence check asks whether another app plays sound.
 const PLAYING_POLL: Duration = Duration::from_secs(1);
+/// A heartbeat this long after the one before is logged: something held up the recorder thread.
+const LATE_HEARTBEAT_MS: u64 = 1_500;
 
 #[derive(Debug)]
 pub struct RecordOptions {
@@ -67,6 +71,8 @@ pub struct RecordOptions {
     pub segment_ms: u64,
     /// How long the silence check waits; only tests change it.
     pub silence_ms: u64,
+    /// Every sync to disk waits this long first; only tests set it.
+    pub sync_delay_ms: u64,
 }
 
 pub(crate) enum Event {
@@ -130,6 +136,12 @@ pub fn retry_after(tap: bool, failures: u32) -> Duration {
         .min(TAP_RETRY_MAX)
 }
 
+/// The meeting time where `samples` of padding end, added to a track whose audio ends at
+/// `covered_end` samples since meeting time 0.
+pub fn padded_until(covered_end: u64, samples: u64) -> u64 {
+    (covered_end + samples) / SAMPLES_PER_MS
+}
+
 /// Where the next segment of a continuing stream starts: right after the previous one, unless
 /// the device's clock drifted more than `RESYNC_MS` from the meeting clock's estimate.
 pub fn next_segment_start(contiguous: u64, estimate: u64) -> u64 {
@@ -152,6 +164,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if meeting::live_recorder(&dir).is_some() {
         return Err(ExitError::busy());
     }
+    disk::set_test_delay(opts.sync_delay_ms);
     let lines = timeline::read(&meeting::timeline_path(&dir))
         .map_err(|e| ExitError::failed(format!("can't read the timeline: {e}")))?;
     let history = History::from_lines(&lines);
@@ -165,7 +178,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             "the meeting's recording has stopped; nothing can follow its stop line",
         ));
     }
-    let mut journal = Journal(meeting::open_timeline(&dir)?);
+    let mut journal = Journal::new(meeting::open_timeline(&dir)?);
     for (name, _) in &opts.tracks {
         fs::create_dir_all(dir.join("audio").join(name))
             .map_err(|e| ExitError::failed(format!("can't create the audio folder: {e}")))?;
@@ -203,14 +216,6 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         });
     }
 
-    let started = Stamp::now();
-    let wall = started.wall;
-    let start_t = if resumed {
-        let first_wall = history.first_wall.unwrap_or(wall);
-        clock::resumed_start(first_wall, wall, history.latest_t.max(last_seen))
-    } else {
-        0
-    };
     let listener = control::bind()
         .map_err(|e| ExitError::failed(format!("can't open the control port: {e}")))?;
     let port = listener
@@ -219,8 +224,37 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         .port();
     let token = token::new_token().map_err(|e| ExitError::failed(e.to_string()))?;
     let session = history.sessions + 1;
+    // The slow disk work comes before the session starts, so none of it counts as recording
+    // time: the lines that closed the dead session go to disk, and recorder.json waits under its
+    // temporary name until the session line is there.
+    journal.sync();
+    let recorder_file = meeting::prepare_recorder_file(
+        &dir,
+        &RecorderFile {
+            pid: std::process::id(),
+            port,
+            token: token.clone(),
+            session,
+            started_at: wall_ms(),
+        },
+    )
+    .map_err(|e| ExitError::failed(format!("can't write recorder.json: {e}")))?;
+    let (events, rx) = mpsc::sync_channel(EVENT_QUEUE);
+    control::spawn(listener, token, events.clone())
+        .map_err(|e| ExitError::failed(format!("can't start the control thread: {e}")))?;
+    let syncer = Syncer::start()
+        .map_err(|e| ExitError::failed(format!("can't start the sync thread: {e}")))?;
+
+    let started = Stamp::now();
+    let wall = started.wall;
+    let start_t = if resumed {
+        let first_wall = history.first_wall.unwrap_or(wall);
+        clock::resumed_start(first_wall, wall, history.latest_t.max(last_seen))
+    } else {
+        0
+    };
     // Set up the audio host before the clock starts, so the devices open close to the session
-    // start.
+    // start. Synthetic faults count from here too.
     let backend = Arc::new(Backend::prepare());
     let clock = MeetingClock::starting_at(start_t);
     // Read next to the clock's start, so another process can map its own moments onto `t`.
@@ -246,22 +280,10 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if history.paused {
         journal.write(Line::Pause { t: start_t });
     }
-    journal.sync();
-    meeting::write_recorder_file(
-        &dir,
-        &RecorderFile {
-            pid: std::process::id(),
-            port,
-            token: token.clone(),
-            session,
-            started_at: wall,
-        },
-    )
-    .map_err(|e| ExitError::failed(format!("can't write recorder.json: {e}")))?;
-
-    let (events, rx) = mpsc::sync_channel(EVENT_QUEUE);
-    control::spawn(listener, token, events.clone())
-        .map_err(|e| ExitError::failed(format!("can't start the control thread: {e}")))?;
+    // A client finds the recorder from here on, and the session line is there to read.
+    recorder_file
+        .publish()
+        .map_err(|e| ExitError::failed(format!("can't write recorder.json: {e}")))?;
 
     let tracks = opts
         .tracks
@@ -293,6 +315,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let mut recorder = Recorder {
         dir,
         journal,
+        syncer,
         clock,
         backend,
         events,
@@ -311,6 +334,8 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         let at = recorder.clock.now();
         recorder.begin_open(i, false, at);
     }
+    // The new session's lines go to disk now, without waiting for the first periodic sync.
+    recorder.sync();
     recorder.run(rx);
     Ok(())
 }
@@ -343,23 +368,34 @@ fn is_tap(spec: &SourceSpec) -> bool {
     cfg!(target_os = "macos") && matches!(spec, SourceSpec::DefaultOutput | SourceSpec::Output(_))
 }
 
-fn log(message: impl Display) {
+pub(crate) fn log(message: impl Display) {
     let _ = writeln!(io::stderr(), "rukoo-voice-recorder: {message}");
 }
 
 /// The timeline, with write errors logged instead of stopping the recording: audio still goes
 /// to disk, and `finalize` can complete the timeline later.
-struct Journal(TimelineWriter);
+struct Journal {
+    writer: TimelineWriter,
+    /// The highest `t` written so far.
+    latest: u64,
+}
 
 impl Journal {
+    fn new(writer: TimelineWriter) -> Self {
+        Self { writer, latest: 0 }
+    }
+
     fn write(&mut self, line: Line) {
-        if let Err(e) = self.0.write(&line) {
+        if let Some(t) = line.t() {
+            self.latest = self.latest.max(t);
+        }
+        if let Err(e) = self.writer.write(&line) {
             log(format_args!("can't write the timeline: {e}"));
         }
     }
 
     fn sync(&self) {
-        if let Err(e) = self.0.sync() {
+        if let Err(e) = self.writer.sync() {
             log(format_args!("can't sync the timeline: {e}"));
         }
     }
@@ -473,6 +509,8 @@ impl Track {
 struct Stopping {
     reason: String,
     reply: Option<Sender<Reply>>,
+    /// When the stop command arrived. A stop the recorder decides on itself has none.
+    arrived: Option<Instant>,
 }
 
 struct Schedule {
@@ -496,6 +534,9 @@ fn later(previous: Instant, period: Duration, now: Instant) -> Instant {
 struct Recorder {
     dir: PathBuf,
     journal: Journal,
+    /// Puts the segments and the timeline on disk; this thread never waits for the disk while it
+    /// records.
+    syncer: Syncer,
     clock: MeetingClock,
     backend: Arc<Backend>,
     events: SyncSender<Event>,
@@ -587,6 +628,7 @@ impl Recorder {
             self.pad(i, PAD_THRESHOLD_MS);
             self.flush_pending(i);
         }
+        self.write_synced();
         if now >= schedule.heartbeat {
             schedule.heartbeat = later(schedule.heartbeat, HEARTBEAT, now);
             self.write_heartbeat();
@@ -605,6 +647,7 @@ impl Recorder {
             self.stop = Some(Stopping {
                 reason: "limit".into(),
                 reply: None,
+                arrived: None,
             });
         }
     }
@@ -677,8 +720,8 @@ impl Recorder {
         }
     }
 
-    /// Marks and dictation are moments the user pointed at, so they keep the time the request
-    /// arrived even when this thread is busy. Pause, resume and stop take effect when they run,
+    /// Marks, dictation and stop are moments the user pointed at, so they keep the time the
+    /// request arrived even when this thread is busy. Pause and resume take effect when they run,
     /// which keeps them in line with the segment boundaries.
     fn on_command(&mut self, command: Command, reply: Sender<Reply>, at: Instant) {
         let answer = match command {
@@ -687,6 +730,7 @@ impl Recorder {
                 self.stop = Some(Stopping {
                     reason,
                     reply: Some(reply),
+                    arrived: Some(at),
                 });
                 return;
             }
@@ -1008,14 +1052,15 @@ impl Recorder {
     }
 
     /// The device failed at meeting time `at`: end the segment, then drop the stream and retry
-    /// every second. Closing the segment syncs it to disk, which can take a while; the loss
-    /// still counts from `at`.
+    /// every second. The loss counts from `at`, however late this thread got to it.
     fn lose(&mut self, i: usize, error: String, at: u64) {
         self.close_segment(i, None);
         self.mark_lost(i, error, at);
     }
 
-    /// The stream must be rebuilt at meeting time `at`, usually on a new default device.
+    /// The stream must be rebuilt at meeting time `at`, usually on a new default device. Ending
+    /// the old segment doesn't wait for the disk, so the old stream's queued audio isn't dropped
+    /// for the length of a sync and the new device isn't stamped late.
     fn rebuild(&mut self, i: usize, reason: String, at: u64) {
         self.close_segment(i, None);
         // Drop the old stream before opening the new one.
@@ -1163,16 +1208,20 @@ impl Recorder {
                 return;
             }
         }
-        // At most one segment's worth per call; the next tick continues.
-        let needed = needed.min(self.segment_samples) as usize;
+        // At most one segment's worth per call; the next tick continues. The padding ends where
+        // it ends, which is the clock only when it covered the whole deficit: the next segment
+        // must continue the padding, not start at the clock.
+        let needed = needed.min(self.segment_samples);
         // A process tap delivers nothing while nothing plays, and a denied one may never deliver:
         // the padding is the silence the check has to hear about (`silence.rs`).
         if matches!(&self.tracks[i].state, State::Open(live) if live.silent_when_denied) {
-            self.check_silence(i, true, needed as u64 * 1000 / SAMPLES_PER_MS, now);
+            self.check_silence(i, true, needed * 1000 / SAMPLES_PER_MS, now);
         }
         let track = &mut self.tracks[i];
-        track.pending.resize(track.pending.len() + needed, 0);
-        track.pending_end = now;
+        track
+            .pending
+            .resize(track.pending.len() + needed as usize, 0);
+        track.pending_end = padded_until(covered, needed);
         self.flush_pending(i);
     }
 
@@ -1182,7 +1231,13 @@ impl Recorder {
             track.seq += 1;
             let seq = track.seq;
             let file = meeting::segment_file(&track.name, seq);
-            match SegmentWriter::create(&self.dir.join(&file)) {
+            let started = Instant::now();
+            let created = SegmentWriter::create(&self.dir.join(&file));
+            let took = started.elapsed();
+            if took > syncer::SLOW {
+                log(format_args!("creating {file} took {} ms", took.as_millis()));
+            }
+            match created {
                 Ok(writer) => {
                     track.segment = Some(Segment { writer, seq, t });
                     track.cover_from = None;
@@ -1248,27 +1303,50 @@ impl Recorder {
         }
     }
 
-    /// Closes the segment file and writes `segment_end`.
+    /// Closes the segment file; its `segment_end` follows once it is on disk.
     fn end_segment(&mut self, i: usize) {
-        let track = &mut self.tracks[i];
-        let Some(segment) = track.segment.take() else {
-            return;
-        };
-        let samples = segment.writer.samples();
-        if let Err(e) = segment.writer.close() {
-            log(format_args!(
-                "{}: can't sync segment {}: {e}",
-                track.name, segment.seq
-            ));
+        if let Some(segment) = self.take_segment(i) {
+            self.close_file(i, segment);
         }
-        let end = segment.t + samples_to_ms(samples);
+    }
+
+    /// Takes the segment out of the track, which no longer writes to it. A new segment of the
+    /// track never starts before its end.
+    fn take_segment(&mut self, i: usize) -> Option<Segment> {
+        let track = &mut self.tracks[i];
+        let segment = track.segment.take()?;
+        let end = segment.t + samples_to_ms(segment.writer.samples());
         track.covered_until = track.covered_until.max(end);
-        self.journal.write(Line::SegmentEnd {
-            t: end,
+        Some(segment)
+    }
+
+    /// Hands a segment the track took out to the syncer, which puts it on disk and closes it. Its
+    /// header already counts every sample. The `segment_end` line goes with it and comes back to
+    /// [`Recorder::write_synced`] once the segment is on disk: written now, an earlier sync of the
+    /// timeline that is still waiting or running could put the line on disk ahead of the audio.
+    /// Returns where its audio ends, in ms rounded up.
+    fn close_file(&mut self, i: usize, segment: Segment) -> u64 {
+        let track = &self.tracks[i];
+        let samples = segment.writer.samples();
+        let end = Line::SegmentEnd {
+            t: segment.t + samples_to_ms(samples),
             track: track.name.clone(),
             seq: segment.seq,
             samples,
-        });
+        };
+        self.syncer.close(
+            format!("{} segment {}", track.name, segment.seq),
+            segment.writer.into_file(),
+            end,
+        );
+        (segment.t * SAMPLES_PER_MS + samples).div_ceil(SAMPLES_PER_MS)
+    }
+
+    /// Writes the `segment_end` lines of the segments the syncer has put on disk.
+    fn write_synced(&mut self) {
+        for line in self.syncer.synced() {
+            self.journal.write(line);
+        }
     }
 
     /// Writes what's pending and ends the segment. With `pad_to`, a healthy loopback track is
@@ -1284,15 +1362,10 @@ impl Recorder {
         if let Some(t) = pad_to {
             self.pad_until(i, t, 0);
         }
-        let end = self.tracks[i]
-            .segment
-            .as_ref()
-            .and(self.tracks[i].covered_end())
-            .map(|samples| samples.div_ceil(SAMPLES_PER_MS));
         self.flush_pending(i);
-        self.end_segment(i);
         self.tracks[i].pending.clear();
-        end
+        let segment = self.take_segment(i)?;
+        Some(self.close_file(i, segment))
     }
 
     /// The disk refused audio: end the segment with what it holds and treat the track like a
@@ -1319,28 +1392,54 @@ impl Recorder {
             boot,
             samples,
         });
+        // Something held up this thread; the slow-call lines around this one say what.
+        let since = t.saturating_sub(self.heartbeat.0);
+        if since > LATE_HEARTBEAT_MS {
+            log(format_args!("heartbeat {since} ms after the one before"));
+        }
         self.heartbeat = (t, stamp);
     }
 
+    /// Hands the open segments and the timeline to the syncer, through handles of their own.
+    /// While the previous periodic sync is still waiting or running, this one is skipped.
     fn sync(&mut self) {
-        for track in &self.tracks {
-            if let Some(segment) = &track.segment {
-                if let Err(e) = segment.writer.sync() {
-                    log(format_args!("{}: can't sync: {e}", track.name));
-                }
+        if !self.syncer.periodic_due() {
+            return;
+        }
+        let mut files = Vec::with_capacity(self.tracks.len() + 1);
+        let open = self.tracks.iter().filter_map(|track| {
+            let segment = track.segment.as_ref()?;
+            Some((
+                format!("{} segment {}", track.name, segment.seq),
+                segment.writer.file(),
+            ))
+        });
+        for (what, file) in open.chain([("the timeline".to_string(), self.journal.writer.file())]) {
+            match file.try_clone() {
+                Ok(file) => files.push((what, file)),
+                Err(e) => log(format_args!("can't sync {what}: {e}")),
             }
         }
-        self.journal.sync();
+        self.syncer.periodic(files);
     }
 
     fn finish(&mut self) {
         let stopping = self.stop.take().unwrap_or(Stopping {
             reason: "interrupted".into(),
             reply: None,
+            arrived: None,
         });
-        // The recording ends here, for every track at once, however long the closing syncs take; stopping the
-        // streams afterwards can take a while too.
-        let (at, wall) = (self.clock.now(), wall_ms());
+        // The recording ends when the stop arrived, for every track at once, however long this
+        // thread took to get to it and the disk takes; stopping the streams afterwards can take a
+        // while too. Audio queued behind the stop isn't written, so the tracks end there. It never
+        // ends before a line already written.
+        let (now, wall_now) = (self.clock.now(), wall_ms());
+        let at = stopping
+            .arrived
+            .map_or(now, |arrived| self.clock.at(arrived))
+            .max(self.journal.latest)
+            .min(now);
+        let wall = wall_now.saturating_sub(now - at);
         let mut t = at;
         for i in 0..self.tracks.len() {
             if let Some(end) = self.close_segment(i, Some(at)) {
@@ -1354,6 +1453,13 @@ impl Recorder {
             };
             track.taps.clear();
         }
+        // A stop means the recording is on disk. The syncer puts every segment it holds there
+        // first; then come their `segment_end` lines and `stop`, last in the file and by `t`, and
+        // the sync of the timeline.
+        for line in self.syncer.finish() {
+            self.journal.write(line);
+        }
+        let t = t.max(self.journal.latest);
         self.journal.write(Line::Stop {
             t,
             wall,
@@ -1400,6 +1506,16 @@ mod tests {
     #[test]
     fn a_track_running_ahead_is_never_trimmed() {
         assert_eq!(padding(true, true, false, 32_000, 1_000, 0), 0);
+    }
+
+    #[test]
+    fn padding_capped_at_a_segment_ends_where_it_ends() {
+        // 1 s covered and the clock at 3.4 s: one 1 s segment of padding ends at 2 s, not at the
+        // clock, so the segment after it doesn't skip the 1.4 s still to pad.
+        let deficit = padding(true, true, false, 16_000, 3_400, 500);
+        assert_eq!(padded_until(16_000, deficit.min(16_000)), 2_000);
+        // Uncapped, the padding reaches the clock.
+        assert_eq!(padded_until(16_000, deficit), 3_400);
     }
 
     #[test]

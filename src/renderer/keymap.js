@@ -18,6 +18,7 @@ export const ACTIONS = [
   'read',
   'unread',
   'toggleRead',
+  'readAll',
   'star',
   'move',
   'category',
@@ -40,6 +41,7 @@ const KEYMAPS = {
     delete: ['Delete'],
     read: [{ mac: 'Ctrl+Shift+U', other: 'Ctrl+Q' }],
     unread: ['Ctrl+U'],
+    readAll: ['Shift+Escape'],
     star: ['S'],
     move: ['Ctrl+Shift+V'],
     category: ['C'],
@@ -59,6 +61,7 @@ const KEYMAPS = {
     delete: ['#', 'Delete'],
     read: ['Shift+I'],
     unread: ['Shift+U'],
+    readAll: ['Shift+Escape'],
     star: ['S'],
     move: ['V'],
     category: ['L'],
@@ -78,6 +81,7 @@ const KEYMAPS = {
     delete: ['Delete'],
     read: ['Ctrl+Q'],
     unread: ['Ctrl+U'],
+    readAll: ['Shift+Escape'],
     star: ['Insert'],
     move: ['Ctrl+Shift+V'],
     category: ['Ctrl+Shift+C'],
@@ -96,6 +100,7 @@ const KEYMAPS = {
     archive: [{ mac: 'Control+Ctrl+A', other: 'Ctrl+Alt+A' }],
     delete: ['Delete', 'Backspace'],
     toggleRead: ['Ctrl+Shift+U'],
+    readAll: ['Shift+Escape'],
     star: ['Ctrl+Shift+L'],
     move: ['Ctrl+Shift+V'],
     category: ['Ctrl+Shift+C'],
@@ -114,6 +119,7 @@ const KEYMAPS = {
     archive: ['A'],
     delete: ['Delete'],
     toggleRead: ['M'],
+    readAll: ['Shift+C', 'Shift+Escape'],
     star: ['S'],
     move: ['Ctrl+Shift+V'],
     category: ['Ctrl+Shift+C'],
@@ -142,7 +148,7 @@ export function bindings(action, scheme = current) {
   return ((KEYMAPS[scheme] || KEYMAPS.rukoo)[action] || []).map((b) => (typeof b === 'string' ? b : mac() ? b.mac : b.other)).filter(Boolean);
 }
 
-const NAMES = { ArrowDown: '↓', ArrowUp: '↑', Delete: 'Delete', Backspace: 'Backspace', Insert: 'Insert' };
+const NAMES = { ArrowDown: '↓', ArrowUp: '↑', Delete: 'Delete', Backspace: 'Backspace', Insert: 'Insert', Escape: 'Esc' };
 const MAC_PARTS = { Ctrl: '⌘', Control: '⌃', Alt: '⌥', Shift: '⇧', Backspace: '⌫', Delete: '⌦' };
 
 // A binding as people read it: Ctrl+Shift+R, or ⌘⇧R on a Mac.

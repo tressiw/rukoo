@@ -169,6 +169,9 @@ impl TempMeeting {
         loop {
             if let Some(file) = self.recorder_file().filter(|f| f.session == session) {
                 if let Ok(mut client) = Client::connect(file.port, Duration::from_secs(2)) {
+                    // A stop replies once its files are on disk, which takes a while when a
+                    // test makes every sync slow.
+                    client.set_read_timeout(Some(WAIT_TIMEOUT)).unwrap();
                     let status = client
                         .request(&json!({ "token": file.token, "cmd": "status" }))
                         .unwrap();

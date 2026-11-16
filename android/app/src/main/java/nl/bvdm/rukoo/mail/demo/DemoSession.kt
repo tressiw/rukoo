@@ -115,10 +115,21 @@ class DemoSession(
         s.copy(boxes = s.boxes + (name to DemoBox()), extraFolders = s.extraFolders + name) to name
     }
 
-    override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean, signals: Boolean, gmailTabs: Boolean): FolderSync =
+    override suspend fun syncFolder(
+        path: String,
+        limit: Int,
+        known: Map<Long, CachedMessage>,
+        uidValidity: String?,
+        background: Boolean,
+        signals: Boolean,
+        gmailTabs: Boolean,
+        olderUnseen: Boolean,
+    ): FolderSync =
         read { s ->
             val box = s.box(path)
-            FolderSync(box.uidValidity, box.messages.size, box.messages.takeLast(limit).map(::cached))
+            // Like a server's count (ImapSession.unseenBelow): the unread messages older than the window.
+            val older = if (olderUnseen) box.messages.dropLast(limit).count { "\\Seen" !in it.flags } else null
+            FolderSync(box.uidValidity, box.messages.size, box.messages.takeLast(limit).map(::cached), older)
         }
 
     private fun cached(m: DemoMessage) = CachedMessage(

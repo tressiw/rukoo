@@ -155,7 +155,8 @@ class AccountLiveTest {
         val repo = listOf(File("../.."), File("..")).first { File(it, "src/main/account/index.js").exists() }.canonicalFile
         val script = """
             const path = require('path'), fs = require('fs'), os = require('os');
-            const [repo, server, step, email, password, write] = process.argv.slice(1);
+            const [repo, server, step, email, password] = process.argv.slice(1);
+            const write = process.env.RUKOO_DESKTOP_WRITE;
             const { AccountService } = require(path.join(repo, 'src/main/account'));
             const secrets = { encrypt: (s) => 'plain:' + Buffer.from(s).toString('base64'), decrypt: (s) => Buffer.from(String(s).slice(6), 'base64').toString() };
             (async () => {
@@ -178,8 +179,10 @@ class AccountLiveTest {
               }
             })().catch((e) => { process.stderr.write(String(e.code || e.message)); process.exit(1); });
         """.trimIndent()
-        val process = ProcessBuilder(node, "-e", script, repo.path, server, step, address, password, write.toString())
+        // What to write goes through the environment: on Windows, an argument loses its double quotes on the way to Node.
+        val process = ProcessBuilder(node, "-e", script, repo.path, server, step, address, password)
             .redirectErrorStream(false)
+            .apply { environment()["RUKOO_DESKTOP_WRITE"] = write.toString() }
             .start()
         val out = process.inputStream.bufferedReader().readText()
         val err = process.errorStream.bufferedReader().readText()

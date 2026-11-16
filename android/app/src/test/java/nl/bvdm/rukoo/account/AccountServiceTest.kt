@@ -990,6 +990,49 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a server that pads its answers with chunk extensions can't get past the bytes one pull may take`() = runBlocking {
+        val srv = server()
+        // Each page is one tombstone behind 4 MiB of chunk extension: HTTP framing, which OkHttp reads and drops before
+        // the body. Counting bodies alone, the pull would run to 500 pages, 2 GiB.
+        val pages = AtomicInteger()
+        val last = AtomicLong()
+        val padded = RawHttpServer { target, out ->
+            val since = target.substringAfter("since=").substringBefore('&').toLong()
+            val n = pages.incrementAndGet()
+            val body = buildJsonObject {
+                putJsonArray("records") {
+                    addJsonObject {
+                        put("id", recordId("$n"))
+                        put("seq", since + 1)
+                        put("data", JsonNull)
+                    }
+                }
+                put("seq", 1_000_000_000L)
+                put("more", n < 2 * AccountService.PULL_PAGES)
+            }.toString().toByteArray()
+            last.set(RawHttpServer.chunked(out, body, 4L * 1024 * 1024))
+        }
+        padded.use {
+            val on = AtomicBoolean(false)
+            val base = OkHttpAccountHttp(okhttp)
+            val http = AccountHttp { server, method, path, body, token, meter ->
+                val records = on.get() && method == "GET" && path.startsWith("/v1/records")
+                base.request(if (records) padded.url else server, method, path, body, token, meter)
+            }
+            val desk = device(srv, http = http)
+            desk.signUp("chunked@example.com", PASSWORD)
+            desk.sync()
+            on.set(true)
+            desk.pull()
+            val sent = padded.written.get()
+            assertTrue("stopped by bytes, not pages (${pages.get()} pages)", pages.get() < AccountService.PULL_PAGES)
+            assertTrue("the pull ends with the first page past the limit ($sent bytes)", sent >= AccountService.PULL_DATA && sent - last.get() < AccountService.PULL_DATA)
+            assertEquals("one connection per page", pages.get(), padded.connections.get())
+            assertEquals("the pages taken still count; the rest waits for the next sync", pages.get().toLong(), desk.cursor())
+        }
+    }
+
+    @Test
     fun `a server that hides padding in compressed answers can't get past the bytes one pull may take`() = runBlocking {
         val srv = server()
         // Each page is a few bytes of JSON in gzip, behind 4 MiB of padding in the gzip header's file name: tiny once

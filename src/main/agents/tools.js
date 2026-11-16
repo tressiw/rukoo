@@ -636,12 +636,13 @@ function charsetOf(type) {
   return m ? m[1] : null;
 }
 
+// A message in the folder cache, or older mail the user's search found on the server (engine.olderHit).
 function cacheMessage(engine, id) {
   try {
     const { accountId, folder, uid } = decodeId(id);
     const cache = engine.caches.get(accountId);
     const box = cache && cache.boxes[folder];
-    return (box && box.messages.find((m) => m.uid === uid)) || null;
+    return (box && box.messages.find((m) => m.uid === uid)) || (engine.olderHit ? engine.olderHit(accountId, folder, uid) : null) || null;
   } catch (_) {
     return null;
   }

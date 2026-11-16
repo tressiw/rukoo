@@ -83,7 +83,7 @@ The defaults (250,000 records and 100 MiB per account) are far more than one per
 
 The booking page settings are in the same block; see [Booking pages](#booking-pages).
 
-The `ratelimits` block limits sign-up, sign-in and recovery calls to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The account lock after ten wrong passwords applies either way.
+The `ratelimits` block limits sign-up, sign-in and recovery calls to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The locks after ten wrong passwords, on an account's sign-ins and on a signed-in device's password checks, apply either way.
 
 ### 5. Deploy
 
