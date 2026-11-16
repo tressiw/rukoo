@@ -147,8 +147,8 @@
     "description": "Pill error: Windows blocked typing into an app that runs as administrator. voice/ui/pill.js (viewOf)."
   },
   "pill.error.accessibility": {
-    "message": "Can't type into other apps",
-    "description": "Pill error: macOS's Accessibility grant is off, so Voice can neither type into another app nor read the selection. Each macOS version names that pane differently; the tray notification says where. voice/ui/pill.js (viewOf)."
+    "message": "Device Control off: Privacy & Security",
+    "description": "Pill error: the macOS permission that lets Voice type into other apps and read the selection is off, so a press is refused before recording. macOS 27 calls that pane Device Control and Data Access; macOS 26 and earlier called it Accessibility. The message names the pane, because notifications may be refused. voice/ui/pill.js (viewOf)."
   },
   "pill.error.generic": {
     "message": "Try again",

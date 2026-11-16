@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use support::{lock, tone, wait_for, Harness, MicPlan};
 use voice_core::{ErrorKind, ProviderError};
+use voice_engine::permissions::{Permission, PermissionState};
 use voice_engine::PillPhase;
 use voice_input::{InputError, InsertMode, Key, TextTarget};
 
@@ -458,6 +459,73 @@ fn a_missing_accessibility_grant_has_its_own_notice() {
         transcribed,
         "the instruction was never transcribed"
     );
+    engine.shutdown();
+}
+
+/// macOS with the Accessibility grant off: a dictation or a rewrite is refused before the
+/// microphone opens, the pill says what to switch on, and macOS is asked once in the run. The
+/// grant is read again at the next press, so switching it on needs no restart.
+#[test]
+fn a_press_without_the_accessibility_grant_records_nothing_and_asks_once() {
+    let h = Harness::new("accessibility-refused");
+    h.config(json!({}));
+    // The fake reports macOS's permission states on every platform.
+    h.permissions.supported.store(true, Ordering::SeqCst);
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::Denied);
+    *lock(&h.input.selection) = Some("selected words".into());
+    let engine = h.start();
+
+    // Each press ends at once with the pill's message, and no audio is asked for. The pill hides
+    // after its hold, so the next refusal shows the same view again instead of being coalesced.
+    let refused = |key: Key| {
+        lock(&h.sink.pills).clear();
+        h.keys.down(key);
+        let pill = h.sink.wait_phase(PillPhase::Error);
+        h.keys.up(key);
+        h.sink.wait_hidden_after(PillPhase::Error);
+        pill
+    };
+
+    let first = refused(Key::F13);
+    assert_eq!(first.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0, "nothing recorded");
+    assert_eq!(h.permissions.requests(), 1, "macOS was asked once");
+    assert!(h.input.texts().is_empty());
+    assert!(h.speech.heard().is_empty());
+
+    // A second press shows the same message without a second dialog.
+    let second = refused(Key::F13);
+    assert_eq!(second.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0, "nothing recorded");
+    assert_eq!(
+        h.permissions.requests(),
+        1,
+        "the dialog is asked once per run"
+    );
+
+    // A rewrite is refused the same way, before the selection is read.
+    let rewrite = refused(Key::F14);
+    assert_eq!(rewrite.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(
+        h.input.captures.load(Ordering::SeqCst),
+        0,
+        "the selection was never read"
+    );
+    assert_eq!(h.permissions.requests(), 1);
+
+    // Switching the grant on in System Settings is enough: the next press records and inserts.
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::Granted);
+    h.speech.say("hello again");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert_eq!(h.input.texts(), ["hello again"]);
+    assert!(
+        h.mic.opens.load(Ordering::SeqCst) > 0,
+        "the microphone opened"
+    );
+    assert_eq!(h.permissions.requests(), 1, "no dialog once it is on");
     engine.shutdown();
 }
 

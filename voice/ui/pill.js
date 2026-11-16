@@ -56,7 +56,7 @@ const SCREEN_NOTICES = {
 };
 const SCREENS = new Set(['off', 'frames', 'video']);
 
-const LABEL_MAX = 220;
+const LABEL_MAX = 260;
 const EXIT_MS = 140;
 const LABEL_OUT_MS = 140;
 const POLL_MS = 1000;

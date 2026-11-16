@@ -10,7 +10,7 @@ pub mod dump;
 pub mod errors;
 pub mod level;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
@@ -31,6 +31,7 @@ use self::level::LevelMeter;
 use crate::api::{Activity, PillPhase};
 use crate::engine::Core;
 use crate::meetings::tap::{self, TapEnd};
+use crate::permissions::{Permission, PermissionState};
 use crate::pill::{self, notices};
 use crate::services::{AudioSink, MicLost, MicOpen, MicStream};
 
@@ -67,6 +68,9 @@ pub(crate) struct Dictation {
     worker: Mutex<Option<JoinHandle<()>>>,
     meter: Mutex<LevelMeter>,
     mic_error: Mutex<Option<String>>,
+    /// Whether this run already asked macOS for the Accessibility grant, so a dialog the user
+    /// dismissed doesn't come back at every key press.
+    accessibility_asked: AtomicBool,
 }
 
 struct Recording {
@@ -243,6 +247,9 @@ enum Ending {
     Dropped(Drop),
     /// The error code the pill showed, such as `pill.error.auth`.
     Failed(&'static str),
+    /// The press was refused before the microphone opened, because this platform's permission to
+    /// type into other apps is off: nothing recorded could have been inserted.
+    Refused(&'static str),
 }
 
 impl Dictation {
@@ -258,6 +265,7 @@ impl Dictation {
             worker: Mutex::new(None),
             meter: Mutex::new(LevelMeter::default()),
             mic_error: Mutex::new(None),
+            accessibility_asked: AtomicBool::new(false),
         }
     }
 
@@ -450,6 +458,13 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
     let cfg = core.config();
     let id = this.next_id.fetch_add(1, Ordering::SeqCst);
     let pressed = Instant::now();
+    // A dictation or a rewrite that couldn't be inserted is not worth recording, and a user who
+    // talks into one only learns about the missing grant after the transcription. This is macOS's
+    // Accessibility grant; Windows and Linux report no such permission.
+    if accessibility_missing(core) {
+        refuse_accessibility(core, id, mode, pressed);
+        return;
+    }
     // The local model loads while the user speaks (ownkey-dictation.md 4.2, step 3).
     if cfg.audio_provider == "orukeet" {
         core.svc.speech.local_preload();
@@ -556,6 +571,49 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             );
         }
     }
+}
+
+/// Whether this computer has a permission to type into other apps and it is off. macOS reports
+/// the Accessibility grant as denied until the user switches it on; Windows and Linux have no
+/// such permission and answer `None`, so nothing changes there.
+fn accessibility_missing(core: &Core) -> bool {
+    core.svc.permissions.state(Permission::Accessibility) == Some(PermissionState::Denied)
+}
+
+/// A press whose text could never be inserted: macOS's Accessibility grant is off, so Voice
+/// doesn't open the microphone at all. The pill says what to switch on straight away, the first
+/// such press of this run asks macOS for the grant (its own dialog, once), and the log gets the
+/// one line every recording gets.
+fn refuse_accessibility(core: &Arc<Core>, id: u64, mode: Mode, pressed: Instant) {
+    if !core
+        .dictation
+        .accessibility_asked
+        .swap(true, Ordering::SeqCst)
+    {
+        core.svc.permissions.request(Permission::Accessibility);
+    }
+    let activity = activity_of(mode);
+    core.pill.update(|p, now| {
+        p.press(id, activity, false);
+        p.finished(
+            id,
+            PillPhase::Error,
+            Some(pill::notice(errors::ACCESSIBILITY)),
+            None,
+            pill::ERROR_HOLD,
+            now,
+        );
+    });
+    // Nothing started, so the key-up has nothing to stop; the debounce still lasts until it comes.
+    lock(&core.dictation.ptt).recording_ended();
+    report(
+        id,
+        mode,
+        pressed.elapsed(),
+        Duration::ZERO,
+        level::SILENT_DBFS,
+        Ending::Refused(errors::ACCESSIBILITY),
+    );
 }
 
 /// Tells the meeting that records the microphone that this dictation is on it (decision 9), so
@@ -1015,6 +1073,7 @@ fn outcome_line(
         Ending::EmptyTranscript => "empty transcript".to_string(),
         Ending::Dropped(why) => format!("dropped ({})", why.description()),
         Ending::Failed(code) => format!("failed ({code})"),
+        Ending::Refused(code) => format!("not recorded ({code})"),
     };
     format!(
         "{what} {id} ended: {how} ({:.1} s held, {:.1} s of audio, peak {peak:.0} dBFS)",
@@ -1706,6 +1765,29 @@ mod tests {
         assert_eq!(
             line(Ending::Failed(errors::AUTH)),
             "dictation 4 ended: failed (pill.error.auth) (2.4 s held, 2.3 s of audio, peak -31 dBFS)"
+        );
+        // A press refused before the microphone opened has no audio at all.
+        assert_eq!(
+            outcome_line(
+                6,
+                Mode::Dictate,
+                Duration::ZERO,
+                Duration::ZERO,
+                level::SILENT_DBFS,
+                &Ending::Refused(errors::ACCESSIBILITY)
+            ),
+            "dictation 6 ended: not recorded (pill.error.accessibility) (0.0 s held, 0.0 s of audio, peak -96 dBFS)"
+        );
+        assert_eq!(
+            outcome_line(
+                7,
+                Mode::Rewrite,
+                Duration::ZERO,
+                Duration::ZERO,
+                level::SILENT_DBFS,
+                &Ending::Refused(errors::ACCESSIBILITY)
+            ),
+            "rewrite 7 ended: not recorded (pill.error.accessibility) (0.0 s held, 0.0 s of audio, peak -96 dBFS)"
         );
         assert_eq!(
             outcome_line(

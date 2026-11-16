@@ -5,8 +5,10 @@
 //! the Accessibility grant (Privacy & Security › Accessibility). Voice checks
 //! it with `AXIsProcessTrusted`, which never prompts, and returns
 //! [`InputError::Accessibility`], whose message says what to switch on, rather
-//! than failing silently. Reading the physical keyboard needs no grant at all:
-//! [`keys`] polls Core Graphics' HID system state.
+//! than failing silently. [`prompt_accessibility`] shows macOS's own dialog;
+//! the engine calls it once in a run, before it refuses to record. Reading the
+//! physical keyboard needs no grant at all: [`keys`] polls Core Graphics' HID
+//! system state.
 
 use std::thread;
 use std::time::Duration;
@@ -27,6 +29,11 @@ mod secure;
 /// The Accessibility grant, for `voice_input::accessibility_trusted`.
 pub(crate) fn is_accessibility_trusted() -> bool {
     ax::is_trusted()
+}
+
+/// Asks macOS to show its Accessibility prompt, for `voice_input::prompt_accessibility`.
+pub(crate) fn prompt_accessibility() {
+    ax::prompt()
 }
 
 pub(crate) use pasteboard::{clear_if, copy_hidden, wait_for_clipboard_restore};
