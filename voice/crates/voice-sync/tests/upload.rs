@@ -683,6 +683,10 @@ fn a_segment_that_cant_be_read_keeps_its_meeting_held() {
     m.transcript(&[("mic", 0, 900, "hello")], now_ms());
     let Some(locked) = lock(&m.path(&second)) else {
         println!("skipped: this system lets the test read a locked file");
+        log_skip(
+            "a_segment_that_cant_be_read_keeps_its_meeting_held",
+            "this system lets the test read a locked file, as it does for root",
+        );
         return;
     };
     voice.connect(&fake.endpoint());
