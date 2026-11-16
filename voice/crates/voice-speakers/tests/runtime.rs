@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use common::{assert_failure, probs, too_slow_for_live_labels, TempDir, Worker, EXE};
+use common::{assert_failure, log_skip, probs, too_slow_for_live_labels, TempDir, Worker, EXE};
 use serde_json::{json, Value};
 
 const MODEL_FILE: &str = "Nemotron-3-Diarization.q8_0.gguf";
@@ -48,7 +48,8 @@ fn file_in(variable: &str, name: &str) -> Option<PathBuf> {
     Some(if path.is_dir() { path.join(name) } else { path })
 }
 
-fn assets() -> Option<Assets> {
+/// The three assets, or `None` after printing and logging the skip of `test`.
+fn assets(test: &str) -> Option<Assets> {
     let found = (|| {
         Some(Assets {
             runtime: PathBuf::from(std::env::var_os("RUKOO_VOICE_TEST_NEMO_DIR")?),
@@ -57,8 +58,20 @@ fn assets() -> Option<Assets> {
         })
     })();
     if found.is_none() {
+        let unset: Vec<&str> = [
+            "RUKOO_VOICE_TEST_NEMO_DIR",
+            "RUKOO_VOICE_TEST_NEMOTRON",
+            "RUKOO_VOICE_TEST_AMI",
+        ]
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_none())
+        .collect();
         eprintln!(
             "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and RUKOO_VOICE_TEST_AMI (voice/scripts/speaker-assets.ps1, or speaker-assets.mjs on macOS)"
+        );
+        log_skip(
+            test,
+            &format!("speaker label assets missing: {} unset", unset.join(", ")),
         );
     }
     found
@@ -95,7 +108,9 @@ fn check_frames(response: &Value, expected_first: i64) -> i64 {
 
 #[test]
 fn labels_the_ami_excerpt_in_one_second_pushes() {
-    let Some(assets) = assets() else { return };
+    let Some(assets) = assets("labels_the_ami_excerpt_in_one_second_pushes") else {
+        return;
+    };
     let _one = one_at_a_time();
     let mut worker = Worker::spawn();
     let loaded = worker.request(&load(&assets));
@@ -163,7 +178,9 @@ fn labels_the_ami_excerpt_in_one_second_pushes() {
 
 #[test]
 fn a_second_load_is_refused() {
-    let Some(assets) = assets() else { return };
+    let Some(assets) = assets("a_second_load_is_refused") else {
+        return;
+    };
     let _one = one_at_a_time();
     let mut worker = Worker::spawn();
     assert_eq!(worker.request(&load(&assets))["ok"], json!(true));
@@ -172,7 +189,9 @@ fn a_second_load_is_refused() {
 
 #[test]
 fn a_bad_model_is_refused_without_crashing() {
-    let Some(assets) = assets() else { return };
+    let Some(assets) = assets("a_bad_model_is_refused_without_crashing") else {
+        return;
+    };
     let _one = one_at_a_time();
     let temp = TempDir::new("model");
     let mut worker = Worker::spawn();
@@ -201,7 +220,9 @@ fn a_bad_model_is_refused_without_crashing() {
 
 #[test]
 fn the_self_test_hears_at_least_three_speakers() {
-    let Some(assets) = assets() else { return };
+    let Some(assets) = assets("the_self_test_hears_at_least_three_speakers") else {
+        return;
+    };
     let _one = one_at_a_time();
     let temp = TempDir::new("report");
     let report_path = temp.path().join("report.json");
@@ -246,7 +267,11 @@ fn the_self_test_hears_at_least_three_speakers() {
 #[cfg(windows)]
 #[test]
 fn the_runtime_takes_its_system_dlls_from_system32_even_with_copies_beside_it() {
-    let Some(assets) = assets() else { return };
+    let Some(assets) =
+        assets("the_runtime_takes_its_system_dlls_from_system32_even_with_copies_beside_it")
+    else {
+        return;
+    };
     let _one = one_at_a_time();
     let temp = TempDir::new("planted");
     let runtime = temp.path().join("nemo_speech");

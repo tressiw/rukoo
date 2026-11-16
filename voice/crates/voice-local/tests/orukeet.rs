@@ -11,7 +11,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{listing, TempDir, Worker};
+use common::{listing, log_skip, TempDir, Worker};
 use serde_json::{json, Value};
 
 const ORUKEET_REVISION: &str = "55a984d46f68323301837194ce647c702f55facc";
@@ -22,16 +22,33 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn model_dir() -> Option<PathBuf> {
-    let dir = env_path("RUKOO_VOICE_TEST_ORUKEET").or_else(|| {
-        env_path("LOCALAPPDATA").map(|local| {
-            local
-                .join("Ownkey")
-                .join("models")
-                .join("orukeet")
-                .join(ORUKEET_REVISION)
-        })
-    })?;
+/// The model folder, or `None` after printing why `test` skips. The skip log gets a line only
+/// when `RUKOO_VOICE_TEST_ORUKEET` names a folder that isn't there: no CI job provides the model,
+/// so an unasked-for skip would warn on every run and say nothing new.
+fn model_dir(test: &str) -> Option<PathBuf> {
+    if let Some(dir) = env_path("RUKOO_VOICE_TEST_ORUKEET") {
+        if dir.is_dir() {
+            return Some(dir);
+        }
+        eprintln!("skipped: no Orukeet model at {}", dir.display());
+        log_skip(
+            test,
+            &format!(
+                "RUKOO_VOICE_TEST_ORUKEET names {}, which isn't a folder",
+                dir.display()
+            ),
+        );
+        return None;
+    }
+    let Some(local) = env_path("LOCALAPPDATA") else {
+        eprintln!("skipped: set RUKOO_VOICE_TEST_ORUKEET to Orukeet's model folder");
+        return None;
+    };
+    let dir = local
+        .join("Ownkey")
+        .join("models")
+        .join("orukeet")
+        .join(ORUKEET_REVISION);
     if dir.is_dir() {
         Some(dir)
     } else {
@@ -40,7 +57,9 @@ fn model_dir() -> Option<PathBuf> {
     }
 }
 
-fn speech_file() -> Option<PathBuf> {
+/// The speech to transcribe, or `None` after printing and logging why `test` skips: with the
+/// model there, the test was meant to run.
+fn speech_file(test: &str) -> Option<PathBuf> {
     let file = env_path("RUKOO_VOICE_TEST_SPEECH").unwrap_or_else(|| {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tmp/voice-spike/audio/en-16k.wav")
     });
@@ -48,6 +67,7 @@ fn speech_file() -> Option<PathBuf> {
         Some(file)
     } else {
         eprintln!("skipped: no test speech at {}", file.display());
+        log_skip(test, &format!("no test speech at {}", file.display()));
         None
     }
 }
@@ -129,7 +149,11 @@ fn check_timing(response: &Value, seconds: f64) {
 
 #[test]
 fn transcribes_speech_and_leaves_the_model_folder_alone() {
-    let (Some(dir), Some(speech)) = (model_dir(), speech_file()) else {
+    const TEST: &str = "transcribes_speech_and_leaves_the_model_folder_alone";
+    let Some(dir) = model_dir(TEST) else {
+        return;
+    };
+    let Some(speech) = speech_file(TEST) else {
         return;
     };
     let before = listing(&dir);
@@ -213,7 +237,7 @@ fn transcribes_speech_and_leaves_the_model_folder_alone() {
 /// sherpa-onnx ends the process when the encoder has no NeMo metadata, so the worker checks first.
 #[test]
 fn an_encoder_without_nemo_metadata_is_bad_model() {
-    let Some(dir) = model_dir() else {
+    let Some(dir) = model_dir("an_encoder_without_nemo_metadata_is_bad_model") else {
         return;
     };
     let temp = TempDir::new("no-metadata");

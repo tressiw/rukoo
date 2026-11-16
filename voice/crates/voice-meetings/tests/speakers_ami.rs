@@ -91,7 +91,8 @@ fn ami() -> Option<Ami> {
     Some(ami)
 }
 
-fn assets() -> Option<Assets> {
+/// The three assets, or `None` after printing and logging the skip of `test`.
+fn assets(test: &str) -> Option<Assets> {
     let (Some(runtime), Some(model), Some(ami)) = (
         var("RUKOO_VOICE_TEST_NEMO_DIR"),
         var("RUKOO_VOICE_TEST_NEMOTRON"),
@@ -100,6 +101,18 @@ fn assets() -> Option<Assets> {
         eprintln!(
             "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and \
              RUKOO_VOICE_TEST_AMI to run the AMI speaker test"
+        );
+        let unset: Vec<&str> = [
+            "RUKOO_VOICE_TEST_NEMO_DIR",
+            "RUKOO_VOICE_TEST_NEMOTRON",
+            "RUKOO_VOICE_TEST_AMI",
+        ]
+        .into_iter()
+        .filter(|name| var(name).is_none())
+        .collect();
+        log_skip(
+            test,
+            &format!("speaker label assets missing: {} unset", unset.join(", ")),
         );
         return None;
     };
@@ -503,6 +516,10 @@ fn ids_of_main(
 fn ami_oracle_hears_the_excerpt_through_the_recorder() {
     let Some(ami) = ami() else {
         eprintln!("skipped: set RUKOO_VOICE_TEST_AMI to check the AMI oracle");
+        log_skip(
+            "ami_oracle_hears_the_excerpt_through_the_recorder",
+            "the AMI excerpt is missing: RUKOO_VOICE_TEST_AMI unset",
+        );
         return;
     };
     let _one = one_at_a_time();
@@ -550,7 +567,7 @@ fn ami_oracle_hears_the_excerpt_through_the_recorder() {
 /// speaker.
 #[test]
 fn ami_three_speakers_live_and_ninety_percent_right() {
-    let Some(assets) = assets() else {
+    let Some(assets) = assets("ami_three_speakers_live_and_ninety_percent_right") else {
         return;
     };
     let _one = one_at_a_time();
@@ -595,7 +612,7 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
 /// ids. The second loop makes sure all three spoke both before and after the kill.
 #[test]
 fn ami_ids_survive_a_killed_worker() {
-    let Some(assets) = assets() else {
+    let Some(assets) = assets("ami_ids_survive_a_killed_worker") else {
         return;
     };
     let _one = one_at_a_time();
