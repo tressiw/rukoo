@@ -1,7 +1,9 @@
-// The parts of voice/scripts/dev-app-macos.mjs that find and stop processes, apart from the script so
-// test/voice-dev-app-macos.test.js can run them on processes it started itself.
+// The parts of voice/scripts/dev-app-macos.mjs that find and stop processes and fingerprint the icon, apart from the
+// script so test/voice-dev-app-macos.test.js can run them on processes it started itself.
 
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,4 +69,21 @@ export async function terminate(pids, { graceMs = 5000, log = console.log } = {}
   await sleep(500);
   left = left.filter(alive);
   if (left.length) throw new Error(`still running after SIGKILL: ${left.join(', ')}`);
+}
+
+// The icon as the build stamp keeps it: its name and the hash of its contents, so a new icon under the same name
+// rebuilds the bundle too.
+export function iconStamp(dir, name) {
+  if (!name) return null;
+  const sha256 = crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, name))).digest('hex');
+  return { name, sha256 };
+}
+
+// Why the icon makes a rebuild, or null. A stamp from before the hash kept the name alone, which counts as a change.
+export function iconChange(stamped, want) {
+  const name = (icon) => (typeof icon === 'string' ? icon : icon?.name ?? null);
+  if (!want) return stamped ? 'the icon went away' : null;
+  if (name(stamped) !== want.name) return `the icon is now ${want.name}`;
+  if (typeof stamped === 'string' || stamped.sha256 !== want.sha256) return `${want.name} changed`;
+  return null;
 }

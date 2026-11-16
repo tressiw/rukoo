@@ -103,3 +103,19 @@ test('a rebuild stops the recorded copy and its worker, and leaves its recorder 
     [other, childOf(other, worker), childOf(other, recorder), childOf(recorded, recorder)].sort(),
   );
 });
+
+test('the icon counts by its contents, so a new icon under the same name rebuilds', async (t) => {
+  const { iconChange, iconStamp } = await lib();
+  const dir = folder(t);
+  fs.writeFileSync(path.join(dir, 'icon.icns'), 'first');
+  const first = iconStamp(dir, 'icon.icns');
+  assert.equal(iconChange(first, iconStamp(dir, 'icon.icns')), null);
+  fs.writeFileSync(path.join(dir, 'icon.icns'), 'second');
+  assert.equal(iconChange(first, iconStamp(dir, 'icon.icns')), 'icon.icns changed');
+  fs.writeFileSync(path.join(dir, 'other.icns'), 'second');
+  assert.equal(iconChange(first, iconStamp(dir, 'other.icns')), 'the icon is now other.icns');
+  assert.equal(iconChange(first, iconStamp(dir, null)), 'the icon went away');
+  assert.equal(iconChange(null, null), null);
+  // A stamp written before the hash holds the name alone.
+  assert.equal(iconChange('icon.icns', first), 'icon.icns changed');
+});

@@ -20,8 +20,8 @@
 // rebuilt app loses its permissions while System Settings still lists the old entries as switched on. The script
 // therefore rebuilds only when something changed: it hashes the five programs, the rendered Info.plist, the
 // entitlements files and the icon into tmp/voice-dev/build-stamp.json and compares that with a fresh build and with
-// what the bundle holds. A run without a change copies and signs nothing, so the grants of the last build still
-// apply. `--rebuild` forces a rebuild.
+// what the bundle holds. The icon counts by its contents, so a new icon.icns rebuilds too. A run without a change
+// copies and signs nothing, so the grants of the last build still apply. `--rebuild` forces a rebuild.
 //
 // A rebuild stops the copy this script started: the app pid in tmp/voice-dev/pids.json, when that pid still runs
 // this bundle's rukoo-voice, and that app's own speech and speaker workers. A recorder and a screen process the copy
@@ -49,7 +49,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { alive, copyOf, processTable, runningFrom, terminate } from './lib/dev-app.mjs';
+import { alive, copyOf, iconChange, iconStamp, processTable, runningFrom, terminate } from './lib/dev-app.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -315,7 +315,7 @@ function inputs(bin, version, plist, icon) {
     version,
     profile: PROFILE,
     plist: sha256Text(plist),
-    icon,
+    icon: iconStamp(ICONS, icon),
     entitlements: {
       audio: sha256File(ENTITLEMENTS_AUDIO),
       speakers: sha256File(ENTITLEMENTS_SPEAKERS),
@@ -340,7 +340,8 @@ function differences(stamp, want) {
   if (stamp.version !== want.version) out.push(`the version changed from ${stamp.version} to ${want.version}`);
   if (stamp.profile !== want.profile) out.push(`the profile changed from ${stamp.profile} to ${want.profile}`);
   if (stamp.plist !== want.plist) out.push('the rendered Info.plist changed');
-  if (stamp.icon !== want.icon) out.push(want.icon ? `the icon is now ${want.icon}` : 'the icon went away');
+  const icon = iconChange(stamp.icon, want.icon);
+  if (icon) out.push(icon);
   if (stamp.entitlements?.audio !== want.entitlements.audio) out.push('entitlements-audio.plist changed');
   if (stamp.entitlements?.speakers !== want.entitlements.speakers) out.push('entitlements-speakers.plist changed');
   for (const name of PROGRAMS) {
