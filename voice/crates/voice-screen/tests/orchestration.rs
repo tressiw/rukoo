@@ -160,10 +160,18 @@ impl Reader for NoText {
     }
 }
 
-struct NoSetup;
+thread_local! {
+    /// Whether the platform's setup ran on this thread.
+    static SET_UP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-impl ThreadInit for NoSetup {
-    fn init_thread(&self) {}
+/// Marks the thread as set up, so the fake writer can tell a thread that skipped it.
+struct FakeSetup;
+
+impl ThreadInit for FakeSetup {
+    fn init_thread(&self) {
+        SET_UP.with(|set_up| set_up.set(true));
+    }
 }
 
 /// A thumbnail that drifts on every frame, so the screen counts as changing and the frame rules
@@ -285,6 +293,9 @@ impl VideoMaker for FakeMaker {
         options: WriterOptions,
     ) -> Result<FakeWriter, VideoError> {
         self.calls.lock().unwrap().push("create");
+        if !SET_UP.with(|set_up| set_up.get()) {
+            self.calls.lock().unwrap().push("create without setup");
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| VideoError::Disk(e.to_string()))?;
         }
@@ -540,7 +551,7 @@ impl Platform for FakePlatform {
     fn init(&self) {}
 
     fn thread_init(&self) -> Arc<dyn ThreadInit> {
-        Arc::new(NoSetup)
+        Arc::new(FakeSetup)
     }
 
     fn clocks(&self) -> &dyn Clocks {
@@ -842,6 +853,10 @@ fn a_session_runs_to_the_recorders_stop() {
     for call in ["create", "write", "finish"] {
         assert!(calls.contains(&call), "{call} wasn't called: {calls:?}");
     }
+    assert!(
+        !calls.contains(&"create without setup"),
+        "the video thread skipped the platform's setup: {calls:?}"
+    );
 }
 
 /// No timeline line and nobody asking the status for the orphan window: the screen process stops

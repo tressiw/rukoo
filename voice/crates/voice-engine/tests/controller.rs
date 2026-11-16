@@ -24,7 +24,7 @@ use voice_engine::{PillPhase, StopReason};
 use voice_input::Key;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::meeting::read_recorder_file;
-use voice_recorder::timeline::{self, Line};
+use voice_recorder::timeline::{self, Line, TimelineWriter};
 
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 const REAL_RECORDER: &str = "VOICE_ENGINE_TEST_RECORDER";
@@ -41,8 +41,7 @@ fn main() {
     // Single-threaded here, so setting the variable is safe; every recorder the controller
     // starts from now on inherits it.
     std::env::set_var(ROLE, "recorder");
-    #[allow(unused_mut)]
-    let mut tests: Vec<(&str, fn())> = vec![
+    let tests: Vec<(&str, fn())> = vec![
         ("commands_reach_the_recorder", commands_reach_the_recorder),
         (
             "the_watchdog_resumes_a_killed_recorder",
@@ -55,6 +54,10 @@ fn main() {
         (
             "a_new_controller_reattaches_to_a_live_recorder",
             a_new_controller_reattaches_to_a_live_recorder,
+        ),
+        (
+            "a_recorder_that_doesnt_answer_at_start_is_reattached",
+            a_recorder_that_doesnt_answer_at_start_is_reattached,
         ),
         (
             "a_cut_off_meeting_is_finished_at_start",
@@ -87,13 +90,11 @@ fn main() {
         ),
         ("rukoo_overrides_the_screen", rukoo_overrides_the_screen),
         ("no_screen_process_means_off", no_screen_process_means_off),
+        (
+            "a_recorder_that_holds_the_meeting_without_answering_keeps_it_live",
+            a_recorder_that_holds_the_meeting_without_answering_keeps_it_live,
+        ),
     ];
-    // Only Windows refuses a second writer of the timeline, which this test plays.
-    #[cfg(windows)]
-    tests.push((
-        "a_recorder_that_holds_the_meeting_without_answering_keeps_it_live",
-        a_recorder_that_holds_the_meeting_without_answering_keeps_it_live,
-    ));
     let filters: Vec<String> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))
@@ -490,23 +491,14 @@ fn a_reattach_ends_a_dictation_the_old_app_left_open() {
     b.shutdown();
 }
 
-/// Holds the meeting's timeline the way a live recorder does: open for writing, readable by
-/// others, and refusing a second writer.
-#[cfg(windows)]
-fn hold_timeline(data: &Path, id: &str) -> std::fs::File {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_SHARE_READ: u32 = 0x1;
-    const FILE_SHARE_DELETE: u32 = 0x4;
+/// Holds the meeting's timeline the way a live recorder does, as its writer: readable by others,
+/// and refusing a second writer.
+fn hold_timeline(data: &Path, id: &str) -> TimelineWriter {
     let path = meeting_dir(data, id).join("timeline.jsonl");
     let mut held = None;
     // The killed recorder's own handle goes a moment after it does.
     wait_for("the timeline to come free", || {
-        held = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
-            .open(&path)
-            .ok();
+        held = TimelineWriter::open(&path).ok();
         held.is_some()
     });
     held.unwrap()
@@ -515,7 +507,6 @@ fn hold_timeline(data: &Path, id: &str) -> std::fs::File {
 /// A recorder that holds the meeting but doesn't answer, as one whose control port is full: the
 /// watchdog's restart and `finalize` both find it busy. The meeting is live, so it never ends
 /// on its own, and Stop keeps asking until it can finish the meeting.
-#[cfg(windows)]
 fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
     let dir = TempDir::new("busy");
     let data = dir.join("data");
@@ -557,6 +548,65 @@ fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
     );
     assert!(c.current().is_none());
     c.shutdown();
+}
+
+/// A recorder that holds the meeting when Voice starts but doesn't answer in time, as on a
+/// computer that is busy starting up. The recording goes on, so Voice has to show and follow the
+/// meeting: it used to say the meeting was cut off and leave the recorder alone until the next
+/// start.
+fn a_recorder_that_doesnt_answer_at_start_is_reattached() {
+    let dir = TempDir::new("reattach-silent");
+    let data = dir.join("data");
+    let (a, _) = controller(&data, timing());
+    let id = a.start(StartArgs::default(), StartedBy::Voice).unwrap();
+    wait_clock(&a, 500);
+    a.pause(None).unwrap();
+    a.shutdown();
+    drop(a);
+    // The stand-in for that recorder: its recorder.json stays, nothing answers on its port, and
+    // the timeline has a writer.
+    kill(recorder_pid(&data, &id));
+    let held = hold_timeline(&data, &id);
+
+    let (b, changes) = controller(&data, timing());
+    b.recover();
+    let all = lock(&changes).clone();
+    // The timeline says what the recorder couldn't: the meeting is paused.
+    assert!(
+        matches!(all.as_slice(), [Change::Reattached { id: found, paused: true, at_ms }] if *found == id && *at_ms >= 500),
+        "{all:?}"
+    );
+    assert_eq!(
+        b.current().map(|r| (r.id, r.paused)),
+        Some((id.clone(), true))
+    );
+    assert!(
+        !lines(&data, &id)
+            .iter()
+            .any(|l| matches!(l, Line::Stop { .. })),
+        "a meeting that still records got a stop"
+    );
+
+    // The watchdog keeps asking. Here the stand-in lets go, so a recorder takes the meeting up
+    // again, still paused, and Stop ends it.
+    drop(held);
+    wait_change(&changes, "a recorder that answers", |c| {
+        matches!(c, Change::Restarted { .. })
+    });
+    assert_eq!(
+        count(&changes, |c| matches!(
+            c,
+            Change::Ended { .. } | Change::Finalized { .. } | Change::Notify { .. }
+        )),
+        0,
+        "{:?}",
+        lock(&changes)
+    );
+    b.stop(None, "user").unwrap();
+    assert!(
+        matches!(lines(&data, &id).last(), Some(Line::Stop { reason, .. }) if reason == "user")
+    );
+    b.shutdown();
 }
 
 fn a_cut_off_meeting_is_finished_at_start() {
