@@ -21,9 +21,13 @@
 // therefore rebuilds only when something changed: it hashes the five programs, the rendered Info.plist, the
 // entitlements files and the icon into tmp/voice-dev/build-stamp.json and compares that with a fresh build and with
 // what the bundle holds. A run without a change copies and signs nothing, so the grants of the last build still
-// apply. `--rebuild` forces a rebuild. A rebuild stops the copy this script started, then writes each file next to
-// its place and renames it over the old one, so a copy the script didn't start keeps running on its old signed
-// files.
+// apply. `--rebuild` forces a rebuild.
+//
+// A rebuild stops the copy this script started: the app pid in tmp/voice-dev/pids.json, when that pid still runs
+// this bundle's rukoo-voice, and that app's own speech and speaker workers. A recorder and a screen process the copy
+// started keep running, as they do when Voice quits or crashes, so a meeting in progress keeps recording. Then the
+// rebuild writes each file next to its place and renames it over the old one, so whatever still runs, a copy the
+// script didn't start included, keeps its old signed files.
 //
 // After a rebuild it clears the old entries of the dev bundle alone with
 // `tccutil reset <service> nl.bvdm.rukoo.voice.dev` (Microphone, AudioCapture, ListenEvent, Accessibility and
@@ -35,8 +39,9 @@
 // its log is tmp/voice-dev/data/logs/app.log. `--data` and `--bridge` override those paths. `--fake-engine`,
 // `--dev-hooks` and `--self-test` pass through to the app, with relative folders made absolute, because the working
 // directory of an app started with `open` is not the repository. The app's pid goes into tmp/voice-dev/pids.json;
-// `open` hands back no pid, so the script finds the process by this bundle's exact executable path, which is also how
-// `--stop` finds the app and the four helpers: SIGTERM, then SIGKILL after five seconds. Nothing is stopped by name.
+// `open` hands back no pid, so the script finds the process by this bundle's exact executable path. `--stop` ends every
+// program running from this bundle, the app and the four helpers of every copy, found the same way, so a recording
+// meeting ends too: SIGTERM, then SIGKILL after five seconds. Nothing is stopped by name.
 // `--no-open` builds and signs only.
 
 import { spawnSync } from 'node:child_process';
@@ -44,6 +49,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { alive, copyOf, processTable, runningFrom, terminate } from './lib/dev-app.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -74,6 +80,9 @@ const HELPER_IDS = {
   'rukoo-voice-screen': 'screen',
 };
 const MAIN_EXE = path.join(MACOS, PROGRAM);
+// The helpers that end with the app that started them. The recorder and the screen process are started detached and
+// outlive it (voice/RECORDING.md), so a rebuild leaves them running.
+const WORKERS = ['rukoo-voice-local', 'rukoo-voice-speakers'].map((name) => path.join(MACOS, name));
 const TCC_SERVICES = ['Microphone', 'AudioCapture', 'ListenEvent', 'Accessibility', 'ScreenCapture'];
 const TCC_PANES = [
   'Privacy & Security > Microphone: dictation and the microphone side of a meeting',
@@ -98,7 +107,8 @@ Options:
   --bridge <file>        the discovery file (default ${path.relative(ROOT, BRIDGE_DEFAULT)})
   --rebuild              rebuild and sign the bundle even when nothing changed
   --no-open              build and sign only
-  --stop                 stop the app and the helpers running from this bundle, by pid
+  --stop                 stop the app and the helpers running from this bundle, by pid, a
+                         recording meeting included
   -h, --help             this text
 
 App flags, passed to the bundle:
@@ -224,35 +234,9 @@ async function until(what, fn, ms = 20000, every = 100) {
   }
 }
 
-function alive(pid) {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
-  }
-}
-
-function signal(pid, name) {
-  try {
-    process.kill(pid, name);
-  } catch (_) {
-    // Already gone.
-  }
-}
-
-// The pids of the processes whose executable is exactly this path. `ps` on macOS reports the full executable path in
-// comm, so this never matches on a process name or on another Voice.
+// The pids of the processes whose executable is exactly this path.
 function processes(exe) {
-  const out = spawnSync('ps', ['-ww', '-axo', 'pid=,comm='], { encoding: 'utf8' });
-  if (out.status !== 0) throw new Error(`ps failed: ${(out.stderr || '').trim() || `exit ${out.status}`}`);
-  return out.stdout
-    .split('\n')
-    .map((line) => /^\s*(\d+)\s+(.*?)\s*$/.exec(line))
-    .filter((match) => match && path.resolve(match[2]) === exe)
-    .map((match) => Number(match[1]))
-    .filter((pid) => pid !== process.pid);
+  return runningFrom(processTable(), [exe]);
 }
 
 function sha256File(file) {
@@ -468,27 +452,7 @@ function resetPermissions() {
 // ---------- run ----------
 
 function bundleProcesses() {
-  const found = [];
-  for (const exe of [MAIN_EXE, ...HELPERS.map((name) => path.join(MACOS, name))]) {
-    for (const pid of processes(exe)) if (!found.includes(pid)) found.push(pid);
-  }
-  return found;
-}
-
-async function terminate(pids) {
-  for (const pid of pids) signal(pid, 'SIGTERM');
-  const end = Date.now() + STOP_GRACE_MS;
-  let left = pids.filter(alive);
-  while (left.length && Date.now() < end) {
-    await sleep(100);
-    left = left.filter(alive);
-  }
-  if (!left.length) return;
-  console.log(`still running after ${STOP_GRACE_MS / 1000} s, sending SIGKILL to ${left.join(', ')}`);
-  for (const pid of left) signal(pid, 'SIGKILL');
-  await sleep(500);
-  left = left.filter(alive);
-  if (left.length) throw new Error(`still running after SIGKILL: ${left.join(', ')}`);
+  return runningFrom(processTable(), [MAIN_EXE, ...HELPERS.map((name) => path.join(MACOS, name))]);
 }
 
 function recordedApp() {
@@ -508,13 +472,16 @@ function forgetPids() {
   }
 }
 
-// A build from an earlier run is replaced, so the copy that still runs it goes first. Only a pid this script
-// recorded in pids.json counts, and only while it is the app inside this bundle.
+// A build from an earlier run is replaced, so the copy this script started goes first: the app pid it recorded in
+// pids.json, only while that pid is the app inside this bundle, and that app's speech and speaker workers. Other
+// copies from the bundle keep running, and so do the recorder and the screen process of this one.
 async function stopEarlierRun() {
   const app = recordedApp();
-  if (!app || !alive(app) || !processes(MAIN_EXE).includes(app)) return;
-  console.log(`stopping the copy from the earlier build (pid ${app}) before replacing the bundle`);
-  await terminate(bundleProcesses());
+  if (!app || !alive(app)) return;
+  const copy = copyOf(processTable(), app, MAIN_EXE, WORKERS);
+  if (!copy.length) return;
+  console.log(`stopping the copy from the earlier build before replacing the bundle, by pid: ${copy.join(', ')}`);
+  await terminate(copy, { graceMs: STOP_GRACE_MS });
   forgetPids();
 }
 
@@ -560,7 +527,7 @@ async function stopApp() {
   const targets = bundleProcesses();
   if (targets.length) {
     console.log(`stopping ${targets.length} process(es) from ${BUNDLE} by pid: ${targets.join(', ')}`);
-    await terminate(targets);
+    await terminate(targets, { graceMs: STOP_GRACE_MS });
     console.log('stopped');
   } else {
     console.log(`nothing runs from ${BUNDLE}`);
