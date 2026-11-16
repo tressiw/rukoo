@@ -160,7 +160,7 @@ Four options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--se
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
 - On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, waits until every segment is on disk, writes their `segment_end` lines and `stop`, syncs the timeline, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
 - It logs on stderr every sync and every segment file creation that takes over 0.5 s, and a heartbeat that comes over 1.5 s after the one before, so a recording that stalls can be told from a slow disk.
-- On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
+- On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app. On macOS the app starts it in a process group of its own, so it outlives the app there too.
 
 ### `recorder.json`
 

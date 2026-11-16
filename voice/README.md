@@ -1,6 +1,6 @@
 # Rukoo Voice
 
-Rukoo Voice is a desktop app for push-to-talk dictation that also records meetings for Rukoo. It will replace [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). Version 0.1 runs on Windows; [What 0.1 leaves out](#what-01-leaves-out) lists the parts of this design that come later.
+Rukoo Voice is a desktop app for push-to-talk dictation that also records meetings for Rukoo. It will replace [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). It runs on Windows and on Apple Silicon Macs with macOS 15 or later; version 0.1 was released for Windows only. [What 0.1 leaves out](#what-01-leaves-out) lists the parts of this design that come later.
 
 ## What it does
 
@@ -39,10 +39,10 @@ While recording or paused, the recording indicator's screen button and Rukoo's m
 
 - A process of its own, `rukoo-voice-screen`, records the screen, so a crash in the graphics driver, the encoder or the text reader never costs audio.
 - Voice records one monitor at most. It starts with the monitor of the frontmost window, skipping hidden and minimized windows and windows kept out of screen capture, such as Rukoo's. You can switch monitors with the recording indicator's screen button or from the meeting in Rukoo. Recording a single window doesn't work when you share your own screen, because you keep switching windows.
-- The agent gets frames, not the video. Each time the screen changes noticeably and then settles, Voice saves a frame at that moment in the transcript, and Windows reads the text on it, on this computer. When the agent needs more, it asks for a clip between two times. A clip is an MP4 file cut from the recording, so only an agent on this computer gets the file; other agents get a handful of frames from that stretch.
+- The agent gets frames, not the video. Each time the screen changes noticeably and then settles, Voice saves a frame at that moment in the transcript, and the system reads the text on it, on this computer: Windows' own text recognition on Windows, Vision on a Mac. When the agent needs more, it asks for a clip between two times. A clip is an MP4 file cut from the recording, so only an agent on this computer gets the file; other agents get a handful of frames from that stretch.
 - Audio and video share one clock. A passage in the transcript jumps to the same moment in the video. Rukoo doesn't play the video yet.
-- Video is encoded on the graphics card, because transcription already uses more than one CPU core during a meeting. Without a hardware encoder, Voice records frames only. The frame rate follows the screen: up to 15 frames a second while it changes, and about 4 a second while it is still, also when Windows keeps handing over unchanged frames. Small changes, such as typed text, reach the video at that slower pace, within half a second.
-- Windows draws a border around the monitor being recorded. Voice leaves it on, so you can see what it records.
+- Video is encoded on the graphics card, because transcription already uses more than one CPU core during a meeting. Without a hardware encoder, Voice records frames only. The frame rate follows the screen: up to 15 frames a second while it changes, and about 4 a second while it is still, also when Windows keeps handing over unchanged frames. On a Mac, ScreenCaptureKit's idle frames, which say nothing changed, don't count as frames. Small changes, such as typed text, reach the video at that slower pace, within half a second.
+- Windows draws a border around the monitor being recorded. Voice leaves it on, so you can see what it records. On a Mac, macOS shows that the screen is being recorded in the menu bar instead. Stopping the recording there ends the screen part of the meeting, and the audio keeps recording.
 - While the screen records, Rukoo holds back its mail and booking notifications, so they don't end up in a frame. Calendar reminders still show, and other apps' notifications are recorded.
 
 | | Screen | Call audio | Hardware encoder |
