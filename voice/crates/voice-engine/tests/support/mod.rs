@@ -22,8 +22,8 @@ use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::permissions::{Permission, PermissionState, Permissions};
 use voice_engine::services::{
-    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicLost, MicStream, Microphone,
-    Services, Speech, System, TextInput, Updates,
+    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicLost, MicOpen, MicStream,
+    Microphone, Services, Speech, System, TextInput, Updates,
 };
 use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
@@ -469,13 +469,15 @@ impl Drop for FakeStream {
 
 impl Microphone for FakeMic {
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
-        self.open_watched(on_audio, Box::new(|| {}))
+        // The fake logs nothing, so no dictation needs a name here.
+        self.open_watched(on_audio, Box::new(|| {}), MicOpen::first(0))
     }
 
     fn open_watched(
         &self,
         mut on_audio: AudioSink,
         on_lost: MicLost,
+        _about: MicOpen,
     ) -> Result<Box<dyn MicStream>, String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         let delay = *lock(&self.open_delay);

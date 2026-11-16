@@ -79,18 +79,45 @@ pub trait MicStream: Send {}
 /// Runs once, on a thread of its own, when an open microphone stops for good.
 pub type MicLost = Box<dyn FnOnce() + Send>;
 
+/// Which dictation opens the microphone, for the one line its capture logs about what it opened:
+/// the dictation's id, and whether this is its first open or a reopen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MicOpen {
+    pub dictation: u64,
+    /// `0` for the dictation's first open, then the reopen's number: `1` for the first reopen.
+    pub reopen: u32,
+}
+
+impl MicOpen {
+    /// The first open of dictation `dictation`.
+    pub fn first(dictation: u64) -> MicOpen {
+        MicOpen {
+            dictation,
+            reopen: 0,
+        }
+    }
+
+    /// The `reopen`th open of dictation `dictation` after the first.
+    pub fn reopen(dictation: u64, reopen: u32) -> MicOpen {
+        MicOpen { dictation, reopen }
+    }
+}
+
 pub trait Microphone: Send + Sync {
     /// Opens the default microphone; blocks until it is open or failed. The error is an English
     /// sentence for the notification.
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String>;
     /// [`Microphone::open`], calling `on_lost` when the device goes away or changes under the
-    /// stream, which then delivers nothing more. The default never calls it.
+    /// stream, which then delivers nothing more. `about` says which dictation this is for, so
+    /// the capture can log what it opened under that dictation's id. The default never calls
+    /// `on_lost` and logs nothing.
     fn open_watched(
         &self,
         on_audio: AudioSink,
         on_lost: MicLost,
+        about: MicOpen,
     ) -> Result<Box<dyn MicStream>, String> {
-        drop(on_lost);
+        let _ = (on_lost, about);
         self.open(on_audio)
     }
 }

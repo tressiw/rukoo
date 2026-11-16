@@ -2,7 +2,7 @@
 //! to 16 kHz mono. Opened at every press and closed at every release, as Ownkey did, so a new
 //! default microphone applies from the next dictation (ownkey-dictation.md 4.3).
 
-use crate::services::{AudioSink, MicLost, MicStream, Microphone};
+use crate::services::{AudioSink, MicLost, MicOpen, MicStream, Microphone};
 
 /// What the user sees when there is no microphone to open. cpal's missing device and Core
 /// Audio's `kAudioObjectUnknown` read the same, so a Mac and a PC say it the same way, and a
@@ -10,27 +10,73 @@ use crate::services::{AudioSink, MicLost, MicStream, Microphone};
 #[cfg(any(windows, target_os = "macos"))]
 pub(crate) const NO_MICROPHONE: &str = voice_recorder::source::NO_MICROPHONE;
 
+/// What one open of a dictation's capture found: the device, and the format its stream delivers.
+#[cfg(any(windows, target_os = "macos", test))]
+pub(crate) struct OpenedInput<'a> {
+    pub name: &'a str,
+    pub rate: u32,
+    pub channels: u16,
+    /// The sample format's name, as cpal writes it: `f32`, `i16` and so on.
+    pub format: &'a str,
+}
+
+/// The one line a dictation's capture logs when it opens an input stream: the device it opened,
+/// the format the stream runs in and the rate it converts to, under the dictation's id, so an
+/// empty transcript can be read against what the microphone delivered and at which rate. The
+/// device's name is the one the person chose and stays in `app.log` in the data folder, as the
+/// recorder's journal names the microphone of a meeting.
+#[cfg(any(windows, target_os = "macos", test))]
+fn open_line(about: MicOpen, input: OpenedInput) -> String {
+    let which = match about.reopen {
+        0 => "first".to_string(),
+        reopen => format!("reopen {reopen}"),
+    };
+    let channels = match input.channels {
+        1 => "1 channel".to_string(),
+        channels => format!("{channels} channels"),
+    };
+    format!(
+        "dictation {} capture open ({which}): {:?} at {} Hz, {channels}, {}, resampled to {} Hz",
+        about.dictation,
+        input.name,
+        input.rate,
+        input.format,
+        voice_audio::SAMPLE_RATE
+    )
+}
+
 pub struct DefaultMicrophone;
 
 impl Microphone for DefaultMicrophone {
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
-        self.open_watched(on_audio, Box::new(|| {}))
+        open_capture(on_audio, Box::new(|| {}), None)
     }
 
     fn open_watched(
         &self,
         on_audio: AudioSink,
         on_lost: MicLost,
+        about: MicOpen,
     ) -> Result<Box<dyn MicStream>, String> {
-        #[cfg(any(windows, target_os = "macos"))]
-        {
-            cpal_mic::open(on_audio, on_lost).map(|mic| Box::new(mic) as Box<dyn MicStream>)
-        }
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            let _ = (on_audio, on_lost);
-            Err("Dictation isn't supported on this platform yet.".into())
-        }
+        open_capture(on_audio, on_lost, Some(about))
+    }
+}
+
+/// Opens the default microphone, logging what it opened when a dictation asked for it. The plain
+/// [`Microphone::open`] logs nothing: only dictation's opens carry a dictation to report.
+fn open_capture(
+    on_audio: AudioSink,
+    on_lost: MicLost,
+    about: Option<MicOpen>,
+) -> Result<Box<dyn MicStream>, String> {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        cpal_mic::open(on_audio, on_lost, about).map(|mic| Box::new(mic) as Box<dyn MicStream>)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (on_audio, on_lost, about);
+        Err("Dictation isn't supported on this platform yet.".into())
     }
 }
 
@@ -55,8 +101,8 @@ mod cpal_mic {
     use cpal::{Data, SampleFormat};
     use voice_audio::Resampler;
 
-    use super::NO_MICROPHONE;
-    use crate::services::{AudioSink, MicLost, MicStream};
+    use super::{open_line, OpenedInput, NO_MICROPHONE};
+    use crate::services::{AudioSink, MicLost, MicOpen, MicStream};
 
     /// The stream lives on its own thread, which drops it when the microphone closes.
     pub struct CpalMic {
@@ -75,13 +121,17 @@ mod cpal_mic {
         }
     }
 
-    pub fn open(on_audio: AudioSink, on_lost: MicLost) -> Result<CpalMic, String> {
+    pub fn open(
+        on_audio: AudioSink,
+        on_lost: MicLost,
+        about: Option<MicOpen>,
+    ) -> Result<CpalMic, String> {
         let (opened_tx, opened_rx) = mpsc::channel::<Result<(), String>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let thread = thread::Builder::new()
             .name("dictation-mic".into())
             .spawn(move || {
-                let stream = match build(on_audio, on_lost) {
+                let stream = match build(on_audio, on_lost, about) {
                     Ok(stream) => stream,
                     Err(e) => {
                         let _ = opened_tx.send(Err(e));
@@ -110,7 +160,11 @@ mod cpal_mic {
         }
     }
 
-    fn build(mut on_audio: AudioSink, on_lost: MicLost) -> Result<cpal::Stream, String> {
+    fn build(
+        mut on_audio: AudioSink,
+        on_lost: MicLost,
+        about: Option<MicOpen>,
+    ) -> Result<cpal::Stream, String> {
         // A Mac with no input device still gets a device from cpal 0.18.2, for Core Audio's
         // `kAudioObjectUnknown`; the recorder's check is the one meetings use.
         if voice_recorder::source::no_microphone() {
@@ -157,7 +211,34 @@ mod cpal_mic {
             .build_input_stream_raw(config.config(), format, on_data, on_error, None)
             .map_err(|e| e.to_string())?;
         stream.play().map_err(|e| e.to_string())?;
+        // Only after the stream plays, so a failed open never reads as one that delivered nothing.
+        if let Some(about) = about {
+            let name = device_name(&device);
+            let line = open_line(
+                about,
+                OpenedInput {
+                    name: &name,
+                    rate: config.sample_rate(),
+                    channels: config.channels(),
+                    format: &format.to_string(),
+                },
+            );
+            log::info!("{line}");
+        }
         Ok(stream)
+    }
+
+    /// The device's name for the log. Reading a name can fail, and `to_string` on a device whose
+    /// name can't be read panics in cpal 0.18.2 on macOS; the id, then a plain word, stand in, as
+    /// in the recorder's own device lookup.
+    fn device_name(device: &cpal::Device) -> String {
+        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
+        device
+            .description()
+            .map(|d| d.name().to_string())
+            .ok()
+            .or_else(|| (!id.is_empty()).then(|| id.clone()))
+            .unwrap_or_else(|| "unnamed device".into())
     }
 
     fn to_f32(data: &Data) -> Option<Vec<f32>> {
@@ -224,6 +305,50 @@ mod tests {
         assert!(
             *seen.lock().unwrap() > 0,
             "the microphone delivered no samples"
+        );
+    }
+}
+
+#[cfg(test)]
+mod opened_lines {
+    use super::{open_line, OpenedInput};
+    use crate::services::MicOpen;
+
+    /// A first open says the device, its native format and the rate the capture converts to, so an
+    /// empty transcript can be read against what the microphone delivered.
+    #[test]
+    fn the_first_open_names_the_device_and_its_format() {
+        let line = open_line(
+            MicOpen::first(7),
+            OpenedInput {
+                name: "Sony WH-1000XM3",
+                rate: 48_000,
+                channels: 1,
+                format: "f32",
+            },
+        );
+        assert_eq!(
+            line,
+            "dictation 7 capture open (first): \"Sony WH-1000XM3\" at 48000 Hz, 1 channel, f32, resampled to 16000 Hz"
+        );
+    }
+
+    /// A stream that stopped is opened again under the same dictation, numbered, so the rate a
+    /// Bluetooth headset switched to reads next to the one before it.
+    #[test]
+    fn a_reopen_carries_its_number() {
+        let line = open_line(
+            MicOpen::reopen(7, 2),
+            OpenedInput {
+                name: "MacBook Pro Microphone",
+                rate: 44_100,
+                channels: 2,
+                format: "i16",
+            },
+        );
+        assert_eq!(
+            line,
+            "dictation 7 capture open (reopen 2): \"MacBook Pro Microphone\" at 44100 Hz, 2 channels, i16, resampled to 16000 Hz"
         );
     }
 }
