@@ -103,7 +103,22 @@ jobs:
               '--notes', 'Rukoo Voice for Windows. Write the release notes here, then publish without marking it as the latest release.')
             if ($version.Contains('-')) { $flags += '--prerelease' }
             gh release create $env:RELEASE_TAG @files @flags
-            if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+            if ($LASTEXITCODE -ne 0) {
+              # The macOS job can create the same draft at the same moment.
+              $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Output "::error::gh release create failed and there is no draft release for $env:RELEASE_TAG."
+                exit 1
+              }
+              if ($draft -ne 'true') {
+                Write-Output "::error::$env:RELEASE_TAG exists but is not a draft."
+                exit 1
+              }
+              gh release upload $env:RELEASE_TAG @files --clobber
+              if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed' }
+              gh release edit $env:RELEASE_TAG --latest=false
+              if ($LASTEXITCODE -ne 0) { throw 'gh release edit failed' }
+            }
           } elseif ($draft -ne 'true') {
             # Replacing the files of a published release would change what people already downloaded.
             throw "$env:RELEASE_TAG is already published. Make a new Voice version instead."
