@@ -34,9 +34,10 @@ async function until(what, fn, ms = 5000) {
 
 test('copyOf takes the recorded app and its workers, and nothing else from the bundle', async () => {
   const { copyOf } = await lib();
-  const app = '/b/MacOS/rukoo-voice';
-  const local = '/b/MacOS/rukoo-voice-local';
-  const recorder = '/b/MacOS/rukoo-voice-recorder';
+  // Resolved, as the process table's paths are: on Windows `path.resolve` adds the drive.
+  const app = path.resolve('/b/MacOS/rukoo-voice');
+  const local = path.resolve('/b/MacOS/rukoo-voice-local');
+  const recorder = path.resolve('/b/MacOS/rukoo-voice-recorder');
   const table = [
     { pid: 10, ppid: 1, exe: app },
     { pid: 11, ppid: 10, exe: local },
