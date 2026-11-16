@@ -98,6 +98,8 @@ The Mac build is ad-hoc signed and not notarized, as Rukoo Mail's Mac builds are
 
 macOS ties each permission to the app's signature, and an ad-hoc signature changes with every update. Installing one therefore drops the permissions Voice had: Microphone, System Audio Recording Only, Input Monitoring, Accessibility and Screen & System Audio Recording. Privacy & Security can still list the old copy as switched on while the new one has nothing. Remove the old entry, add Rukoo Voice again and switch the permissions back on. System Audio Recording has no way to be checked before a meeting: Settings shows the permission as on once a meeting's call track recorded sound, and a meeting tells you when its call holds only silence.
 
+Dictation needs the Accessibility grant, which lets Voice type into other apps and read the selection; macOS 27 names that pane Device Control and Data Access. Without it a dictation or a rewrite is refused before the microphone opens, because nothing it recorded could be inserted. The pill names the pane straight away, and the first such press after Voice starts shows macOS's own prompt, once. Settings › Permissions opens the same pane, and switching the grant on there is enough for the next press without restarting Voice.
+
 Voice records everything the Mac plays, its own sounds included, as it does on Windows. Its only sound is the optional ready chime when you start dictating, and macOS' system sound server plays it, so leaving Voice's own processes out of the tap wouldn't keep it out. The timeline marks every dictation, so the chime sits at the start of a marked stretch.
 
 ## How it's built

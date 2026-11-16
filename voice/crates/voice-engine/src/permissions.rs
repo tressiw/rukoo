@@ -71,6 +71,12 @@ impl PermissionState {
 pub trait Permissions: Send + Sync {
     /// `None` where the platform has no such permission.
     fn state(&self, permission: Permission) -> Option<PermissionState>;
+    /// Asks the system for a permission that can be asked for, showing macOS's own dialog. Does
+    /// nothing where there is no such permission, and opens no pane: Settings' row does that.
+    /// The caller decides how often: Voice asks once in a run.
+    fn request(&self, permission: Permission) {
+        let _ = permission;
+    }
 }
 
 /// `SettingsState.permissions`: every permission's state, or `None` when this platform has none.
@@ -142,6 +148,15 @@ impl Permissions for SystemPermissions {
             Permission::Accessibility => preflight_state(voice_input::accessibility_trusted()),
             Permission::ScreenRecording => preflight_state(CGPreflightScreenCaptureAccess()),
         })
+    }
+
+    /// Accessibility is the one permission macOS asks for with a dialog of its own, which puts
+    /// Voice in Privacy & Security switched off. The microphone and Input Monitoring ask on their
+    /// first open or event tap; Screen Recording's row asks before it opens the pane.
+    fn request(&self, permission: Permission) {
+        if permission == Permission::Accessibility {
+            voice_input::prompt_accessibility();
+        }
     }
 }
 

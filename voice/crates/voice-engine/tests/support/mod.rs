@@ -766,10 +766,13 @@ impl System for FakeSystem {
 /// The macOS permissions Settings shows, as a platform without them (every state `None`) or with
 /// the states a test set. Missing entries are `unknown`, as a preflight this version can't read.
 pub struct FakePermissions {
-    pub supported: bool,
+    /// Whether this platform reports the permissions at all, as macOS does.
+    pub supported: AtomicBool,
     pub states: Mutex<HashMap<Permission, PermissionState>>,
     /// How often the engine asked, one per permission per state that reads them.
     calls: AtomicUsize,
+    /// How often the engine asked the system for a permission, showing its dialog.
+    requests: AtomicUsize,
 }
 
 impl FakePermissions {
@@ -780,12 +783,17 @@ impl FakePermissions {
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    /// How often Voice asked the system for a permission, as macOS's own dialog does.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
 }
 
 impl Permissions for FakePermissions {
     fn state(&self, permission: Permission) -> Option<PermissionState> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if !self.supported {
+        if !self.supported.load(Ordering::SeqCst) {
             return None;
         }
         Some(
@@ -794,6 +802,10 @@ impl Permissions for FakePermissions {
                 .copied()
                 .unwrap_or(PermissionState::Unknown),
         )
+    }
+
+    fn request(&self, _permission: Permission) {
+        self.requests.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -868,9 +880,10 @@ impl Harness {
             autostart: Arc::new(FakeAutostart::default()),
             updates: Arc::new(FakeUpdates::default()),
             permissions: Arc::new(FakePermissions {
-                supported: cfg!(target_os = "macos"),
+                supported: AtomicBool::new(cfg!(target_os = "macos")),
                 states: Mutex::new(HashMap::new()),
                 calls: AtomicUsize::new(0),
+                requests: AtomicUsize::new(0),
             }),
             ownkey_config: None,
             ownkey_models: None,

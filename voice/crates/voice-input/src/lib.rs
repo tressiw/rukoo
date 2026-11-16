@@ -265,6 +265,14 @@ pub fn accessibility_trusted() -> bool {
     mac::is_accessibility_trusted()
 }
 
+/// Asks macOS for the Accessibility grant, which shows its own dialog with the button that opens
+/// Privacy & Security. It returns at once; read the grant again with [`accessibility_trusted`].
+/// Voice asks once in a run, at a key press that couldn't insert anything.
+#[cfg(target_os = "macos")]
+pub fn prompt_accessibility() {
+    mac::prompt_accessibility()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,8 +4,11 @@
 //! Reading another app's accessibility objects and posting keys into it both
 //! need the same grant, Privacy & Security › Accessibility. `AXIsProcessTrusted`
 //! reports it without prompting, so Voice can say what to switch on instead of
-//! failing silently; a prompt at the wrong moment would also steal the focus
-//! Voice is about to type into.
+//! failing silently. [`prompt`] is the one call that does ask macOS for it, and
+//! the engine makes that call once in a run, at a key press that can't insert
+//! anything because the grant is off: a prompt at every key press would steal
+//! the focus Voice is about to type into, and a dialog the user dismissed would
+//! come back again and again.
 //!
 //! The attribute names are the ones `AXAttributeConstants.h` declares, spelled
 //! out because the objc2 crate only binds the functions, not the constants.
@@ -13,8 +16,11 @@
 use std::ptr::NonNull;
 use std::time::Duration;
 
-use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement};
-use objc2_core_foundation::{CFRetained, CFString, CFType};
+use objc2_application_services::{
+    kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+    AXUIElement,
+};
+use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
 
 use crate::InputError;
 
@@ -30,6 +36,23 @@ const SELECTED_TEXT: &str = "AXSelectedText";
 pub(crate) fn is_trusted() -> bool {
     // The call only reads this process's TCC grant.
     unsafe { AXIsProcessTrusted() }
+}
+
+/// Asks macOS for the grant. `AXIsProcessTrustedWithOptions` with the prompt
+/// option shows macOS's own dialog, whose button opens Privacy & Security with
+/// Voice in its list; it returns at once, and the answer is read again at the
+/// next key press. The engine calls this once in a run.
+pub(crate) fn prompt() {
+    let key = unsafe { kAXTrustedCheckOptionPrompt };
+    let options = CFDictionary::<CFType, CFType>::from_slices(
+        &[key.as_ref()],
+        &[CFBoolean::new(true).as_ref()],
+    );
+    // The call takes the opaque dictionary, which this one is.
+    let options: &CFDictionary = options.as_ref();
+    // SAFETY: the dictionary holds the documented key with a `CFBoolean` value,
+    // and the call only reads it.
+    let _ = unsafe { AXIsProcessTrustedWithOptions(Some(options)) };
 }
 
 /// The reason Voice can't type right now, if the Accessibility permission is
