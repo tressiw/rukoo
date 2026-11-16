@@ -19,7 +19,7 @@ Download Rukoo from [GitHub Releases](https://github.com/MajesteitBart/rukoo/rel
 | macOS 13 or newer | Experimental | DMG or ZIP, `arm64` for Apple Silicon or `x64` for Intel |
 | Android 12 or newer | Experimental | `Rukoo-Android-<version>.apk`, built for the Galaxy Z Fold7 |
 
-Rukoo Voice, the Windows companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. Meetings need it next to Rukoo 2.2.0 or newer.
+Rukoo Voice, the companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` for Windows from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. A newer `voice-v` release can also carry `Rukoo-Voice-<version>-arm64.dmg` for Apple Silicon Macs; 0.1.0 has Windows packages only. Meetings need it next to Rukoo 2.2.0 or newer.
 
 The builds aren't signed yet, so Windows SmartScreen warns before the first start: choose "More info", then "Run anyway". `SHA256SUMS.txt` in each release has the checksums of the desktop packages, and the release notes give the APK's.
 
@@ -60,7 +60,7 @@ More in [Agents](docs/agents.md).
 
 ### Meetings
 
-- Rukoo Voice, a companion app for Windows, records a meeting's microphone and call audio, and the screen if you want, and transcribes it while you talk. Rukoo shows the transcript and the screen's frames in the meeting view (`Ctrl+3`), next to the agent chat.
+- Rukoo Voice, a companion app for Windows and Apple Silicon Macs, records a meeting's microphone and call audio, and the screen if you want, and transcribes it while you talk. Rukoo shows the transcript and the screen's frames in the meeting view (`Ctrl+3`), next to the agent chat.
 - Start a recording from a calendar event, the meeting view or Voice. Name the voices from the event's guests and keep your own notes next to the transcript.
 - Rename a meeting from its header or sidebar. Delete a finished meeting after confirming the permanent removal; chats stay. During a live or paused meeting, choose Off, Frames, Video and a monitor from the header or Voice's recording indicator. Live mode changes and deletion need the updated Voice.
 - Your agent reads the meeting through Rukoo's MCP tools, as untrusted content, and can't start or stop a recording. While a meeting records, Rukoo keeps its windows out of screen recordings and screen shares on Windows and macOS.

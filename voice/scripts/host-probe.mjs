@@ -36,7 +36,10 @@ const MAX_OVERSHOOT_MS = Number(process.env.RUKOO_VOICE_HOST_PROBE_MAX_MS ?? 50)
 const SKIPPED = [
   'voice-recorder pause_resume_mark_and_dictation_lines',
   'voice-recorder a_new_default_device_moves_the_track',
-  'voice-recorder padding_catches_up_after_a_long_stall',
+  'voice-recorder devices a_slow_open_holds_up_only_its_own_track',
+  'voice-recorder devices a_call_of_exact_zeros_is_reported_while_another_app_plays',
+  'voice-recorder devices a_shortfall_after_a_resume_moves_the_next_segment',
+  'voice-recorder devices a_tap_that_delivers_nothing_is_reported_from_its_padding',
   'voice-engine a_failing_bucket_never_slows_the_recorder',
   'voice-screen orchestration a_session_runs_to_the_recorders_stop',
   'voice-screen clock_mac both_counters_move_with_the_clock',

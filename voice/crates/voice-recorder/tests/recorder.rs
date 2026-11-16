@@ -875,12 +875,6 @@ fn idle_loopback_is_padded_only_while_healthy() {
 
 #[test]
 fn padding_catches_up_after_a_long_stall() {
-    // The synthetic microphone catches up in a burst after a late wake, so its track runs ahead
-    // of the clock by that delay and the stop line follows it; the call track ends at the clock,
-    // more than the 20 ms below before the stop.
-    if skip_on_slow_host("padding_catches_up_after_a_long_stall") {
-        return;
-    }
     let m = TempMeeting::new("pad-stall");
     // Moving the microphone to the new default blocks the recorder thread for 1.5 s, longer than
     // a call segment. The idle call track then trails the clock by more than a segment, and its
@@ -915,7 +909,17 @@ fn padding_catches_up_after_a_long_stall() {
             pair[0].seq
         );
     }
-    assert!(call.last().unwrap().end() + 20 >= stop);
+    // The call track is padded up to the moment the stop arrived, and the stop line is that moment
+    // or the latest track end. A microphone whose thread woke late delivers its backlog in one
+    // burst, so its track runs ahead of the clock by that delay and can end past the stop's
+    // arrival; the stop line then follows the microphone and the call ends that much before it.
+    let call_end = call.last().unwrap().end();
+    let mic_end = segments(&m, &lines, "mic").last().unwrap().end();
+    let allowed = if mic_end + 1 >= stop { SLACK_MS } else { 20 };
+    assert!(
+        call_end + allowed >= stop,
+        "call ends at {call_end}, mic at {mic_end}, stop at {stop}"
+    );
     assert!(call.iter().all(|s| s.pcm.iter().all(|&v| v == 0)));
 }
 
