@@ -25,7 +25,9 @@
 // runtime and not notarized, as Rukoo Mail's Mac packages are, so the first launch needs Open Anyway in Privacy &
 // Security. `--developer-id` signs with APPLE_SIGNING_IDENTITY and notarizes with `xcrun notarytool` instead, using
 // APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID (the names docs/development.md calls MAC_CSC_LINK,
-// MAC_CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID).
+// MAC_CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID). notarytool gets the password on
+// its command line, so voice/scripts/lib/run.mjs replaces APPLE_PASSWORD and APPLE_ID with *** in every error and in
+// notarytool's output.
 //
 // The NeMo runtime has no macOS download yet: another change adds manifest format 2 with a macos-aarch64 archive and
 // `voice/nemo-runtime/build-macos.sh`. Until then the script takes a local runtime with `--nemo-dir`, and without it
@@ -57,6 +59,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkNotices, licenseTexts, MACOS } from './notices.mjs';
+import { notarize, redact, run } from './lib/run.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -150,27 +153,6 @@ function guard() {
   if (process.arch !== 'arm64') {
     throw new Error(`Rukoo Voice ships for Apple Silicon only; this is ${process.arch}`);
   }
-}
-
-function run(file, args, options = {}) {
-  const result = spawnSync(file, args, {
-    encoding: 'utf8',
-    stdio: options.inherit ? 'inherit' : 'pipe',
-    input: options.input,
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-  });
-  if (result.error) {
-    const hint = result.error.code === 'ENOENT' && file === 'cargo'
-      ? ' Rust is in ~/.cargo/bin, which is not always on PATH.'
-      : '';
-    throw new Error(`couldn't run ${file}: ${result.error.message}.${hint}`);
-  }
-  if (result.status !== 0 && !options.allowFailure) {
-    const said = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
-    throw new Error(`${file} ${args.join(' ')} failed with exit code ${result.status}${said ? `: ${said}` : ''}`);
-  }
-  return result;
 }
 
 function step(text) {
@@ -706,16 +688,9 @@ function writeSums(files, out) {
   return sums;
 }
 
-// Notarization: submit and wait, then staple the ticket. A ticket can be stapled to the app and to the DMG, not to
-// the zip, so the app is notarized through the zip first and the DMG made from the stapled app after.
-function notarize(file) {
-  run('xcrun', ['notarytool', 'submit', file,
-    '--apple-id', process.env.APPLE_ID,
-    '--password', process.env.APPLE_PASSWORD,
-    '--team-id', process.env.APPLE_TEAM_ID,
-    '--wait'], { inherit: true });
-}
-
+// Notarization goes through lib/run.mjs's notarize, which keeps APPLE_PASSWORD and APPLE_ID out of the log. A ticket
+// can be stapled to the app and to the DMG, not to the zip, so the app is notarized through the zip first and the DMG
+// made from the stapled app after.
 function staple(target) {
   run('xcrun', ['stapler', 'staple', target], { inherit: true });
 }
@@ -802,6 +777,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`package-macos: ${error.message}`);
+  console.error(`package-macos: ${redact(error.message)}`);
   process.exitCode = 1;
 });
