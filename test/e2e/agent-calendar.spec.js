@@ -120,3 +120,92 @@ test('the calendar card speaks Dutch, and Cancel adds nothing', async () => {
     .toMatch(/The user declined: <unsafe_content source="calendar">Add "Call with Sanne" to the calendar<\/unsafe_content>/);
   expect(await events('Call with Sanne')).toEqual([]);
 });
+
+// #312: the email stays open in Mail behind the calendar, but a chat started in the calendar isn't about it.
+test('a chat started in the calendar leaves out the email left open in Mail', async ({}, testInfo) => {
+  const chip = () => pane().locator('.bui-pb .bui-entity');
+  const heading = () => pane().locator('.bui-rec__title');
+  await setTheme('dark');
+  await openChat('Your parcel is on its way');
+  await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
+  await expect(heading()).toHaveText('What should Hermes do with this email?');
+
+  await win.click('[data-mode="calendar"]');
+  await expect(win.locator('.calendar')).toBeVisible();
+  await expect(heading()).toHaveText('Ask Hermes about your calendar');
+  await expect(chip()).toHaveCount(0);
+  await say('Schedule a call with Sanne');
+  await expect(transcript().locator('.bui-approval')).toBeVisible();
+  await expect(transcript()).toContainText('Rukoo asks you before it adds the call.');
+  // Named after its first message, as a chat without an email is.
+  await expect(pane().locator('.ap-title')).toHaveText('Schedule a call with Sanne');
+  await expect(chip()).toHaveCount(0);
+  expect(await app.evaluate(() => global.__semAgents.list().map((c) => ({ title: c.title, message: c.message })))).toEqual([{ title: 'Schedule a call with Sanne', message: null }]);
+  await win.screenshot({ path: testInfo.outputPath('calendar-chat-en-dark.png'), animations: 'disabled' });
+
+  // New chat starts without the email too.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(heading()).toHaveText('Ask Hermes about your calendar');
+  await expect(chip()).toHaveCount(0);
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl', theme: 'light' }));
+  await expect(heading()).toHaveText('Vraag Hermes iets over je agenda');
+  await expect(win.locator('html')).toHaveClass(/light/);
+  await win.screenshot({ path: testInfo.outputPath('calendar-new-chat-nl-light.png'), animations: 'disabled' });
+
+  // Back in Mail the panel follows the open email again.
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));
+  await win.click('[data-mode="mail"]');
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
+  await expect(heading()).toHaveText('What should Hermes do with this email?');
+});
+
+for (const method of ['findFor', 'forPanel']) for (const close of [false, true]) {
+  const scenario = close ? 'reopening after a closed Calendar visit retries the Mail chat lookup' : 'switching to Calendar leaves a pending email chat lookup behind';
+  test(`${scenario}: ${method}`, async () => {
+    const subject = 'Your parcel is on its way';
+    const messageId = await win.locator('.item', { hasText: subject }).first().getAttribute('data-id');
+    await app.evaluate((_e, { method, messageId, subject }) => {
+      const hub = global.__semAgents;
+      const conversation = hub.create({ agent: 'hermes', message: { id: messageId, subject } });
+      const original = hub[method].bind(hub);
+      const releases = [];
+      global.__semCalendarLookup = {
+        releases,
+        release() {
+          hub[method] = original;
+          for (const resolve of releases) resolve();
+        }
+      };
+      hub[method] = (...args) => {
+        const result = original(...args);
+        const target = method === 'findFor' ? args[0].id === messageId : args[0] === conversation.id;
+        if (!target) return result;
+        return new Promise((resolve) => releases.push(() => resolve(result)));
+      };
+    }, { method, messageId, subject });
+    await openChat(subject);
+    await expect.poll(() => app.evaluate(() => global.__semCalendarLookup.releases.length)).toBeGreaterThan(0);
+
+    if (close) {
+      await pane().locator('[data-ap="close"]').click();
+      await expect(pane()).toBeHidden();
+    }
+    await win.click('[data-mode="calendar"]');
+    await expect(win.locator('.calendar')).toBeVisible();
+    await app.evaluate(() => global.__semCalendarLookup.release());
+    await win.evaluate(async () => {
+      // Allow the delivered lookup and any follow-up call for its transcript to reach the renderer.
+      await window.mail.call('agentList');
+      await window.mail.call('agentList');
+    });
+    if (!close) {
+      await expect(pane().locator('.bui-rec__title')).toHaveText('Ask Hermes about your calendar');
+      await expect(pane().locator('.bui-pb .bui-entity')).toHaveCount(0);
+    }
+
+    await win.click('[data-mode="mail"]');
+    if (close) await win.keyboard.press('Control+j');
+    await expect(pane().locator('.ap-title')).toHaveText(subject);
+  });
+}

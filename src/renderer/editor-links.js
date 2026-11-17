@@ -15,6 +15,22 @@ const OPENS = /^(https?:|mailto:)/i;
 const GAP = 6;
 const EDGE = 8;
 
+// Puts a bubble or popover el under its anchor at, or above it where the window has no room below; never past the
+// window's edge. The link's bubble, its popover and the image bar (editor-images.js) share it. el is measured at the
+// window's left edge: a box whose buttons wrap is as wide as the room right of it, so the size it has there is the
+// size it keeps where it goes. Measured where it was shown last, it could come out narrower and taller than it is
+// once it moves, and end at the window's edge.
+export function placePopover(el, at) {
+  el.style.left = '0px';
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const below = at.bottom + GAP;
+  const fits = below + h <= window.innerHeight - EDGE;
+  const top = fits || at.top - GAP - h < EDGE ? below : at.top - GAP - h;
+  el.style.left = `${Math.max(EDGE, Math.min(at.left, window.innerWidth - w - EDGE))}px`;
+  el.style.top = `${Math.max(EDGE, Math.min(top, window.innerHeight - h - EDGE))}px`;
+}
+
 // editor: the contenteditable element. editorRange() and restoreRange(range): the editor's selection, from
 // rich-editor.js. onChange(): the editor's own bookkeeping after an edit.
 // Returns { insertLink(), dispose() }; insertLink() opens the popover, as Ctrl+K and the toolbar's link button do.
@@ -83,16 +99,6 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
 
   // ----- placing -----
 
-  // Under the anchor, or above it where the window has no room below; never past the window's edge.
-  const place = (el, at) => {
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const below = at.bottom + GAP;
-    const fits = below + h <= window.innerHeight - EDGE;
-    const top = fits || at.top - GAP - h < EDGE ? below : at.top - GAP - h;
-    el.style.left = `${Math.max(EDGE, Math.min(at.left, window.innerWidth - w - EDGE))}px`;
-    el.style.top = `${Math.max(EDGE, Math.min(top, window.innerHeight - h - EDGE))}px`;
-  };
   // Where the caret or the selection is on screen. A caret on an empty line has no box of its own; its line has.
   const rangeRect = (range) => {
     if (range && editor.contains(range.commonAncestorContainer)) {
@@ -136,7 +142,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     go.setAttribute('aria-label', go.title);
     shown = link;
     if (!bubble.matches(':popover-open')) bubble.showPopover();
-    place(bubble, linkRect(link));
+    placePopover(bubble, linkRect(link));
   };
   // After an edit the interface rests: the link at the caret keeps its bubble closed.
   const hush = () => {
@@ -236,7 +242,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
   listen(document, 'scroll', (e) => {
     if (pop.contains(e.target)) return;
     hideBubble();
-    if (state) place(pop, state.link && state.link.isConnected ? linkRect(state.link) : rangeRect(state.range));
+    if (state) placePopover(pop, state.link && state.link.isConnected ? linkRect(state.link) : rangeRect(state.range));
   }, true);
   listen(window, 'resize', () => {
     hideBubble();
@@ -275,7 +281,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     pop.setAttribute('aria-label', t(target ? 'composer.link.edit' : 'composer.link.title'));
     updateApply();
     pop.showPopover();
-    place(pop, target ? linkRect(target) : rangeRect(range));
+    placePopover(pop, target ? linkRect(target) : rangeRect(range));
     urlInput.focus();
     urlInput.select();
   }

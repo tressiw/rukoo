@@ -62,6 +62,43 @@ test('a closing bracket stays in the link only with its opening one', async () =
   assert.deepEqual(texts('[www.example.com/a]'), ['www.example.com/a']);
 });
 
+test('Markdown emphasis and Chinese or Japanese punctuation after an address stay out of the link', async () => {
+  const { findUrls, typedUrl, linkedHtml } = await load();
+  const texts = (s) => findUrls(s).map((u) => u.text);
+  assert.deepEqual(texts('**https://example.com** and ~~www.example.org~~, *https://a.example/x*.'), ['https://example.com', 'www.example.org', 'https://a.example/x']);
+  assert.deepEqual(texts('詳しくは https://example.com。 见 https://example.org/页面，'), ['https://example.com', 'https://example.org/页面']);
+  assert.equal(linkedHtml('**https://example.com**'), '**<a href="https://example.com">https://example.com</a>**');
+  assert.equal(linkedHtml('***https://example.com***'), '***<a href="https://example.com">https://example.com</a>***');
+  const typed = typedUrl('see **https://example.com**');
+  assert.deepEqual([typed.start, typed.end], [6, 25]);
+  assert.deepEqual(texts('https://example.com/~ https://example.com/* **https://example.com/a/**).'), [
+    'https://example.com/~', 'https://example.com/*', 'https://example.com/a/'
+  ]);
+});
+
+test('an address in brackets is an IPv6 address, or no address', async () => {
+  const { findUrls } = await load();
+  assert.deepEqual(findUrls('https://[evil https://[evil]/x http://[]/ https://[::::]/ https://[::12345]/ https://[a]@example.com'), []);
+  assert.deepEqual(findUrls('https://user@[::::]/ https://user@[::1]/').map((u) => u.text), ['https://user@[::1]/']);
+  assert.deepEqual(found(findUrls('https://[2001:db8::1]/a http://[::ffff:192.0.2.1]')), [
+    ['https://[2001:db8::1]/a', 'https://[2001:db8::1]/a'],
+    ['http://[::ffff:192.0.2.1]', 'http://[::ffff:192.0.2.1]']
+  ]);
+});
+
+test('an address right after a colon is part of another address and gets no link of its own', async () => {
+  const { findUrls } = await load();
+  assert.deepEqual(findUrls('data:www.example.com blob:https://example.com/1 view-source:https://example.com'), []);
+  assert.deepEqual(found(findUrls('<data:text/plain,https://example.com> https://example.org')), [
+    ['https://example.org', 'https://example.org']
+  ]);
+  // A space after the colon, or the full-width colon of Chinese or Japanese text, still leaves the address its own.
+  assert.deepEqual(found(findUrls('Link: https://example.com and 网址：www.example.org')), [
+    ['https://example.com', 'https://example.com'],
+    ['www.example.org', 'https://www.example.org']
+  ]);
+});
+
 test('a clipboard with one address and nothing else is a link for the selection', async () => {
   const { soleUrl } = await load();
   assert.equal(soleUrl('https://rukoo.io/docs'), 'https://rukoo.io/docs');

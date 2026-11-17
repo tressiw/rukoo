@@ -44,6 +44,26 @@ async function launch(size = [1500, 950]) {
 const linkEvents = () => app.evaluate(() => (global.__semLinkEvents = true));
 
 const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
+
+// A window size and zoom the page has taken in before the test goes on. A Linux window manager applies them after
+// setSize() and setZoomFactor() have returned, and Rukoo closes an open menu on every resize event (ui.js). A late one
+// can close the Screen menu while it still says Loading (#313).
+async function resizeTo(width, height, zoom = 1) {
+  await setSize(width, height);
+  await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+  const taken = async () => {
+    const { size, content, zoomFactor } = await app.evaluate(({ BrowserWindow }) => {
+      const x = BrowserWindow.getAllWindows()[0];
+      return { size: x.getSize(), content: x.getContentSize(), zoomFactor: x.webContents.getZoomFactor() };
+    });
+    if (size[0] !== width || size[1] !== height || Math.abs(zoomFactor - zoom) > 0.001) return false;
+    const [w, h] = content;
+    return win.evaluate(([w, h]) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1, [w / zoom, h / zoom]);
+  };
+  await expect.poll(taken).toBe(true);
+  await win.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
 const connected = () => app.evaluate(() => global.__semVoice.connected);
 const isProtected = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()));
 
@@ -395,8 +415,7 @@ for (const [language, theme, zoom] of [['en', 'dark', 0.8], ['en', 'light', 1], 
     await openMeetings();
     await setLanguage(language);
     await setTheme(theme);
-    await setSize(1060, 860);
-    await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+    await resizeTo(1060, 860, zoom);
     const openScreen = () => view().locator('[data-mt="screen"]').click();
     const monitorRow = (m) => menu().locator('button', { hasText: m.name });
     const lastChange = () => voice.commands.filter((c) => c.command === 'screen.set').at(-1)?.args;
@@ -684,6 +703,7 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
       '<div><a href="https://example.com">First<br>Second</a></div>',
       '<div><b><u>First<br><br>Second</u></b></div>',
       '<div><code>First\nSecond</code></div>',
+      '<div>a <code>  </code> b</div>',
       '<h2>First<br>Second</h2>',
       '<ul><li>First<br><br>Second</li><li>Third</li></ul>',
       '<ol><li>First<br><br>Second</li><li>Third</li></ol>',
@@ -712,7 +732,7 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
 });
 
-test('notes link addresses with backticks and backslashes keep them when the notes are read back', async () => {
+test('notes link addresses with backticks and backslashes keep them when the notes are read back', async ({}, testInfo) => {
   const result = await win.evaluate(async () => {
     const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
     const editor = document.createElement('div');
@@ -721,7 +741,11 @@ test('notes link addresses with backticks and backslashes keep them when the not
       ['https://a.example/`x`', 'npm start'],
       ['https://a.example/a\\*b\\_c', 'npm start'],
       ['https://a.example/q?a=``1``&b=2', 'npm start'],
-      ['https://a.example/`x', '']
+      ['https://a.example/`x', ''],
+      // A lone backtick with code after it on the line, and a backslash at the end of the address.
+      ['https://a.example/`x', 'npm start'],
+      ['https://a.example/x\\', 'npm start'],
+      ['https://a.example/x\\', '']
     ];
     const links = cases.map(([href, code]) => {
       editor.innerHTML = `<div>See <a></a> and ${code ? `<code>${code}</code>` : 'more'} after</div>`;
@@ -753,6 +777,20 @@ test('notes link addresses with backticks and backslashes keep them when the not
   expect(result.code).toEqual(['[x](<https://a.example/>)', ['https://b.example/`z`']]);
   expect(result.crossed).toEqual(['<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>', true]);
   expect(result.nul).toEqual([['https://a.example/0', 't']]);
+
+  const id = voiceStarts({ title: 'Release links' });
+  const markdown = 'See [the agenda](<https://example.com/`agenda>) and `npm start`.\nOpen [the archive](<https://example.com/archive\\>).';
+  await expect.poll(() => app.evaluate((_e, id) => Boolean(global.__semVoice.get(id)), id)).toBe(true);
+  await win.evaluate(({ id, markdown }) => window.mail.call('meetingSaveNotes', id, markdown, 0), { id, markdown });
+  await openMeetings();
+  const notes = view().locator('.mt-notes-input');
+  const agenda = notes.getByRole('link', { name: 'the agenda' });
+  await expect(agenda).toHaveAttribute('href', 'https://example.com/`agenda');
+  await expect(notes.getByRole('link', { name: 'the archive' })).toHaveAttribute('href', 'https://example.com/archive\\');
+  await expect(notes.locator('code')).toHaveText('npm start');
+  await agenda.click();
+  await expect(view().locator('.link-bubble .link-go-url')).toHaveText('https://example.com/`agenda');
+  await win.screenshot({ path: testInfo.outputPath('notes-links-after-reopening.png'), animations: 'disabled' });
 });
 
 test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {

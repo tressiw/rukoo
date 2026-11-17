@@ -71,6 +71,20 @@ const subjects = (view) =>
     return engine.listMessages({ scope: id, view }).map((m) => m.subject);
   }, view);
 
+// Clicks a control that closes its own window, such as Send in a compose window, and waits for the close. Send can
+// close the window before Playwright's click call returns; the click then fails with "Target page, context or browser
+// has been closed" although Send ran (#313). The close event is the check, so only that failure is let through.
+async function clickClosing(page, selector) {
+  const closed = page.waitForEvent('close');
+  closed.catch(() => {});
+  try {
+    await page.click(selector);
+  } catch (err) {
+    if (!page.isClosed() && !/has been closed/.test(err.message)) throw err;
+  }
+  await closed;
+}
+
 async function newMessage(page, { to, subject, text }) {
   await page.click('[data-action="compose"]');
   const c = page.locator('.composer');
@@ -178,7 +192,7 @@ test('an email from a compose window comes back in a new compose window, with it
   await popped.press('[data-rinput="to"]', 'Enter');
   await popped.click('.editor');
   await popped.keyboard.type('Here is the proposal.');
-  await Promise.all([popped.waitForEvent('close'), popped.click('[data-c="send"]')]);
+  await clickClosing(popped, '[data-c="send"]');
 
   // The notice is in the main window, which also gets the editor back in a window of its own.
   await expect(notice()).toContainText('Sending email…');
@@ -191,7 +205,7 @@ test('an email from a compose window comes back in a new compose window, with it
   await expect(composer()).toHaveCount(0);
   expect(await waiting()).toBe(0);
 
-  await Promise.all([again.waitForEvent('close'), again.click('[data-c="send"]')]);
+  await clickClosing(again, '[data-c="send"]');
   await sendWaiting();
   await expect(notice()).toContainText('Email sent');
   await expect(item('Fwd: Call on Thursday')).toBeVisible({ timeout: 10000 });

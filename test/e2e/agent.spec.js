@@ -2065,7 +2065,8 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   const shimmer = () => pendingChips().locator('.bui-entity__name').evaluate((el) => ({ name: getComputedStyle(el).animationName, running: el.getAnimations().length }));
   expect((await shimmer()).name).toBe('bui-shimmer-text');
   await win.emulateMedia({ reducedMotion: 'reduce' });
-  // The animation is dropped at the next style update, which can come after the first read.
+  // Polled: reduced motion gives every transition 0.01 ms, and the name's colour change starts one that getAnimations()
+  // lists until the next frame.
   await expect.poll(shimmer).toEqual({ name: 'none', running: 0 });
   await win.emulateMedia({ reducedMotion: null });
   const sendButton = win.locator('.agentpane .bui-pb__send');

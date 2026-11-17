@@ -354,8 +354,10 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-/// A port nothing listens on.
+/// A port nothing listens on: 1, tcpmux, which no system the tests run on serves. A port freed
+/// after binding port 0 could go to a `FakeServer` that another test starts at the same moment,
+/// and the "unreachable" request would reach it (#313). Binding port 0 only hands out ports from
+/// the ephemeral range, never 1.
 pub fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
+    1
 }

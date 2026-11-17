@@ -346,7 +346,11 @@ test('a booked event moved days away is rescheduled, in Rukoo or in Google, and 
   // A week-view drag two days later: the 'changed' event says where the event went.
   const evA = host.calendars.event(host.booking.state().bookings.find((x) => x.id === a.id).eventId);
   await host.calendars.update(evA.id, { accountId: evA.accountId, calendarId: evA.calendarId, title: evA.title, location: evA.location, description: evA.description, allDay: false, start: start + 2 * DAY, end: start + 2 * DAY + 30 * 60000 }, { etag: evA.etag, scope: 'one' });
-  for (let i = 0; i < 100 && row(a.id).version === 1; i++) await pause();
+  // The reconciliation the move starts tells the server twice: reschedule raises the version, handled follows in a
+  // request of its own. Wait for both, then for the job to end, so the reconcile() calls below don't run beside it.
+  const moveHandled = () => row(a.id).version > 1 && row(a.id).handledVersion === row(a.id).version;
+  for (let i = 0; i < 250 && !moveHandled(); i++) await pause();
+  await host.booking.queue;
   assert.deepEqual([row(a.id).status, row(a.id).start, row(a.id).handledVersion], ['confirmed', start + 2 * DAY, row(a.id).version]);
 
   // Moved a week later in Google itself. While the wide read fails, nothing is concluded.

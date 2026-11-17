@@ -914,8 +914,10 @@ export function mountAgentPanel(ctx) {
   // ---------- following the email on screen ----------
 
   function currentEmail() {
-    // In meeting mode the chat is about the meeting on screen, not the email that stays open behind it.
+    // In meeting mode the chat is about the meeting on screen, and in calendar mode about no email: the email that
+    // stays open behind them is off screen.
     if (ctx.meetingMode && ctx.meetingMode()) return null;
+    if (ctx.calendarMode && ctx.calendarMode()) return null;
     const m = S.message;
     return m && m.id && m.id === S.selectedId && !m.error && m.role !== 'drafts' ? m : null;
   }
@@ -933,7 +935,7 @@ export function mountAgentPanel(ctx) {
   });
 
   // turn: the latest request for what the panel shows; a slower one that lost the race does nothing.
-  // lookups: only the searches for the chat of the email on screen.
+  // lookups: automatic chat searches, invalidated whenever the email or meeting context changes.
   let turn = 0;
   let lookups = 0;
   // started: the chats the user started here. A lookup that was out when one started leaves that chat on screen,
@@ -946,6 +948,15 @@ export function mountAgentPanel(ctx) {
   // The meeting on screen in meeting mode: {id, title, eventId}, or null.
   const currentMeeting = () => (ctx.currentMeeting ? ctx.currentMeeting() : null);
 
+  function lookupMatchesView(look) {
+    if (look !== lookups) return false;
+    const key = ctx.meetingMode?.() ? `meeting:${currentMeeting()?.id || ''}` : emailKey(currentEmail());
+    if (key === P.emailKey) return true;
+    // The panel can skip sync while closed. Retry this lookup if it reopens on the same email or meeting.
+    P.emailKey = undefined;
+    return false;
+  }
+
   function sync() {
     const before = P.emailKey;
     const run = ctx.meetingMode && ctx.meetingMode() ? syncMeeting() : syncEmail();
@@ -957,6 +968,7 @@ export function mountAgentPanel(ctx) {
     const m = currentEmail();
     const key = emailKey(m);
     if (key === P.emailKey) return;
+    const look = ++lookups;
     const otherEmail = (m ? m.id : null) !== P.emailId;
     P.emailKey = key;
     P.emailId = m ? m.id : null;
@@ -970,14 +982,11 @@ export function mountAgentPanel(ctx) {
     }
     // Without an email, or one opened from this chat, the conversation on screen stays.
     if (!m || P.keepFor || (P.detached && !otherEmail)) {
-      // A lookup for the email before must not replace the chat that is kept now (a chat being opened
-      // from history keeps going).
-      if (P.keepFor) lookups++;
       if (!P.conv) renderEmpty();
       return refreshComposer();
     }
     const mine = ++turn;
-    const look = ++lookups;
+    const current = () => lookupMatchesView(look);
     const began = started;
     let found = null;
     let related = null;
@@ -986,6 +995,7 @@ export function mountAgentPanel(ctx) {
     } catch (_) {
       found = null;
     }
+    if (mine !== turn || !current()) return;
     // No chat of its own: an earlier email in its thread may have one to continue. The full message has the
     // References header; main has In-Reply-To in its cache.
     if (!(found && found.id)) {
@@ -995,13 +1005,13 @@ export function mountAgentPanel(ctx) {
         related = null;
       }
     }
-    if (mine !== turn || look !== lookups) return;
+    if (mine !== turn || !current()) return;
     // The user started a chat about this email while main was looking: it stays, also over an older chat main found.
     // Without P.conv it is still being created and shows when it is.
     if (started !== began && (!P.conv || (P.conv.message && P.conv.message.id === m.id))) return refreshComposer();
     if (found && found.id) {
       if (P.conv && P.conv.id === found.id) return refreshComposer();
-      return openConversation(found.id);
+      return openConversation(found.id, current);
     }
     P.related = related && related.id ? { ...related, for: m.id } : null;
     if (P.conv && !otherEmail && P.conv.message && P.conv.message.id === m.id) return refreshComposer();
@@ -1016,6 +1026,7 @@ export function mountAgentPanel(ctx) {
     const m = currentMeeting();
     const key = m ? `meeting:${m.id}` : 'meeting:';
     if (key === P.emailKey) return refreshComposer();
+    const look = ++lookups;
     P.emailKey = key;
     P.emailId = null;
     P.keepFor = null;
@@ -1033,7 +1044,7 @@ export function mountAgentPanel(ctx) {
     }
     P.keepMeeting = null;
     const mine = ++turn;
-    const look = ++lookups;
+    const current = () => lookupMatchesView(look);
     const began = started;
     let found = null;
     try {
@@ -1041,26 +1052,28 @@ export function mountAgentPanel(ctx) {
     } catch (_) {
       found = null;
     }
-    if (mine !== turn || look !== lookups) return;
+    if (mine !== turn || !current()) return;
     // As for an email: a chat about this meeting the user started meanwhile stays.
     if (started !== began && (!P.conv || (P.conv.meeting && P.conv.meeting.id === m.id))) return refreshComposer();
     if (found && found.id) {
       if (P.conv && P.conv.id === found.id) return refreshComposer();
-      return openConversation(found.id);
+      return openConversation(found.id, current);
     }
     if (P.conv && P.conv.meeting && P.conv.meeting.id === m.id) return refreshComposer();
     showEmpty();
   }
 
-  async function openConversation(id) {
+  async function openConversation(id, currentContext = null) {
     const mine = ++turn;
+    const current = () => mine === turn && (!currentContext || currentContext());
     let conv = null;
     try {
       conv = await api('agentGet', id);
     } catch (err) {
-      return showError(err);
+      if (current()) showError(err);
+      return;
     }
-    if (mine !== turn || !conv) return;
+    if (!current() || !conv) return;
     showConversation(conv);
   }
 
@@ -1798,6 +1811,7 @@ export function mountAgentPanel(ctx) {
     const name = agentName(id);
     const m = contextEmail();
     const meeting = contextMeeting();
+    const calendar = ctx.calendarMode?.();
     // An email is on screen, but the user left it out: the add chip brings it back.
     const leftOut = !m && P.detached && Boolean(currentEmail());
     const state = stateOf(id);
@@ -1806,18 +1820,21 @@ export function mountAgentPanel(ctx) {
     const blocked = P.unavailable || BLOCKED.has(state);
     // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
     const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
-    const title = blocked ? t('agent.empty.setupTitle', { name }) : meeting ? t('agent.empty.titleMeeting', { name }) : m ? t('agent.empty.title', { name }) : t('agent.empty.titleNoEmail', { name });
+    const titleKey = blocked ? 'setupTitle' : meeting ? 'titleMeeting' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
+    const title = t(`agent.empty.${titleKey}`, { name });
     const body = blocked
       ? t('agent.empty.setupBody', { name })
       : meeting
         ? meetingsOff
           ? t('agent.empty.bodyMeetingOff')
           : t('agent.empty.bodyMeeting')
-        : m
-          ? t('agent.empty.body', { name })
-          : leftOut
-            ? t('agent.empty.bodyLeftOut')
-            : t('agent.empty.bodyNoEmail', { name });
+        : calendar
+          ? t('agent.empty.bodyCalendar')
+          : m
+            ? t('agent.empty.body', { name })
+            : leftOut
+              ? t('agent.empty.bodyLeftOut')
+              : t('agent.empty.bodyNoEmail', { name });
     const card = B.recommendationCard({ eyebrow: name, title, body, actions: [], icon: B.icon('sparkle', 11) }, () => {});
     box.append(elOf(card));
     if (!blocked && meeting) {

@@ -1100,8 +1100,11 @@ class AgentHub extends EventEmitter {
     return this.files.refuse(name, size);
   }
 
+  // The email on screen. The calendar and the meeting view hide the one that stays open in Mail, as get_context does,
+  // so a chat that starts there isn't about it.
   openMessageId() {
-    const id = this.viewState.openMessageId;
+    const { mode, openMessageId: id } = this.viewState;
+    if (mode && mode !== 'mail') return null;
     return id && this.liveMessage(id) ? id : null;
   }
 
