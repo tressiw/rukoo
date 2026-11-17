@@ -39,7 +39,11 @@ export function afterDrag(done) {
   document.addEventListener('mousemove', end, true);
 }
 
-const dateFormat = (ts, options) => new Intl.DateTimeFormat(getLocale(), options).format(new Date(ts));
+// Whether ts is a date to show. An email whose date Rukoo couldn't read shows without one: Intl throws a RangeError
+// for an invalid date, and one thrown while the list is drawn stops every redraw of that list.
+const isDate = (ts) => ts !== null && ts !== undefined && ts !== '' && Number.isFinite(new Date(ts).getTime());
+
+const dateFormat = (ts, options) => (isDate(ts) ? new Intl.DateTimeFormat(getLocale(), options).format(new Date(ts)) : '');
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -55,13 +59,16 @@ export function hhmm(ts) {
 
 // List time: "14:45" today, "5 okt." this year, "05-10-2025" before that.
 export function listTime(ts, now = Date.now()) {
+  if (!isDate(ts)) return '';
   const d = new Date(ts);
   if (startOfDay(ts) === startOfDay(now)) return hhmm(ts);
   if (d.getFullYear() === new Date(now).getFullYear()) return dateFormat(ts, { day: 'numeric', month: 'short' });
   return numericDate(ts);
 }
 
+// No heading for an email without a date; it sits under the heading before it.
 export function groupLabel(ts, now = Date.now()) {
+  if (!isDate(ts)) return '';
   const diff = Math.round((startOfDay(now) - startOfDay(ts)) / 86400000);
   if (diff <= 0) return t('common.dates.today');
   if (diff === 1) return t('common.dates.yesterday');
@@ -72,6 +79,7 @@ export function groupLabel(ts, now = Date.now()) {
 }
 
 export function longDate(ts) {
+  if (!isDate(ts)) return '';
   return `${dateFormat(ts, { day: 'numeric', month: 'long', year: 'numeric' })}  ${hhmm(ts)}`;
 }
 
@@ -80,6 +88,7 @@ export function numericDate(ts) {
 }
 
 export function quoteDate(ts) {
+  if (!isDate(ts)) return '';
   const d = new Date(ts);
   const off = -d.getTimezoneOffset();
   const sign = off >= 0 ? '+' : '-';
@@ -106,6 +115,7 @@ export function formatAddress(a) {
 
 // Reader header: "Vandaag 14:45", "Gisteren 09:12" or "di 6 okt. 2026, 14:45".
 export function readerDate(ts, now = Date.now()) {
+  if (!isDate(ts)) return '';
   const diff = Math.round((startOfDay(now) - startOfDay(ts)) / 86400000);
   if (diff === 0) return `${t('common.dates.today')} ${hhmm(ts)}`;
   if (diff === 1) return `${t('common.dates.yesterday')} ${hhmm(ts)}`;

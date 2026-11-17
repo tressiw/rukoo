@@ -50,6 +50,21 @@ function friendlyError(err, account = null) {
   return msg;
 }
 
+// What went wrong as one word, for the log in the profile (diaglog.js): never the server's own text, which can name
+// the account.
+function errorCode(err) {
+  if (!err) return null;
+  if (err.oauth) return 'oauth';
+  if (authFailed(err)) return 'auth';
+  const msg = `${errorText(err)} ${typeof err.code === 'string' ? err.code : ''}`;
+  if (/ENOTFOUND|EAI_AGAIN/i.test(msg)) return 'host';
+  if (/ECONNREFUSED/i.test(msg)) return 'refused';
+  if (/ETIMEDOUT|timeout/i.test(msg)) return 'timeout';
+  if (/certificate|self.signed|CERT_/i.test(msg)) return 'certificate';
+  if (typeof err.code === 'string' && /^[A-Za-z][A-Za-z0-9_]{1,30}$/.test(err.code)) return err.code;
+  return 'other';
+}
+
 // How many messages in the open folder are unread below uid first, the oldest message of the window a sync fetches;
 // null when the server doesn't say. Only below the window: the engine counts the window's unread mail in its cache,
 // where reading a message counts at once. With ESEARCH the server sends only the count; otherwise imapflow counts the
@@ -105,9 +120,11 @@ async function searchUids(client, criteria, query, { gmail = true } = {}) {
 // what kind of mail each one is (categories/signals.js). tabs: the Gmail tab of each uid, or null when not asked. A
 // message gone between the fetches (moved or deleted meanwhile) is left out.
 async function describe(client, rows, { known = new Map(), signals = false, tabs = null } = {}) {
+  // A cached date that isn't a number is one an unreadable Date header left before Rukoo fell back to INTERNALDATE
+  // (null on disk): such a message is described again, which gives it the date the server received it.
   const cached = (uid) => {
     const prior = known.get(uid);
-    return Boolean(prior) && STORED.every((k) => k in prior);
+    return Boolean(prior) && STORED.every((k) => k in prior) && Number.isFinite(prior.date);
   };
   const fresh = rows.filter((m) => !cached(m.uid)).map((m) => m.uid);
   const details = new Map();
@@ -195,7 +212,8 @@ async function describe(client, rows, { known = new Map(), signals = false, tabs
       to: util.addressFromEnvelope(env.to),
       cc: util.addressFromEnvelope(env.cc),
       replyTo: util.addressFromEnvelope(env.replyTo),
-      date: new Date(env.date || m.internalDate || Date.now()).getTime(),
+      // A Date header imapflow couldn't parse comes as its text: the date the server received the email then.
+      date: util.validTime(env.date, m.internalDate) ?? Date.now(),
       preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
       ...state,
       hasAttachments: util.hasAttachments(m.bodyStructure),
@@ -654,4 +672,4 @@ class ImapAccount {
   }
 }
 
-module.exports = { ImapAccount, friendlyError };
+module.exports = { ImapAccount, friendlyError, errorCode };

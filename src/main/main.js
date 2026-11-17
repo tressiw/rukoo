@@ -44,6 +44,7 @@ const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
 const { MailNotices } = require('./categories/notices');
+const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
@@ -109,6 +110,8 @@ let video = null;
 let account = null;
 let categories = null;
 let mailNotices = null;
+// The log in the profile, data/logs/rukoo.log (diaglog.js): each sync, and what goes wrong in the windows.
+let diag = null;
 let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
@@ -241,6 +244,15 @@ function scheduleSync() {
       calendars.syncAll().catch(() => {});
     }, minutes * 60000);
   }
+}
+
+// The main window coming forward (shown, restored or focused) syncs each account whose last sync started over a
+// minute ago, in the background. With only the timer, the inbox could be a whole interval behind right when the user
+// looks. Not with manual sync (interval 0).
+const RETURN_SYNC_AFTER = 60000;
+function syncOnReturn() {
+  if (!engine || !(Number(engine.settings.syncInterval) > 0)) return;
+  engine.syncStale(RETURN_SYNC_AFTER);
 }
 
 function badgeCount() {
@@ -1704,6 +1716,9 @@ const windowApi = {
     const c = composeWindows.get(sender.id);
     if (c) c.draftId = draftId ? String(draftId) : null;
   },
+  // What went wrong in a window, for the log in the profile: an error nothing caught, or what app.js reports itself,
+  // such as a refresh of the list that failed (src/renderer/diag.js). diag.fromWindow() takes only known fields, capped.
+  logRenderer: (sender, entry) => Boolean(diag && diag.fromWindow(fromMainWindow(sender) ? 'main' : 'compose', plainObject(entry))),
   // What the question about unsaved changes after a close or quit came to: true once the editor has closed.
   unloadAnswer: (sender, closed) => answered(sender.id, closed === true),
   // Closes without asking again; the compose window has already handled unsaved changes.
@@ -1788,7 +1803,10 @@ function createWindow({ hidden = false } = {}) {
   win.on('focus', () => {
     newSinceFocus.clear();
     refreshBadge();
+    syncOnReturn();
   });
+  win.on('show', syncOnReturn);
+  win.on('restore', syncOnReturn);
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
   // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
   win.on('close', (event) => {
@@ -1883,7 +1901,10 @@ app.whenReady().then(() => {
     configPath: path.join(app.getPath('userData'), 'google-oauth.json'),
     openBrowser: (url) => shell.openExternal(url)
   });
-  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google }).init();
+  diag = new DiagLog(path.join(app.getPath('userData'), 'data', 'logs'));
+  diag.info('app', `start ${app.getVersion()} ${process.platform} ${process.arch}`);
+  if (process.env.SEM_HIDDEN) global.__semDiag = diag;
+  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google, log: (level, target, message) => diag.write(level, target, message) }).init();
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   outbox = new Outbox({ send: (payload) => engine.send(payload), sent: (entry) => mailSent(entry.payload, entry.id), failed: waitedMailFailed });

@@ -67,6 +67,10 @@ class Categories extends EventEmitter {
     this.progressTimer = null;
     this.liveTimer = null;
     this.soonUser = false;
+    // A sort is storing categories (sort()), and the end of a burst of records still to say (recordsChanged()).
+    this.running = false;
+    this.recordsTimer = null;
+    this.recordsLater = false;
   }
 
   file() {
@@ -79,7 +83,7 @@ class Categories extends EventEmitter {
     this.engine.categoryOf = (acc, m) => this.of(acc, m);
     this.engine.hiddenCategories = () => this.hiddenFromInbox();
     this.account.on('records', ({ collections }) => {
-      if (collections.some((c) => ['category', 'classification', 'override', 'sender', 'setting'].includes(c))) this.changed();
+      if (collections.some((c) => ['category', 'classification', 'override', 'sender', 'setting'].includes(c))) this.recordsChanged();
       // Categories turned on or off, or one removed, here or on another device: notifications waiting for Jev are
       // decided again (notices.js). Not for each email's category, which comes with every answer.
       if (collections.some((c) => c === 'category' || c === 'setting')) this.emit('reconsider');
@@ -101,8 +105,27 @@ class Categories extends EventEmitter {
   }
 
   changed() {
+    // Whatever a burst of records still had to say, this says it.
+    this.recordsLater = false;
     this.emit('changed');
     this.engine.emit('updated');
+  }
+
+  // Records come in bursts: a sort by the rules stores one per inbox email in a row, a sync brings a page from another
+  // device. Each change redraws the window's sidebar and list, so a burst says so once when it starts and once when it
+  // is over, on the next turn of the event loop. While a sort runs, live() paces it instead, and the sort says so when
+  // it ends.
+  recordsChanged() {
+    if (this.running) return this.live();
+    if (this.recordsTimer) {
+      this.recordsLater = true;
+      return;
+    }
+    this.changed();
+    this.recordsTimer = setImmediate(() => {
+      this.recordsTimer = null;
+      if (this.recordsLater) this.changed();
+    });
   }
 
   // ---- what the categories are ----
@@ -405,12 +428,23 @@ class Categories extends EventEmitter {
       this.followUp = { again: Boolean(this.followUp && this.followUp.again) || again, user: Boolean(this.followUp && this.followUp.user) || user };
       return this.sorting;
     }
+    // This sort does what the one soon() has waiting would: that one isn't needed anymore, and its asker is this one's.
+    clearTimeout(this.timer);
+    this.timer = null;
+    user = user || this.soonUser;
+    this.soonUser = false;
     this.sorting = (async () => {
       let total = 0;
       for (let ask = { again, user }; ask; ask = this.followUp) {
         this.followUp = null;
         if (!this.settings().enabled) break;
-        total += await this.run(ask.again, ask.user);
+        // Set before run() stores anything, which it can do before its first await (recordsChanged()).
+        this.running = true;
+        try {
+          total += await this.run(ask.again, ask.user);
+        } finally {
+          this.running = false;
+        }
       }
       return total;
     })().finally(() => {
@@ -522,6 +556,8 @@ class Categories extends EventEmitter {
     // What a stop or a change of settings left in the queue; the change says so itself ('reconsider').
     this.asking.clear();
     for (const item of forJev) later(item.key);
+    // Records the sort's pace still held back, its own or another device's, show with the end of the sort.
+    const held = Boolean(this.liveTimer);
     clearTimeout(this.liveTimer);
     this.liveTimer = null;
     if (p.running) Object.assign(p, { running: false, sorted, waiting: this.jevWanted() ? waiting + (p.asked - p.answered) : 0, finishedAt: Date.now() });
@@ -533,7 +569,7 @@ class Categories extends EventEmitter {
     // Mail waits for Jev while TypeSafe is busy: make sure a sort follows the wait.
     if (wanted && !key && Date.now() < this.jevBusyUntil && !this.retryTimer) this.retryAfter(this.jevBusyUntil - Date.now() + 1000);
     if (this.redo.size || (this.local.redo && this.local.redo.length)) this.saveLocal();
-    if (sorted) this.changed();
+    if (sorted || held) this.changed();
     this.progressChanged(true);
     return sorted;
   }
@@ -694,6 +730,8 @@ class Categories extends EventEmitter {
     clearTimeout(this.retryTimer);
     clearTimeout(this.progressTimer);
     clearTimeout(this.liveTimer);
+    clearImmediate(this.recordsTimer);
+    this.recordsTimer = null;
   }
 }
 

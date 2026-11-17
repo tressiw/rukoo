@@ -39,6 +39,24 @@ test('demo account syncs folders and inbox', async () => {
   await engine.close();
 });
 
+test('the window coming forward syncs an account whose last sync started over the given time ago, once', async () => {
+  const { engine, acc } = await freshEngine();
+  // It just synced: nothing to do.
+  assert.deepEqual(engine.syncStale(60000), []);
+  // A minute later it syncs, once: while that runs it isn't started again.
+  engine.syncStarts.set(acc.id, Date.now() - 61000);
+  assert.deepEqual(engine.syncStale(60000), [acc.id]);
+  assert.ok(engine.syncs.has(acc.id));
+  assert.deepEqual(engine.syncStale(60000), []);
+  await Promise.all([...engine.syncs.values()]);
+  assert.deepEqual(engine.syncStale(60000), [], 'that sync started just now');
+  // An account that hasn't synced since Rukoo started is due.
+  engine.syncStarts.delete(acc.id);
+  assert.deepEqual(engine.syncStale(60000), [acc.id]);
+  await Promise.all([...engine.syncs.values()]);
+  await engine.close();
+});
+
 // RUK-101: @-mentions in the composer suggest the thread's people first.
 test('thread contacts are the people on the messages a reply refers to and on the replies to them', async () => {
   const { engine, acc } = await freshEngine();

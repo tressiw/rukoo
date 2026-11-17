@@ -118,6 +118,8 @@ Sound for new mail, in Settings → General, plays a short coo when mail comes i
 
 Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
+Rukoo checks your accounts for new mail on the sync schedule in Settings → General, every 5 minutes unless you change it. When you bring its window forward, from the tray, the taskbar or another app, it also checks each account that last synced more than a minute ago, starting with the inbox. With the schedule set to manual, it only syncs when you ask, with `F5` or Sync in the tray menu.
+
 Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, the sound for new mail, a test notification, taskbar badge, sync interval, close and minimize to the tray, the app for email links, spam addresses, VIPs and folder visibility. Settings → Signatures holds the signatures (none by default, plain text or formatted) and the booking link under them. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
@@ -137,6 +139,8 @@ Sender logos are the icons companies publish on their own websites. Rukoo fetche
 Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, Keychain on macOS, and GNOME Keyring or KWallet on Linux. macOS and Linux refuse to save new credentials when secure system storage is unavailable; demo mail still works.
 
 Account data and the message cache live in `%APPDATA%\Rukoo Mail\data` on Windows. [macOS](platforms.md#macos-experimental) and [Linux](platforms.md#linux) use their own profile folders. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; Rukoo moves that folder on first launch.
+
+When new mail doesn't show or syncing seems slow, `data\logs\rukoo.log` in the same folder says what happened. It has one line per account per sync, with when it started, how long it took, how many folders it went through, how many new emails it found and, when it failed, a short error code such as `auth` or `timeout`. It also has the errors in Rukoo's windows that nothing caught, and the times the list couldn't redraw. Accounts appear by the first eight characters of their internal id. The log never holds subjects, addresses, previews or passwords. Past 1 MB it moves to `rukoo.1.log`, replacing the older one, so the two files stay under 2 MB. Send it along when you report a sync problem.
 
 ## Screenshots
 

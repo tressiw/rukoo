@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { simpleParser } = require('mailparser');
-const { ImapAccount, friendlyError } = require('./imap');
+const { ImapAccount, friendlyError, errorCode } = require('./imap');
 const { DemoAccount, DEMO_EMAIL } = require('./demo');
 const { serverDefaults, publicProviders } = require('./providers');
 const { discoverCalDav, serverUrl } = require('./calendar/caldav');
@@ -270,8 +270,9 @@ function addressList(list) {
 }
 
 class Engine extends EventEmitter {
-  // limits: other window sizes than LIMITS, and search: other sizes than SEARCH, for tests.
-  constructor({ dataDir, secrets, google = null, fetchImpl = null, limits = null, search = null }) {
+  // limits: other window sizes than LIMITS, and search: other sizes than SEARCH, for tests. log(level, target,
+  // message): where each sync's line goes (main's diaglog.js); none in tests.
+  constructor({ dataDir, secrets, google = null, fetchImpl = null, limits = null, search = null, log = null }) {
     super();
     this.limits = { ...LIMITS, ...(limits || {}) };
     this.search = { ...SEARCH, ...(search || {}) };
@@ -279,6 +280,7 @@ class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.secrets = secrets || { encrypt: (s) => s, decrypt: (s) => s };
     this.google = google;
+    this.log = log;
     // Short-lived OAuth access tokens per account, kept in memory only.
     this.tokens = new Map();
     // Per account, how many times it signed in again; see grant().
@@ -288,6 +290,8 @@ class Engine extends EventEmitter {
     this.caches = new Map();
     this.sessions = new Map();
     this.syncs = new Map();
+    // When each account's last sync started, by id; see syncStale().
+    this.syncStarts = new Map();
     this.saved = [];
     this.saveTimers = new Map();
     // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
@@ -976,16 +980,62 @@ class Engine extends EventEmitter {
 
   syncAccount(id, extraFolders = []) {
     if (this.syncs.has(id)) return this.syncs.get(id);
-    const job = this.runSync(id, extraFolders).finally(() => {
-      this.syncs.delete(id);
-      this.emit('updated');
-    });
+    const started = Date.now();
+    this.syncStarts.set(id, started);
+    const report = { folders: 0, failed: 0, fresh: 0 };
+    const job = this.runSync(id, extraFolders, report)
+      .then(
+        (fresh) => {
+          this.logSync(id, started, report, null);
+          return fresh;
+        },
+        (err) => {
+          this.logSync(id, started, report, err);
+          throw err;
+        }
+      )
+      .finally(() => {
+        this.syncs.delete(id);
+        this.emit('updated');
+      });
     this.syncs.set(id, job);
     this.emit('updated');
     return job;
   }
 
-  async runSync(id, extraFolders) {
+  // Syncs, in the background, each account whose last sync started at least age ms ago or not at all since Rukoo
+  // started, and that isn't syncing now; for the main window coming forward (main.js syncOnReturn()). The ids it
+  // started. A sync goes through the inbox first, so that is where new mail shows first.
+  syncStale(age) {
+    const now = Date.now();
+    const started = [];
+    for (const a of this.accounts) {
+      if (this.syncs.has(a.id) || now - (this.syncStarts.get(a.id) || 0) < age) continue;
+      this.syncAccount(a.id).catch(() => {});
+      started.push(a.id);
+    }
+    return started;
+  }
+
+  // One line per account per sync for the log in the profile (diaglog.js): when it started, how long it took, how many
+  // folders it went through, how many new emails it found, and what went wrong as a code. The account by the start of
+  // its id, and nothing that names it or its mail.
+  logSync(id, started, report, err) {
+    if (!this.log) return;
+    const acc = this.accounts.find((a) => a.id === id);
+    const kind = !acc ? 'removed' : acc.type === 'demo' ? 'demo' : `${acc.provider || 'imap'}/${acc.auth === 'oauth2' ? 'oauth' : 'password'}`;
+    const parts = [`account=${String(id).slice(0, 8)}`, kind, `start=${new Date(started).toISOString()}`, `ms=${Date.now() - started}`, `folders=${report.folders}`, `new=${report.fresh}`];
+    if (report.failed) parts.push(`failedFolders=${report.failed}`);
+    if (err) parts.push(`error=${errorCode(err)}`);
+    try {
+      this.log(err ? 'warn' : 'info', 'sync', parts.join(' '));
+    } catch (_) {
+      // The log never stops a sync.
+    }
+  }
+
+  // report: filled in for the log (logSync()).
+  async runSync(id, extraFolders, report = {}) {
     const acc = this.account(id);
     const cache = this.caches.get(id);
     const fresh = [];
@@ -1004,6 +1054,7 @@ class Engine extends EventEmitter {
       for (const p of [...extraFolders, ...Object.keys(cache.boxes)]) {
         if (!targets.includes(p) && cache.folders.some((f) => f.path === p)) targets.push(p);
       }
+      report.folders = targets.length;
       for (const p of targets) {
         try {
           fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
@@ -1012,8 +1063,10 @@ class Engine extends EventEmitter {
           // folder would open a new session for it.
           if (this.closed || !this.accounts.includes(acc)) throw err;
           failed = failed || err;
+          report.failed = (report.failed || 0) + 1;
         }
       }
+      report.fresh = fresh.length;
       for (const p of Object.keys(cache.boxes)) {
         if (!cache.folders.some((f) => f.path === p)) delete cache.boxes[p];
       }

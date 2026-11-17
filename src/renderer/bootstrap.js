@@ -1,4 +1,8 @@
 import { setLanguage, t } from './i18n.js';
+import { watchErrors } from './diag.js';
+
+// Errors nothing caught go to the log in the profile, from the start.
+watchErrors();
 
 // Native window controls must have space before the first interface is drawn.
 document.documentElement.dataset.platform = window.mail.platform;
