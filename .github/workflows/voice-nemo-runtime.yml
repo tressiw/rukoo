@@ -170,6 +170,30 @@ jobs:
             --repository "$GITHUB_REPOSITORY"
           cp "$RUNNER_TEMP/self-test.json" "$RUNNER_TEMP/nemo-release/"
           cat "$RUNNER_TEMP/nemo-release/manifest.json"
+      # The self-test above used the unsigned build. These are the bytes that get published: unpack the zip and load
+      # the signed dylibs in the worker, so a signature that breaks loading fails here instead of in a release.
+      - name: Smoke test the packed runtime
+        working-directory: voice
+        run: |
+          assets="$RUNNER_TEMP/speaker-assets"
+          runtime="$RUNNER_TEMP/nemo-packed/nemo_speech"
+          rm -rf "$RUNNER_TEMP/nemo-packed"
+          mkdir -p "$runtime"
+          ditto -x -k "$RUNNER_TEMP/nemo-release/${{ env.RUNTIME_NAME }}-macos-arm64.zip" "$runtime"
+          report="$RUNNER_TEMP/self-test-packed.json"
+          target/release/rukoo-voice-speakers --self-test \
+            --runtime "$runtime" \
+            --model "$assets/nemotron/Nemotron-3-Diarization.q8_0.gguf" \
+            --wav "$assets/ami/ami_en2002d_2132.wav" \
+            --report "$report"
+          node -e '
+            const fs = require("node:fs");
+            const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (report.speakers < 3) throw new Error(`The packed runtime heard ${report.speakers} speakers on the AMI excerpt instead of at least 3`);
+            if (report.frames < 5900) throw new Error(`The packed runtime returned ${report.frames} frames for 60 s instead of about 6,000`);
+            console.log("Packed self-test:", JSON.stringify(report));
+          ' "$report"
+          cp "$report" "$RUNNER_TEMP/nemo-release/"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.RUNTIME_NAME }}-macos-arm64
