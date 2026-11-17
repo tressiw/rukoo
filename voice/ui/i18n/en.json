@@ -1472,7 +1472,11 @@
   },
   "settings.sync.unlocking": {
     "message": "Waiting for the keychain. If macOS asks whether Voice may use it, choose Always Allow.",
-    "description": "Settings > Storage: status under the sync switch while Voice waits for macOS to open its encryption key, usually for the answer to the keychain dialog. 'Always Allow' is the button in macOS's dialog. voice/ui/settings.js (syncStatus)."
+    "description": "Settings > Storage: status under the sync switch while Voice waits for macOS to open its encryption key, usually for the answer to the keychain dialog. 'Always Allow' is the button in macOS's dialog. This is the macOS text; other platforms show settings.sync.unlockingSystem. voice/ui/settings.js (syncStatus)."
+  },
+  "settings.sync.unlockingSystem": {
+    "message": "Waiting for this computer to unlock the encryption key.",
+    "description": "Settings > Storage: status under the sync switch while Voice waits for a system other than macOS to open its encryption key, which Windows does through DPAPI without asking. The macOS text is settings.sync.unlocking. voice/ui/settings.js (syncStatus)."
   },
   "settings.sync.keyNotSaved": {
     "message": "You haven't saved it yet.",

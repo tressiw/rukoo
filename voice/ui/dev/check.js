@@ -1014,7 +1014,7 @@ check('a refused keychain offers Try again, waits for the keychain, then is up t
     ['en', /didn't let Voice open its encryption key/, /Waiting for the keychain/],
     ['nl', /liet Voice de encryptiesleutel/, /Wacht op de sleutelhanger/]
   ]) {
-    await open(`settings.html?mock=1&lang=${lang}&page=storage&sync=key-denied`);
+    await open(`settings.html?mock=1&lang=${lang}&page=storage&platform=macos&sync=key-denied`);
     const section = page.locator('[data-section="sync"]');
     assert.match(await section.innerText(), denied);
     // The key is fine, so nothing offers to replace it here and Show key waits.
@@ -1025,6 +1025,22 @@ check('a refused keychain offers Try again, waits for the keychain, then is up t
     await page.waitForSelector('[data-section="sync"] [data-a="sync-key-retry"]', { state: 'detached' });
     await page.waitForFunction(() => !document.querySelector('[data-a="sync-key-show"]').disabled, null, { timeout: 4000 });
   }
+});
+
+check('waiting for the key names the keychain on a Mac and nothing of macOS elsewhere', async ({ open, page }) => {
+  const section = page.locator('[data-section="sync"]');
+  // A Mac waits for its keychain dialog, so its text says so.
+  await open('settings.html?mock=1&lang=en&page=storage&platform=macos&sync=unlocking');
+  assert.match(await section.innerText(), /Waiting for the keychain\. If macOS asks whether Voice may use it, choose Always Allow\./);
+  // Windows hands the key over through DPAPI without asking: the same state says nothing of a keychain.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=unlocking');
+  const english = await section.innerText();
+  assert.match(english, /Waiting for this computer to unlock the encryption key\./);
+  assert.doesNotMatch(english, /macOS|keychain/i);
+  await open('settings.html?mock=1&lang=nl&page=storage&sync=unlocking');
+  const dutch = await section.innerText();
+  assert.match(dutch, /Wacht tot deze computer de encryptiesleutel ontgrendelt\./);
+  assert.doesNotMatch(dutch, /macOS|sleutelhanger/i);
 });
 
 check('the bucket retention saves from its segmented control', async ({ open, page, mockState }) => {
