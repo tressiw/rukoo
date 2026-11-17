@@ -9216,7 +9216,8 @@ body.meeting-mode .titlebar-search {
 .mt-line::after {
   content: '';
   flex: 1;
-  min-width: 16px;
+  /* No minimum: beside a mark that wraps, a 16px stub would hang mid-sentence. */
+  min-width: 0;
   height: 1px;
   background: var(--border);
 }

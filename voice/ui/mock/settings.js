@@ -15,9 +15,9 @@
 //   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
 //   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
 //   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
-//   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the keychain dialog),
-//   restore (two meetings to restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
-//   "shared".
+//   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the system to open the
+//   key, the keychain dialog on macOS), restore (two meetings to restore), restore-failed (a restore that stopped).
+//   1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
 //   features=<comma list>: the features this Voice shows (screen, speakers, sync); later=1 turns on all of them.

@@ -385,6 +385,7 @@
   "settings.sync.keyUnreadable": "Voice kan de encryptiesleutel op deze computer niet openen. Gebruik je bewaarde sleutel.",
   "settings.sync.keyDenied": "macOS liet Voice de encryptiesleutel in de sleutelhanger niet openen. Kies Opnieuw proberen en daarna Sta altijd toe als macOS het vraagt.",
   "settings.sync.unlocking": "Wacht op de sleutelhanger. Als macOS vraagt of Voice hem mag gebruiken, kies dan Sta altijd toe.",
+  "settings.sync.unlockingSystem": "Wacht tot deze computer de encryptiesleutel ontgrendelt.",
   "settings.sync.keyNotSaved": "Je hebt hem nog niet bewaard.",
   "settings.sync.keySaved": "Bewaard. Sleutel {id}",
   "settings.sync.keyShow": "Sleutel tonen",

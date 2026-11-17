@@ -1011,7 +1011,9 @@ function syncStatus() {
         break;
       }
       case 'unlocking':
-        parts.push(status('busy', t('settings.sync.unlocking')), waiting());
+        // A Mac waits for the keychain dialog. Windows hands the key over through DPAPI and asks nothing, so its
+        // text names neither the keychain nor macOS.
+        parts.push(status('busy', t(macos() ? 'settings.sync.unlocking' : 'settings.sync.unlockingSystem')), waiting());
         break;
       case 'key':
         // macOS refused the keychain item: the key is fine, so the way out is to allow Voice, not to enter the key.
@@ -1728,7 +1730,7 @@ async function act(action, button) {
     case 'sync-key-use':
       return keyFlow('use');
     case 'sync-key-retry':
-      // The app reads the key again on its own thread; sync.state says unlocking until macOS answers.
+      // The app reads the key again on its own thread; sync.state says unlocking until the system hands it over.
       button.disabled = true;
       try {
         await invoke('settings_sync_key', { action: 'retry' });
