@@ -2,8 +2,8 @@
 //! Accessibility API, the foreground app and the physical keyboard.
 //!
 //! Posting keys into another app and reading its accessibility objects need
-//! the Accessibility grant (Privacy & Security › Accessibility). Voice checks
-//! it with `AXIsProcessTrusted`, which never prompts, and returns
+//! the Accessibility grant (Privacy & Security › Device Control and Data
+//! Access on macOS 27, Accessibility before). Voice checks it with `AXIsProcessTrusted`, which never prompts, and returns
 //! [`InputError::Accessibility`], whose message says what to switch on, rather
 //! than failing silently. [`prompt_accessibility`] shows macOS's own dialog;
 //! the engine calls it once in a run, before it refuses to record. Reading the
