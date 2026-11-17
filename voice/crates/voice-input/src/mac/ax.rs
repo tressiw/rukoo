@@ -176,7 +176,10 @@ mod tests {
     #[test]
     fn the_missing_permission_says_what_to_switch_on() {
         let message = InputError::Accessibility.to_string();
-        assert!(message.contains("Accessibility"), "{message}");
+        assert!(
+            message.contains("Device Control and Data Access"),
+            "{message}"
+        );
         assert!(message.contains("Privacy & Security"), "{message}");
     }
 

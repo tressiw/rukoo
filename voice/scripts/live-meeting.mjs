@@ -539,11 +539,12 @@ function build() {
   if (out.status !== 0) throw new Error('cargo build failed');
 }
 
-// The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
-// names a published archive (the script skips it before that).
-// On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS the same
-// folder comes from tmp/voice-assets/speaker-assets, or from voice/scripts/speaker-assets.mjs once that script exists
-// (the runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
+// The AMI excerpt and the model, checked against their pins.
+// On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS this fetches
+// the AMI excerpt and Nemotron; the runtime comes from --nemo-dir or tmp/voice-assets/nemo-arm64/nemo_speech, a local
+// arm64 build. Once voice/nemo-runtime/manifest.json names a published archive,
+// `node voice/scripts/speaker-assets.mjs --out tmp/voice-assets/speaker-assets --runtime` fetches it into
+// <out>/nemo_speech, where the fallback below finds it.
 function assets() {
   if (WIN) {
     const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {

@@ -138,9 +138,15 @@ jobs:
 
   # The macOS package is ad-hoc signed with hardened runtime and not notarized, as Rukoo Mail's Mac packages are, so
   # the first launch needs Open Anyway in Privacy & Security. voice/scripts/package-macos.mjs makes and checks the app,
-  # the DMG with hdiutil (not Tauri's Finder-driven DMG step) and the zip. It needs a NeMo runtime folder; until the
-  # macOS runtime is published, this job builds one with voice/nemo-runtime/build-macos.sh on the tagged commit and
-  # stops when that script is missing, rather than shipping a package without speaker labels.
+  # the DMG with hdiutil (not Tauri's Finder-driven DMG step) and the zip.
+  #
+  # The NeMo runtime comes from the manifest's pinned archive once voice/nemo-runtime/manifest.json names one:
+  # package-macos.mjs downloads it, checks the archive and every file's hash, and ships it, so the app's runtime matches
+  # the pins voice-core checks. A tag whose manifest names none builds the runtime from source on that commit, which is
+  # how a release works before the runtime is published. Such a build's dylib hashes are not the manifest's, because a
+  # build's path and signature end up in its bytes, and an unpublished manifest pins no macOS files at all: Voice in
+  # that package reports speaker labels unavailable, which is the behaviour before this job learned the archive path.
+  # The source build is not a way to publish a runtime; pack-macos.mjs does that (voice/nemo-runtime/README.md).
   release-macos:
     runs-on: macos-15
     timeout-minutes: 60
@@ -194,10 +200,26 @@ jobs:
 
       - run: rustup show active-toolchain
 
-      - name: Build the NeMo runtime
+      - name: Look for a published macOS runtime
+        id: nemo
+        run: |
+          published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.targets && m.targets["macos-aarch64"] && m.targets["macos-aarch64"].archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest.json")
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+          if [[ "$published" == true ]]; then
+            echo "voice/nemo-runtime/manifest.json names a macOS archive; package-macos.mjs downloads and checks it."
+          else
+            echo "voice/nemo-runtime/manifest.json names no macOS archive; this tag builds the runtime from source."
+            echo "That build's hashes are not the manifest's, so this package reports speaker labels unavailable."
+          fi
+
+      # Only for a tag whose manifest pins no macOS archive, so a release works before the runtime is published. This
+      # build is for the package alone: it cannot become the published runtime, whose hashes the manifest pins
+      # (pack-macos.mjs and voice/nemo-runtime/README.md do that).
+      - name: Build the NeMo runtime from source
+        if: steps.nemo.outputs.published != 'true'
         run: |
           if [[ ! -f voice/nemo-runtime/build-macos.sh ]]; then
-            echo "::error::voice/nemo-runtime/build-macos.sh is missing on $RELEASE_TAG, so this tag cannot build the arm64 NeMo runtime. A macOS package ships speaker labels; publish the runtime or add the script first."
+            echo "::error::voice/nemo-runtime/build-macos.sh is missing on $RELEASE_TAG, so this tag can neither fetch nor build the arm64 NeMo runtime. A macOS package ships speaker labels; publish the runtime or add the script first."
             exit 1
           fi
           bash voice/nemo-runtime/build-macos.sh --out "$NEMO_OUT"
@@ -208,9 +230,15 @@ jobs:
 
       # Builds the five release programs and Rukoo Voice.app, adds the runtime as Contents/Resources/nemo_speech,
       # signs inside out ad-hoc with hardened runtime, checks the Info.plist keys, entitlements, imports and minimum
-      # system version, and writes the DMG, the zip and SHA256SUMS.txt.
+      # system version, and writes the DMG, the zip and SHA256SUMS.txt. With a published runtime it downloads and checks
+      # the pinned archive; from source it ships the folder just built.
       - name: Build, sign and check the macOS package
-        run: node voice/scripts/package-macos.mjs --nemo-dir "$NEMO_OUT"
+        run: |
+          if [[ "${{ steps.nemo.outputs.published }}" == "true" ]]; then
+            node voice/scripts/package-macos.mjs
+          else
+            node voice/scripts/package-macos.mjs --nemo-dir "$NEMO_OUT"
+          fi
 
       # The Windows job attaches its own SHA256SUMS.txt, so the Mac checksums get a platform name instead of
       # replacing them.
