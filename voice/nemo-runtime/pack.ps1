@@ -10,8 +10,8 @@ size and SHA-256 and every file's hash), and notes.md, the release notes with th
 every hash. After the zip is published as the release asset, that manifest.json replaces
 voice/nemo-runtime/manifest.json (README.md, "Publishing").
 
-It packs the Windows runtime. A macOS runtime is built by build-macos.sh and needs its own packing step before it can be
-published; README.md says what that step has to write.
+It packs the Windows runtime. A macOS runtime is built by build-macos.sh and packed by pack-macos.mjs, which signs its
+dylibs and fills in the macos-aarch64 entry; this script refuses a folder whose runtime.json names another target.
 
 .PARAMETER Runtime
 The runtime folder build.ps1 wrote.
@@ -59,7 +59,7 @@ $built = Get-Content -LiteralPath $runtimeJson -Raw | ConvertFrom-Json
 $target = 'windows-x86_64'
 if ($built.PSObject.Properties['target'] -and $built.target) { $target = $built.target }
 if ($target -ne 'windows-x86_64') {
-  throw "$Runtime holds the $target runtime. This script packs the Windows one; voice/nemo-runtime/README.md says what a macOS release needs."
+  throw "$Runtime holds the $target runtime. This script packs the Windows one; use pack-macos.mjs for a macOS folder (voice/nemo-runtime/README.md)."
 }
 if ($built.name -ne $pins.name -or $built.commit -ne $pins.commit) {
   throw "$Runtime holds $($built.name) at $($built.commit), not $($pins.name) at $($pins.commit)"
