@@ -164,7 +164,7 @@ fn a_call_of_exact_zeros_is_reported_while_another_app_plays() {
     assert!(of_kind(&lines, "sound").is_empty());
 }
 
-/// Spike S2 saw a `segment_end` 418 ms before the next segment's start, after a crash and resume,
+/// A macOS run saw a `segment_end` 418 ms before the next segment's start, after a crash and resume,
 /// where other boundaries share the millisecond. The timeline does that when a device delivers
 /// less audio than the clock says passed, by more than 100 ms but less than the 0.5 s after which
 /// a call track is padded: the segment holds its 30 s of samples, and the next one starts where

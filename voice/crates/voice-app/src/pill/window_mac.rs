@@ -1,5 +1,5 @@
 //! macOS: the pill as a window above other apps, a full-screen app in its own Space included, that
-//! never takes focus (spike S4). Everything here runs on the main thread, which owns the windows; a
+//! never takes focus. Everything here runs on the main thread, which owns the windows; a
 //! call from another thread finds no `MainThreadMarker` and does nothing.
 //!
 //! tao's `set_visible(true)` and so tauri's `show` are `makeKeyAndOrderFront`, which would activate
