@@ -98,7 +98,7 @@ fn accessibility_message() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         "Voice isn't allowed to type into other apps. Switch Voice on under \
-         Privacy & Security › Accessibility in System Settings, then try again."
+         Privacy & Security › Device Control and Data Access in System Settings, then try again."
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -349,7 +349,7 @@ mod tests {
         assert!(!is_key_down(Key::Pause));
         // The reason a Mac without the grant gets says what to switch on.
         let message = InputError::Accessibility.to_string();
-        assert!(message.contains("Accessibility"), "{message}");
+        assert!(message.contains("Device Control and Data Access"), "{message}");
         assert!(message.contains("Privacy & Security"), "{message}");
     }
 }
