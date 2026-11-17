@@ -2096,8 +2096,12 @@ async function standardRun(voice, offsets) {
       check('screen.json is gone after the stop', !fs.existsSync(path.join(meetingDir(id), 'screen', 'screen.json')));
       report.screen.journal = summarizeJournal(j);
       if (ARGS.screen === 'video') report.screen.videos = checkVideos(id, 'the meeting from Rukoo');
-    } else {
+    } else if (ARGS.realScreen) {
       check('a meeting without the screen has no screen folder', !fs.existsSync(path.join(meetingDir(id), 'screen')));
+    } else {
+      // The mode switches above recorded the synthetic screen for a while, so a meeting that started with the screen
+      // off has a screen folder too; what must hold is that the screen process closed it.
+      check('screen.json is gone after the stop', !fs.existsSync(path.join(meetingDir(id), 'screen', 'screen.json')));
     }
     const unprotected = await until('protection to end', async () => (await rukoo.protectedWindows()).every((p) => !p), 15000);
     check("Rukoo's windows are capturable again after the meeting", unprotected);
