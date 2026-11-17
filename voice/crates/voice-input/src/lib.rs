@@ -349,7 +349,10 @@ mod tests {
         assert!(!is_key_down(Key::Pause));
         // The reason a Mac without the grant gets says what to switch on.
         let message = InputError::Accessibility.to_string();
-        assert!(message.contains("Device Control and Data Access"), "{message}");
+        assert!(
+            message.contains("Device Control and Data Access"),
+            "{message}"
+        );
         assert!(message.contains("Privacy & Security"), "{message}");
     }
 }
