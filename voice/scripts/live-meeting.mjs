@@ -19,12 +19,17 @@
 // run from there: debug builds unless --release is given, release builds for --measure=screen. Rukoo's MCP server
 // listens on port 47810, not the 47800 an installed Rukoo uses.
 //
-// On macOS the default run is --screen off, because the macOS screen process doesn't record yet: --screen frames or
-// video, --real-screen, --choose-monitor, --visible-rukoo, --measure and --sync refuse with a message that says what
-// they would need. The speech comes from `say` with two installed English voices (the SAPI path stays on Windows). The
-// screen process, window-protection, WebView2 capture and video checks are skipped, each with a line in the report that
-// says why. --speakers is decided by Voice: when its Settings > Speaker labels reports reason "platform" the run
-// refuses with that message, and on a build where the macOS speaker worker exists it runs with --nemo-dir (or
+// On macOS --screen frames or video records the same synthetic screen as on Windows: the screen process draws its own
+// slides (RUKOO_VOICE_TEST_SCREEN) and VideoToolbox and Vision turn them into video and frame text, so nothing of the
+// desktop is captured and no Screen Recording grant is needed. A run without --screen keeps the macOS default of
+// --screen off (frames on Windows). --real-screen, --choose-monitor and --visible-rukoo refuse with a message that says
+// what they would need: the real screen needs the Screen Recording grant, which asks the person at the Mac, and this
+// script finds the displays and the foreground window with PowerShell and Win32. --measure refuses because it uses
+// measure.ps1 and the Windows process counters. --sync runs on macOS too, with Voice's keys in the login keychain. The
+// speech comes from `say` with two installed English voices (the SAPI path stays on Windows). Rukoo's window protection
+// is read from Electron's isContentProtected, and Voice's pill and Settings are captured through WKWebView, both as on
+// Windows. --speakers is decided by Voice: when its Settings > Speaker labels reports reason "platform" the run refuses
+// with that message, and on a build where the macOS speaker worker exists it runs with --nemo-dir (or
 // tmp/voice-assets/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from tmp/voice-assets/speaker-assets.
 // A run without a model or a provider key still reports that as its one failed prerequisite and skips the passage
 // checks: the script seeds a model but never downloads one and never uses a key.
@@ -44,8 +49,8 @@
 // meeting started from Voice shows up in Rukoo with Voice's default screen mode. The report is
 // tmp\live\<time>\report.json: counts, timings and which demo strings matched, never the text read from a frame.
 //
-// The screen. --screen sets Voice's default (meetings_screen in the dev config.json, default frames); the meeting
-// started from Rukoo uses it, and one more short meeting from Rukoo asks for video explicitly. By default the screen
+// The screen. --screen sets Voice's default (meetings_screen in the dev config.json: frames, or off on macOS); the
+// meeting started from Rukoo uses it, and one more short meeting from Rukoo asks for video explicitly. By default the screen
 // process draws numbered slides ("Slide 1", "Slide 2" ...) itself (RUKOO_VOICE_TEST_SCREEN) and captures nothing of
 // the desktop. --real-screen captures the real displays: a second Electron app puts a demo slide window on one display
 // and an always-on-top demo cover on every other, RUKOO_VOICE_TEST_MONITOR pins the slide display, and a run whose
@@ -136,16 +141,15 @@ const REASONS = ['cpu', 'runtime', 'model'];
 const SCREENS = ['off', 'frames', 'video'];
 const WIN = process.platform === 'win32';
 const MAC = process.platform === 'darwin';
-// macOS has no .exe suffix, and the screen recorder doesn't record there yet: the default run keeps it off.
+// macOS has no .exe suffix. A plain macOS run keeps the screen off, as Voice's Mac default; --screen frames or video
+// records the synthetic screen there. Windows keeps frames as its default.
 const EXE_SUFFIX = WIN ? '.exe' : '';
 const DEFAULT_SCREEN = MAC ? 'off' : 'frames';
 
-// Why a flag that needs the screen refuses on macOS, and why the checks that need a screen (or a capture to protect
-// Rukoo from) are skipped there.
-const SCREEN_NEEDS = 'the screen process does not record on macOS yet (voice/crates/voice-screen exits with "needs Windows"; the macOS screen recorder is a later step), so the live run needs --screen off';
-const SCREEN_SKIP = 'the macOS screen process does not record yet (the screen recorder is a later step), so this run has no screen to record, switch or inspect';
-const PROTECTION_SKIP = 'window protection belongs to the Windows screen-capture checks; the macOS screen recorder is not in this build, so there is no capture to hide Rukoo from';
-const CAPTURE_SKIP = 'WebView2 captures are Windows-only; the macOS WKWebView capture is a later step, so only Rukoo\'s own window is captured';
+// Why the flags that need the real screen refuse on macOS: ScreenCaptureKit's real screen needs the Screen Recording
+// grant, which asks the person at the Mac, and this script finds the displays, the monitor ids and the foreground
+// window with PowerShell and Win32.
+const REAL_SCREEN_NEEDS = 'the real screen on macOS needs the Screen Recording grant, which only the person at the Mac can give, and this script finds the displays, the monitor ids (\\\\.\\DISPLAYn) and the foreground window with PowerShell and Win32; --screen frames or video record the synthetic screen, which needs neither';
 
 // The shared folder under this checkout's ignored tmp/: the downloaded models, the speaker runtime and the speaker
 // assets. Each run's data folder is seeded from it, so a fresh run doesn't download 487 MB or 100 MB again. --models
@@ -172,21 +176,29 @@ const SPEAKER_NEEDS =
 
 class Refusal extends Error {}
 
+const USAGE = `node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
+                                       [--choose-monitor=<\\\\.\\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
+                                       [--models <dir>] [--nemo-dir <dir>] [--sync] [--remote-fetch=<ssh target>]
+                                       [--real-audio] [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>] | --measure=sync]
+                                       [--help]
+
+--screen sets Voice's default screen mode: frames on Windows, off on macOS. --screen frames or video records the
+synthetic screen on both platforms. On macOS --real-screen, --choose-monitor, --visible-rukoo and --measure are
+refused; --sync runs there too. The header of this file describes every option.`;
+
 function refuseOnMac(out) {
   if (!MAC) return;
   const no = [];
-  if (out.screenGiven && out.screen !== 'off') no.push(`--screen ${out.screen}: ${SCREEN_NEEDS}`);
-  if (out.realScreen) no.push(`--real-screen: ${SCREEN_NEEDS}`);
-  if (out.chooseMonitor) no.push(`--choose-monitor: ${SCREEN_NEEDS}`);
-  if (out.visibleRukoo) no.push(`--visible-rukoo: ${SCREEN_NEEDS}`);
+  if (out.realScreen) no.push(`--real-screen: ${REAL_SCREEN_NEEDS}`);
+  if (out.chooseMonitor) no.push(`--choose-monitor: ${REAL_SCREEN_NEEDS}`);
+  if (out.visibleRukoo) no.push(`--visible-rukoo: ${REAL_SCREEN_NEEDS}`);
   if (out.measure) no.push(`--measure=${out.measure}: the measurements use voice/scripts/measure.ps1, the screen's own timings and the speaker worker, which are Windows-only`);
   if (out.realAudio && out.speakers !== null) no.push('--real-audio with --speakers: the speaker checks expect the AMI excerpt in the call alone, and the microphone would hear it too');
-  if (out.sync) no.push("--sync: bucket sync's keys need the macOS Keychain protector (voice-sync/src/protect/keychain.rs) in this build, and Voice reports sync as unavailable without it; run without --sync");
   if (no.length) throw new Refusal(`The live run refuses these flags on macOS for now:\n  ${no.join('\n  ')}`);
 }
 
 function parseArgs(argv) {
-  const out = { realAudio: false, skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
+  const out = { realAudio: false, skipBuild: false, release: false, screen: DEFAULT_SCREEN, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -194,6 +206,11 @@ function parseArgs(argv) {
     const value = eq > 0 ? arg.slice(eq + 1) : null;
     const next = () => value ?? argv[++i];
     switch (key) {
+      case '--help':
+      case '-h':
+        console.log(USAGE);
+        process.exit(0);
+        break;
       case '--skip-build':
         out.skipBuild = true;
         break;
@@ -218,7 +235,6 @@ function parseArgs(argv) {
         break;
       case '--screen':
         out.screen = next();
-        out.screenGiven = true;
         if (!SCREENS.includes(out.screen)) throw new Error(`--screen takes ${SCREENS.join(', ')}`);
         break;
       case '--real-screen':
@@ -1707,8 +1723,8 @@ function inspect(file) {
   }
 }
 
-// Every video file of a meeting: complete, read to the end by Media Foundation, and its fragments 1.0 to 2.0 s long
-// except the last.
+// Every video file of a meeting: complete, read to the end (by Media Foundation on Windows, by the box walker on
+// macOS), and its fragments 1.0 to 2.0 s long except the last.
 function checkVideos(id, label) {
   const ends = journal(id).filter((l) => l.kind === 'video');
   const files = ends.map((v) => ({ seq: v.seq, file: path.join(meetingDir(id), v.file), width: v.width, height: v.height, encoder: v.encoder, hardware: v.hardware }));
@@ -1800,14 +1816,9 @@ async function pair(monitor) {
     return s.settings.rukoo.state === 'connected' && s.settings.rukoo;
   }, 15000);
   check('Settings > Rukoo shows the connected client from its hello', settled.clientVersion && settled.protocol === 2, settled);
-  if (MAC) {
-    report.screen.capabilities = null;
-    skip('Voice found its screen process and can record the screen', 'the macOS screen process does not record yet (it exits with "needs Windows"), so Voice reports no screen capability and the run keeps --screen off');
-  } else {
-    const caps = await until('the screen probe', async () => (await hook('status')).settings.screen, 30000);
-    report.screen.capabilities = caps;
-    check('Voice found its screen process and can record the screen', caps.available === true, caps);
-  }
+  const caps = await until('the screen probe', async () => (await hook('status')).settings.screen, 30000);
+  report.screen.capabilities = caps;
+  check('Voice found its screen process and can record the screen', caps.available === true, caps);
   const def = await until("Voice's default screen mode in Rukoo", async () => (await rukoo.state()).screenDefault === ARGS.screen, 15000).catch(() => false);
   check("Rukoo knows Voice's default screen mode from status", def, { expected: ARGS.screen });
   return voice;
@@ -1918,12 +1929,8 @@ async function standardRun(voice, offsets) {
   const stopSlides = offsets ? scheduleSlides(id, offsets) : () => {};
   try {
     await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === id, 15000);
-    if (MAC) {
-      skip("Rukoo's windows are protected from capture while it records", PROTECTION_SKIP);
-    } else {
-      const shielded = await rukoo.protectedWindows();
-      check("Rukoo's windows are protected from capture while it records", shielded.length > 0 && shielded.every(Boolean), shielded);
-    }
+    const shielded = await rukoo.protectedWindows();
+    check("Rukoo's windows are protected from capture while it records", shielded.length > 0 && shielded.every(Boolean), shielded);
     const status = await hook('status');
     const pill = status.pill;
     check('the pill shows the recording', pill.visible && pill.phase === 'meeting' && pill.meeting?.state === 'recording', { phase: pill.phase, meeting: pill.meeting });
@@ -1940,17 +1947,14 @@ async function standardRun(voice, offsets) {
       await checkFrames(id, { realOffsets: ARGS.realScreen ? offsets : null });
     }
 
-    if (MAC) {
-      check('the initial screen mode remains historical', (await rukoo.get(id)).meeting.initialScreen === ARGS.screen, { screen: ARGS.screen });
-      skip('the pill enables frames and Rukoo receives its timestamped mode mark', SCREEN_SKIP);
-      skip('windows are protected before enabled capture', PROTECTION_SKIP);
-      skip('screen mode changes keep the same audio recorder', SCREEN_SKIP);
-    } else if (!ARGS.realScreen) {
+    if (!ARGS.realScreen) {
       const recorderPid = recorderOf(id).pid;
       await rukoo.setScreen(id, 'off');
       await until('notifications released with screen Off', () => app.evaluate(() => !global.__semVoice.screenRecording()), 5000);
       await hook('pill_screen_set', { meeting: id, mode: 'frames' });
-      const enabled = await until('a screen mode mark from the pill', async () => (await rukoo.get(id)).marks?.some((k) => k.kind === 'screen_mode' && k.label === 'frames'), 15000);
+      // A Mac's local speech worker loads the seeded Orukeet on the meeting's first window, and the pipeline that
+      // writes the screen marks waits for it; give that load its time so the check reads the mark rather than the load.
+      const enabled = await until('a screen mode mark from the pill', async () => (await rukoo.get(id)).marks?.some((k) => k.kind === 'screen_mode' && k.label === 'frames'), MAC ? 60000 : 15000);
       check('the pill enables frames and Rukoo receives its timestamped mode mark', enabled);
       check('windows are protected before enabled capture', (await rukoo.protectedWindows()).every(Boolean));
       await rukoo.setScreen(id, 'video');
@@ -1986,21 +1990,16 @@ async function standardRun(voice, offsets) {
     // nothing.
     if (SYNC) outage = await syncWhileLive(id, t0);
 
-    // Captures while it records: Rukoo's meeting view, the pill and Settings > Rukoo.
-    if (!ARGS.realScreen && !MAC) {
+    // Captures while it records: Rukoo's meeting view, the pill and Settings > Rukoo. Voice's own windows are captured
+    // from WebView2 on Windows and from WKWebView on macOS. Without a transcriber there are no passages to wait for,
+    // only the meeting view.
+    if (!ARGS.realScreen) {
       await win.keyboard.press('Control+3');
-      await win.locator('.meeting .mt-transcript .mt-passage').first().waitFor({ timeout: 20000 });
+      await win.locator(TRANSCRIPT.ready ? '.meeting .mt-transcript .mt-passage' : '.meeting').first().waitFor({ timeout: 20000 });
       await sleep(1000);
       await captureRukoo(path.join(SHOTS, 'rukoo-meeting-live.png'));
       const shots = await hook('capture', { dir: SHOTS, page: 'rukoo' }, 90000);
-      check('Voice captured its pill and Settings > Rukoo from WebView2', !shots.pill.error && !shots.settings.error, shots);
-    } else if (MAC) {
-      // The meeting view as Rukoo paints it; Voice's own pill and Settings captures come from WebView2.
-      await win.keyboard.press('Control+3');
-      await win.locator('.meeting').first().waitFor({ timeout: 20000 });
-      await sleep(1000);
-      await captureRukoo(path.join(SHOTS, 'rukoo-meeting-live.png'));
-      skip('Voice captured its pill and Settings > Rukoo from WebView2', CAPTURE_SKIP);
+      check(`Voice captured its pill and Settings > Rukoo from ${WIN ? 'WebView2' : 'WKWebView'}`, !shots.pill.error && !shots.settings.error, shots);
     }
 
     // 3b. The screen process dies; Voice's watchdog starts it again and the audio doesn't notice.
@@ -2048,8 +2047,7 @@ async function standardRun(voice, offsets) {
       const first = await until('the recorder\'s clock after the restart', () => timeline(id).find((l) => l.kind === 'heartbeat' && l.t > restartAt + 2000 && l.wall >= restartWall), 120000, 500).catch(() => null);
       check('the recorder clock keeps going after the Voice restart', Boolean(first) && first.t > restartAt + 1000, { restartAt, at: first?.t ?? null });
     }
-    if (MAC) skip("Rukoo's windows stayed protected through the restart", PROTECTION_SKIP);
-    else check("Rukoo's windows stayed protected through the restart", (await rukoo.protectedWindows()).every(Boolean));
+    check("Rukoo's windows stayed protected through the restart", (await rukoo.protectedWindows()).every(Boolean));
     if (labels && named) await keepsItsId(id, named, restartAt, 'after the Voice restart');
     if (screenPid) {
       const framesBefore = (await rukoo.get(id)).frames.length;
@@ -2101,11 +2099,8 @@ async function standardRun(voice, offsets) {
     } else {
       check('a meeting without the screen has no screen folder', !fs.existsSync(path.join(meetingDir(id), 'screen')));
     }
-    if (MAC) skip("Rukoo's windows are capturable again after the meeting", PROTECTION_SKIP);
-    else {
-      const ended = await until('protection to end', async () => (await rukoo.protectedWindows()).every((p) => !p), 15000);
-      check("Rukoo's windows are capturable again after the meeting", ended);
-    }
+    const unprotected = await until('protection to end', async () => (await rukoo.protectedWindows()).every((p) => !p), 15000);
+    check("Rukoo's windows are capturable again after the meeting", unprotected);
     await until('the recorder to exit', () => !alive(back.pid), 20000);
 
     // 7. Rukoo's meeting.get against Voice's.
@@ -2147,8 +2142,7 @@ async function standardRun(voice, offsets) {
   }, 30000);
   check('a meeting Voice started shows in Rukoo as recording', seen.meeting.startedBy === 'voice', { id: fromVoice, eventId: seen.meeting.eventId, event: seen.event });
   check("the meeting Voice started records Voice's default screen mode", seen.meeting.screen === ARGS.screen, { screen: seen.meeting.screen });
-  if (MAC) skip("Rukoo protects its windows for Voice's meeting too", PROTECTION_SKIP);
-  else check("Rukoo protects its windows for Voice's meeting too", (await rukoo.protectedWindows()).every(Boolean));
+  check("Rukoo protects its windows for Voice's meeting too", (await rukoo.protectedWindows()).every(Boolean));
   if (!seen.meeting.eventId) note('no calendar event in the demo account fits this time of day, so Rukoo linked none (it links one only when exactly one fits)');
   if (ARGS.screen !== 'off') {
     if (ARGS.realScreen) await guardMonitor(fromVoice, report.screen.slideDisplay);
@@ -2172,9 +2166,7 @@ async function standardRun(voice, offsets) {
   }
 
   // 9. Rukoo asks for video once, whatever Voice's default.
-  if (MAC) {
-    skip('an audio-only meeting can enable screen video on the same clock', SCREEN_SKIP);
-  } else if (ARGS.screen !== 'video') {
+  if (ARGS.screen !== 'video') {
     const { meetingId: vid } = await rukoo.start({ title: 'Live run: audio only, then video', screen: 'off' });
     await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === vid, 15000);
     await rukoo.setScreen(vid, 'video');
@@ -2600,11 +2592,8 @@ async function withoutLabels(reason) {
   const entry = await labelsOf(id);
   check(`the meeting's labels are off with reason ${reason}`, entry?.mode === 'off' && entry?.reason === reason, entry);
   const dir = path.join(SHOTS, `speakers-${reason}`);
-  if (MAC) skip('Voice captured Settings > Speaker labels', CAPTURE_SKIP);
-  else {
-    const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
-    check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
-  }
+  const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
+  check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
 
   // Every AMI voice has spoken once a whole loop has gone by.
   await until('a whole loop of the AMI excerpt', () => meetingNow(id) > AMI_MS + 15000, 180000, 1000);
@@ -3362,8 +3351,8 @@ async function main() {
   fs.mkdirSync(RUN, { recursive: true });
   fs.mkdirSync(SHOTS, { recursive: true });
   if (!ARGS.skipBuild) build();
-  // The screen program builds on both platforms, but only Windows runs it; the check is for the programs this run uses.
-  for (const exe of [EXE, ...(WIN ? [SCREEN_EXE] : []), ...(SYNC ? [FAKE_S3] : [])]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
+  // The programs this run uses; Voice looks for the screen program next to its own.
+  for (const exe of [EXE, SCREEN_EXE, ...(SYNC ? [FAKE_S3] : [])]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
   if (AMI) {
     assets();
     loadAmi();
