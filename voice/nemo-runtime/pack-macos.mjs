@@ -33,13 +33,13 @@
 // same Node version give the same zip; another zlib version could compress differently, and the published hashes pin
 // the archive that was built.
 
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { NEMO_DYLIBS, codesign } from '../scripts/lib/macos-sign.mjs';
+import { listFiles, sha256File } from '../scripts/lib/nemo-runtime.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST = path.join(HERE, 'manifest.json');
@@ -97,26 +97,6 @@ try {
 } catch (error) {
   console.error(`pack-macos: ${error.message}\n\n${USAGE}`);
   process.exit(2);
-}
-
-function sha256File(file) {
-  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-}
-
-// Every file under `dir`, relative with `/` between parts, sorted.
-function listFiles(dir) {
-  const found = [];
-  const walk = (next, prefix) => {
-    for (const entry of fs.readdirSync(next, { withFileTypes: true })) {
-      const full = path.join(next, entry.name);
-      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) walk(full, name);
-      else if (entry.isFile()) found.push(name);
-      else throw new Error(`${full} is not a regular file or a folder`);
-    }
-  };
-  walk(dir, '');
-  return found.sort();
 }
 
 function record(full, name) {

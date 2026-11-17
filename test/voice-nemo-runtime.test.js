@@ -19,6 +19,8 @@ const ROOT = path.join(__dirname, '..');
 const PACK = path.join(ROOT, 'voice', 'nemo-runtime', 'pack-macos.mjs');
 const PACKAGE = path.join(ROOT, 'voice', 'scripts', 'package-macos.mjs');
 const MANIFEST = path.join(ROOT, 'voice', 'nemo-runtime', 'manifest.json');
+const LIB = pathToFileURL(path.join(ROOT, 'voice', 'scripts', 'lib', 'nemo-runtime.mjs')).href;
+const SIGN_LIB = pathToFileURL(path.join(ROOT, 'voice', 'scripts', 'lib', 'macos-sign.mjs')).href;
 const DYLIBS = [
   'libnemo_speech_asr_c.dylib',
   'libnemo_speech_asr.dylib',
@@ -124,6 +126,18 @@ function unpack(zip, destination) {
   fs.mkdirSync(destination, { recursive: true });
   const result = run('ditto', ['-x', '-k', zip, destination]);
   assert.equal(result.status, 0, result.stderr);
+}
+
+// A fixture runtime packed to a zip, for the tests that start from pack-macos.mjs's output.
+function packed(t, name) {
+  const work = folder(t, name);
+  const built = path.join(work, 'built');
+  fs.mkdirSync(built);
+  runtime(built);
+  const out = path.join(work, 'release');
+  assert.equal(pack(built, out).status, 0);
+  const zip = path.join(out, `${pins().name}-macos-arm64.zip`);
+  return { work, built, out, zip };
 }
 
 test('pack-macos pins the signed dylibs and leaves the Windows entry alone', { skip: SKIP }, (t) => {
@@ -373,4 +387,86 @@ test('package-macos still stops when the manifest names no macOS archive', { ski
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /names no macos-aarch64 archive/);
   assert.match(result.stderr, /--nemo-dir/);
+});
+
+test('a packed dylib carries the shared signature, and signing it again keeps its hash', { skip: SKIP }, async (t) => {
+  const { work, built, zip } = packed(t, 'nemo-sign');
+  const unpacked = path.join(work, 'unpacked');
+  unpack(zip, unpacked);
+  const { codesign, isAdHocHardened } = await import(SIGN_LIB);
+  const packedDylib = path.join(unpacked, 'libggml.dylib');
+
+  // The linker's signature is ad-hoc, but without the hardened runtime flag, so it isn't the packed signature.
+  assert.equal(isAdHocHardened(path.join(built, 'libggml.dylib')), false);
+  assert.equal(isAdHocHardened(packedDylib), true);
+
+  // Nor is a plain ad-hoc signature without the hardened runtime.
+  const plain = path.join(work, 'plain');
+  fs.mkdirSync(plain);
+  const plainDylib = path.join(plain, 'libggml.dylib');
+  fs.copyFileSync(path.join(built, 'libggml.dylib'), plainDylib);
+  const bare = run('codesign', ['--force', '--sign', '-', plainDylib]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(isAdHocHardened(plainDylib), false);
+
+  // package-macos.mjs treats this state as already signed; signing it with the shared rule writes the same bytes,
+  // so its hash stays the one the manifest pins.
+  const before = sha256(packedDylib);
+  codesign(packedDylib);
+  assert.equal(sha256(packedDylib), before);
+  assert.equal(isAdHocHardened(packedDylib), true);
+});
+
+test('the runtime in the app has to keep matching the manifest after signing', { skip: SKIP }, async (t) => {
+  const { work, out, zip } = packed(t, 'nemo-post-sign');
+  const { pinnedFolderProblem, readRuntimeManifest } = await import(LIB);
+  const manifest = readRuntimeManifest(path.join(out, 'manifest.json'));
+
+  const app = path.join(work, 'Rukoo Voice.app', 'Contents', 'Resources', 'nemo_speech');
+  unpack(zip, app);
+  assert.equal(pinnedFolderProblem(manifest, app), null);
+
+  // A dylib signed again, or any other file changed after signing, is what the check after signAll must catch.
+  fs.appendFileSync(path.join(app, 'libggml.dylib'), 'signed again');
+  assert.match(pinnedFolderProblem(manifest, app), /libggml\.dylib differs from .*manifest\.json/);
+
+  const license = path.join(work, 'license-copy');
+  unpack(zip, license);
+  fs.appendFileSync(path.join(license, 'licenses', 'NOTICE'), 'changed');
+  assert.match(pinnedFolderProblem(manifest, license), /licenses\/NOTICE differs from/);
+
+  const extra = path.join(work, 'extra-copy');
+  unpack(zip, extra);
+  fs.writeFileSync(path.join(extra, 'not-part-of-the-runtime.txt'), 'x');
+  assert.match(pinnedFolderProblem(manifest, extra), /also holds not-part-of-the-runtime\.txt/);
+});
+
+test('package-macos refuses --developer-id with a pinned runtime archive', { skip: SKIP }, (t) => {
+  const { work, out, zip } = packed(t, 'nemo-developer-id');
+  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip);
+  const env = { ...process.env, CARGO_TARGET_DIR: path.join(work, 'target') };
+  // The refusal comes before the Apple credentials are read, so this must not need them.
+  for (const name of ['APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID']) delete env[name];
+  const result = node([PACKAGE, '--developer-id', '--runtime-manifest', manifest], { env });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--developer-id signs the NeMo dylibs/);
+  assert.match(result.stderr, /manifest that pins those hashes/);
+  assert.doesNotMatch(result.stderr, /needs APPLE_SIGNING_IDENTITY/);
+});
+
+test('only https is accepted without --runtime-manifest', { skip: SKIP }, async () => {
+  const { archiveUrlProblem } = await import(LIB);
+  assert.equal(archiveUrlProblem(new URL('https://github.com/x/y.zip')), null);
+  assert.match(archiveUrlProblem(new URL('http://github.com/x/y.zip')), /committed manifest archive has to be https:/);
+  assert.match(archiveUrlProblem(new URL('file:///tmp/y.zip')), /committed manifest archive has to be https:/);
+  assert.match(archiveUrlProblem(new URL('http://127.0.0.1:8080/y.zip')), /committed manifest archive has to be https:/);
+
+  // A --runtime-manifest may point at this computer, and nowhere else without https.
+  assert.equal(archiveUrlProblem(new URL('file:///tmp/y.zip'), { local: true }), null);
+  assert.equal(archiveUrlProblem(new URL('http://127.0.0.1:8080/y.zip'), { local: true }), null);
+  assert.match(archiveUrlProblem(new URL('http://example.invalid/y.zip'), { local: true }), /127\.0\.0\.1/);
+  assert.match(
+    archiveUrlProblem(new URL('http://example.invalid/y.zip'), { local: true, final: true }),
+    /redirects to http:\/\/example\.invalid\/y\.zip/,
+  );
 });
