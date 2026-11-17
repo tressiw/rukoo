@@ -330,6 +330,65 @@ test('Jev sorts the uncertain mail, and an unsure answer goes to the unsure cate
   assert.equal(get(3).source, 'rules');
 });
 
+test('a sort of hundreds of emails tells the window a few times, not once per email', async (t) => {
+  const msgs = Array.from({ length: 600 }, (_, i) => ({
+    uid: i + 1,
+    messageId: `<${i + 1}@x>`,
+    from: { name: 'App', address: 'noreply@app.example' },
+    to: [{ address: 'me@work.example' }],
+    subject: `Login ${i}`,
+    date: 600 - i,
+    signals: {}
+  }));
+  const { cats, account, engine } = setup(t, msgs);
+  let changed = 0;
+  let updated = 0;
+  cats.on('changed', () => changed++);
+  engine.on('updated', () => updated++);
+  cats.setEnabled(true);
+  const before = changed;
+  assert.ok(before <= 3, `turning categories on: ${before}`);
+  assert.equal(await cats.sort(), 600);
+  assert.equal(account.list('classification').length, 600);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(changed - before <= 2, `the sort told the window ${changed - before} times`);
+  assert.ok(updated <= changed + 2, `and the engine ${updated} times`);
+
+  // Outside a sort, a record from another device shows at once, and a burst of them once more at its end.
+  changed = 0;
+  account.put('override', 'me@work.example\n<1@x>', { category: 'money', at: Date.now() });
+  assert.equal(changed, 1);
+  for (let i = 2; i <= 50; i++) account.put('override', `me@work.example\n<${i}@x>`, { category: 'money', at: Date.now() });
+  assert.equal(changed, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(changed, 2);
+});
+
+test("Jev's answers coming in one by one show at the sort's pace, and its end shows the rest", async (t) => {
+  const answers = [];
+  const fake = { MODEL: 'jev-test', classify: () => new Promise((resolve) => answers.push(() => resolve({ category: 'money', confidence: 0.9, model: 'jev-test' }))) };
+  const msgs = inbox();
+  msgs[1].from = { name: 'Shop', address: 'hello@shop.example' };
+  msgs[0].from = { name: 'Sanne', address: 'sanne@studio.example' };
+  const { cats } = setup(t, msgs, { jevImpl: fake });
+  cats.setEnabled(true);
+  cats.setJev({ key: 'SECRET', on: true });
+  let changed = 0;
+  cats.on('changed', () => changed++);
+  const sorting = cats.sort();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(answers.length >= 1);
+  const first = changed;
+  // Each answer arrives on its own turn: none of them redraws the window by itself.
+  while (answers.length) {
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  await sorting;
+  assert.equal(first, 0, 'nothing while the rules stored theirs');
+  assert.equal(changed, 1, 'once, when the sort was done');
+});
+
 test("the window can follow Jev's progress and its last decisions", async (t) => {
   const answers = [];
   const fake = {

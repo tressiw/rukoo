@@ -1448,6 +1448,25 @@ test('swipe on a touch screen toggles read and deletes', async () => {
   await expect(win.locator('#toast')).toContainText('Prullenbak');
 });
 
+// Real touch input through the DevTools protocol, which the dispatched pointer events above can't stand in for: the
+// touch starts with the pointer captured by the element under the finger, and the swipe moves that capture to the
+// row. A swipe must survive that move (lostpointercapture on the subject) and still reach its action.
+test('a real touch swipe that starts on the subject toggles read', async () => {
+  const row = () => item('Your password has changed');
+  await expect(row()).toHaveClass(/unread/);
+  let box = null;
+  await expect.poll(async () => (box = await row().locator('.subject').boundingBox())).not.toBeNull();
+  const x = box.x + 8;
+  const y = box.y + box.height / 2;
+  const cdp = await win.context().newCDPSession(win);
+  const touch = (type, at) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: at, y, id: 1 }] });
+  await touch('touchStart', x);
+  for (let dx = 15; dx <= 180; dx += 15) await touch('touchMove', x + dx);
+  await touch('touchEnd', x + 180);
+  await cdp.detach();
+  await expect(row()).not.toHaveClass(/unread/);
+});
+
 test('keyboard: arrows navigate, Ctrl+N composes, Escape closes', async () => {
   await win.locator('.list-scroll').focus();
   await win.keyboard.press('ArrowDown');

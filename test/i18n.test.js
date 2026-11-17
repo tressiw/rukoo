@@ -186,3 +186,20 @@ test('date and size formatting follow the selected interface language', () => {
   assert.match(context.format.longDate(date), /oktober/);
   assert.equal(context.format.fileSize(1.5 * 1024 * 1024), '1,5 MB');
 });
+
+test('an email whose date could not be read shows without one, instead of throwing while the list draws', () => {
+  i18n.setLanguage('en');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/ui.js'), 'utf8')
+    .split('// ---------- previews ----------')[0]
+    .replace(/^import .*;\r?\n/gm, '')
+    .replace(/export /g, '');
+  const context = vm.createContext({ ...i18n, Intl, window: {}, document: {} });
+  vm.runInContext(`${source}\nglobalThis.format = { groupLabel, listTime, longDate, readerDate, numericDate, hhmm, quoteDate };`, context);
+  for (const bad of [NaN, null, undefined, 'Mon, 32 Foo 2026']) {
+    for (const [name, fn] of Object.entries(context.format)) {
+      assert.equal(fn(bad), '', `${name}(${String(bad)})`);
+    }
+  }
+  const date = new Date(2026, 9, 7, 14, 45).getTime();
+  assert.equal(context.format.listTime(date, date), '14:45', 'a real date still shows');
+});

@@ -275,6 +275,17 @@ function addressFromEnvelope(list) {
   return (list || []).map((a) => ({ name: a.name || '', address: a.address || '' }));
 }
 
+// The first of values that is a real date, in ms; null when none is. imapflow leaves a Date header or INTERNALDATE it
+// can't parse as the text it got, and new Date() of that text is NaN, which no list can sort or show.
+function validTime(...values) {
+  for (const v of values) {
+    if (v === null || v === undefined || v === '') continue;
+    const ms = v instanceof Date ? v.getTime() : typeof v === 'number' ? v : new Date(v).getTime();
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+}
+
 function addressFromParsed(field) {
   if (!field) return [];
   const values = Array.isArray(field) ? field.flatMap((f) => f.value || []) : field.value || [];
@@ -409,6 +420,7 @@ module.exports = {
   previewFromPart,
   addressFromEnvelope,
   addressFromParsed,
+  validTime,
   sanitizeHtml,
   inlineDataImages,
   escapeHtml,
