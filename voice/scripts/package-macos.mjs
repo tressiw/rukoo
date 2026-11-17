@@ -29,10 +29,10 @@
 // its command line, so voice/scripts/lib/run.mjs replaces APPLE_PASSWORD and APPLE_ID with *** in every error and in
 // notarytool's output.
 //
-// The NeMo runtime has no macOS download yet: another change adds manifest format 2 with a macos-aarch64 archive and
-// `voice/nemo-runtime/build-macos.sh`. Until then the script takes a local runtime with `--nemo-dir`, and without it
-// stops the way package.ps1 stops with "Publish the NeMo runtime first". `--no-speakers` makes a test package
-// without the runtime and says so loudly.
+// The NeMo runtime's macOS build isn't published yet: `voice/nemo-runtime/build-macos.sh` builds it, but the
+// manifest's macos-aarch64 target still has no archive and no file list. Until it is published the script takes a
+// local runtime with `--nemo-dir`, and without it stops the way package.ps1 stops with "Publish the NeMo runtime
+// first". `--no-speakers` makes a test package without the runtime and says so loudly.
 //
 // Before it builds anything it checks that voice/THIRD_PARTY_NOTICES.md lists the crates the lockfile gives for both
 // shipping targets (voice/scripts/notices.mjs, which package.ps1 runs too). Tauri bundles that file, and the script adds
@@ -195,11 +195,11 @@ function buildEnv() {
 
 // ---------- the runtime ----------
 
-// Where voice-core's speaker lookup finds the runtime. On macOS it is not here yet: `locate_runtime` looks in
-// `<exe dir>/nemo_speech` and owns the process only when `PLATFORM_SUPPORTED` covers macOS, and `verify_voice` accepts
-// manifest format 1 only. Once the macOS speaker worker lands, voice-core also searches Contents/Resources/nemo_speech
-// (exe_dir/../Resources/nemo_speech) and reads the format-2 macos-aarch64 file list. Until then this runtime is
-// packaged and signed but a release copy won't find it, which this script says out loud rather than hiding.
+// Where voice-core's speaker lookup finds the runtime. `PLATFORM_SUPPORTED` covers macOS on Apple Silicon, and on
+// macOS the lookup checks the bundle's Contents/Resources/nemo_speech before the folder next to the exe. `verify_voice`
+// reads manifest format 1 or 2 and compares the folder against this target's file list; the committed macos-aarch64
+// entry still pins no files, so a packaged runtime is present and signed but a release copy won't use it until that
+// entry is published.
 function resolveRuntime() {
   if (ARGS.noSpeakers) {
     console.warn('');
@@ -209,8 +209,8 @@ function resolveRuntime() {
   }
   if (!ARGS.nemoDir) {
     throw new Error(
-      'The macOS NeMo runtime isn\'t published yet (another change adds manifest format 2 with a macos-aarch64 '
-      + 'archive). Build one with voice/nemo-runtime/build-macos.sh, or pass --nemo-dir with a folder holding the six '
+      'The macOS NeMo runtime isn\'t published yet: the manifest\'s macos-aarch64 target has no archive. '
+      + 'Build one with voice/nemo-runtime/build-macos.sh, or pass --nemo-dir with a folder holding the six '
       + 'dylibs and runtime.json, such as the nemo_speech folder of a local build. For a test package without speaker '
       + 'labels, pass --no-speakers.',
     );
@@ -323,7 +323,6 @@ function addRuntime(appDir, runtime) {
   // The copied files are what ships; check them against runtime.json again rather than trusting the copy.
   verifyRuntime(resources);
   console.log(`  ${NEMO_FOLDER}: ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files checked against runtime.json`);
-  console.log(`  note: voice-core does not search Contents/Resources/nemo_speech yet and speaker labels are Windows-only in this build; the macOS speaker worker adds that lookup`);
 }
 
 // The license texts of everything the macOS app holds, in Resources next to the runtime, where the app's seal covers
