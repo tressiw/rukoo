@@ -877,7 +877,7 @@ mod cpal_capture {
             device: DeviceInfo { name, id },
             rate: config.sample_rate(),
             channels: config.channels(),
-            // A tap without the System Audio Recording grant records exact zeros (spike S2).
+            // A tap without the System Audio Recording grant records exact zeros.
             silent_when_denied: cfg!(target_os = "macos") && loopback,
         })
     }

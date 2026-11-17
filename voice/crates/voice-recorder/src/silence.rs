@@ -3,7 +3,7 @@
 //!
 //! On macOS the call track is a Core Audio process tap. Without the System Audio Recording grant,
 //! or with a grant that went stale after an update, the tap opens without an error and the track
-//! holds only exact zeros (spike S2). A working tap gives the same while nothing plays: it
+//! holds only exact zeros. A working tap gives the same while nothing plays: it
 //! delivers nothing and the track is padded with zeros. So zeros alone prove nothing, and the
 //! check pairs them with what can be known:
 //!

@@ -6,7 +6,7 @@
 //! `ignoresMouseEvents` is set to false explicitly (left at its default, AppKit lets clicks through
 //! the transparent pixels). It is an `NSPanel` with `NSWindowStyleMaskNonactivatingPanel` that answers
 //! no to `canBecomeKeyWindow` and `canBecomeMainWindow`, so a click never makes Voice the active app
-//! and never moves the keyboard focus out of the user's app (spike S4). Its content view accepts the
+//! and never moves the keyboard focus out of the user's app. Its content view accepts the
 //! first mouse, so the click that reaches a window of an inactive app is a click and not only an
 //! activation attempt.
 //!
