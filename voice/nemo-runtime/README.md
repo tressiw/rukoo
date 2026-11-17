@@ -50,7 +50,7 @@ Until a target's runtime is published its `archive` is `null` and its `files` em
 
 `build.ps1` and `build-macos.sh` write a `runtime.json` into the folder they build. That file is the opposite way round: format 1, the record of one build, with `target` naming the manifest entry it belongs to and the size and SHA-256 of every file. `pack.ps1` and the asset scripts check a folder against it.
 
-On macOS a dylib's signature is part of its bytes, so signing changes its hash. `pack-macos.mjs` therefore signs copies of the folder and rewrites the copied `runtime.json` to name the signed files, which is what the zip holds; the folder `build-macos.sh` wrote keeps the record of the unsigned build. `package-macos.mjs` and `speaker-assets.mjs` check a downloaded folder against its `runtime.json`, so that folder describes itself, and voice-core checks the app's copy against the manifest, whose `files` list holds the same signed hashes.
+On macOS a dylib's signature is part of its bytes, so signing changes its hash. `pack-macos.mjs` therefore signs copies of the folder and rewrites the copied `runtime.json` to name the signed files, which is what the zip holds; the folder `build-macos.sh` wrote keeps the record of the unsigned build. `package-macos.mjs` checks a downloaded folder against the manifest's pinned files and reads only the build's name and commit from its `runtime.json`; `speaker-assets.mjs` checks the manifest's files once the target is published and the folder's own `runtime.json` before that. voice-core checks the app's copy against the same pinned hashes.
 
 Format 1 manifests are still read, as the Windows entry alone, so a test package made from an artifact older than the per-target format keeps verifying on Windows.
 
@@ -104,9 +104,9 @@ The folder ships in `Rukoo Voice.app/Contents/Resources/nemo_speech/`, not under
 
 The runtime folder as `build-macos.sh` writes it is unsigned, or only linker-signed; signing changes its hashes, so it happens at packaging time and the manifest pins the signed files.
 
-`pack-macos.mjs` signs the six dylibs ad-hoc with hardened runtime, no identifier override and no entitlements (`codesign --force --sign - --options runtime --timestamp=none`), and `voice/scripts/package-macos.mjs` gives a NeMo dylib exactly that signature. An ad-hoc signature has no timestamp and takes its identifier from the file name, so it is deterministic: signing the same bytes under the same name twice, in two folders or on two machines, gives the same file. `package-macos.mjs` leaves a dylib in that state alone instead of signing it again, so the dylibs inside a finished `Rukoo Voice.app` are the pinned files, and voice-core's `verify_voice` accepts the folder it ships.
+`pack-macos.mjs` signs the six dylibs ad-hoc with hardened runtime, no identifier override and no entitlements (`codesign --force --sign - --options runtime --timestamp=none`), and `voice/scripts/package-macos.mjs` gives a NeMo dylib exactly that signature. An ad-hoc signature has no timestamp and takes its identifier from the file name, so it is deterministic: signing the same bytes under the same name twice, in two folders or on two machines, gives the same file. `package-macos.mjs` leaves a dylib in that state alone instead of signing it again, then checks the app's folder against the manifest again after signing and refuses to write the DMG and the zip if a file changed, so the dylibs inside a finished `Rukoo Voice.app` are the pinned files and voice-core's `verify_voice` accepts the folder it ships.
 
-A `--developer-id` package re-signs the dylibs with the Developer ID, which changes their hashes. Speaker labels in such a package then don't verify against a manifest that pins the ad-hoc files; notarized builds need a runtime signed the same way, and publishing one under a new name is the way to get it.
+A `--developer-id` package is refused while the runtime comes from the pinned archive: it re-signs every dylib with the Developer ID, which changes their hashes, and no ad-hoc manifest pins those. A notarized package needs a runtime packed with that identity and a manifest that pins its files; publishing such a runtime under a new name is how that would happen.
 
 ## Packing it on macOS
 
@@ -129,7 +129,7 @@ It refuses a folder whose `runtime.json` names another target (a Windows folder 
 `.github/workflows/voice-nemo-runtime.yml` builds the runtime whenever a push or pull request changes this folder or the workflow, on any branch, and on a manual dispatch. It has a job per platform:
 
 - `build` on `windows-2025` runs `build.ps1`, builds the worker, runs the self-test on the AMI excerpt (at least 3 speakers and 5,900 frames), runs `pack.ps1` and uploads the artifact `nemo-runtime-97a15af-1`: the zip, `manifest.json`, `notes.md` and `self-test.json`.
-- `build-macos` on `macos-15` runs `build-macos.sh` from a fixed checkout path (`$RUNNER_TEMP/nemo/NeMo-Speech.cpp`, because the source path ends up in the dylibs), builds the worker, fetches the model and the AMI excerpt with `speaker-assets.mjs`, runs the same self-test against the fresh runtime, runs `pack-macos.mjs` and uploads the artifact `nemo-runtime-97a15af-1-macos-arm64`: the zip, `manifest.json`, `notes.md` and `self-test.json`. It publishes nothing.
+- `build-macos` on `macos-15` runs `build-macos.sh` from a fixed checkout path (`$RUNNER_TEMP/nemo/NeMo-Speech.cpp`, because the source path ends up in the dylibs), builds the worker, fetches the model and the AMI excerpt with `speaker-assets.mjs`, runs the same self-test against the fresh runtime, runs `pack-macos.mjs`, unpacks the zip and runs the self-test again against the signed dylibs, and uploads the artifact `nemo-runtime-97a15af-1-macos-arm64`: the zip, `manifest.json`, `notes.md`, `self-test.json` and `self-test-packed.json`. It publishes nothing.
 
 Neither job publishes anything.
 
@@ -137,22 +137,26 @@ Neither job publishes anything.
 
 Publishing needs the maintainer's approval. It makes the runtime a prerelease of this repository, under a tag that neither update check reads: Rukoo's reads `v` tags and Voice's reads `voice-v` tags, so never tag it either way. Both platforms are published under that one tag.
 
-1. Take the artifact of a successful workflow run on the branch that changes the runtime:
+The runtime `nemo-runtime-97a15af-1` is already published with its Windows zip, and `manifest.json` has that entry filled in. Adding the macOS runtime is one more asset in that prerelease, not a new release:
+
+1. Take the macOS artifact of a successful workflow run on the branch that changes the runtime:
    ```powershell
-   gh run download <run id> -n nemo-runtime-97a15af-1 -D tmp\nemo-release
    gh run download <run id> -n nemo-runtime-97a15af-1-macos-arm64 -D tmp\nemo-macos-release
    ```
-2. Read `self-test.json` and `notes.md` in both folders.
-3. Publish the Windows zip:
+2. Read `self-test.json`, `self-test-packed.json` and `notes.md`.
+3. Add the zip to the existing prerelease. No `--clobber`: that release's Windows asset is what older commits pin, and a published asset is never replaced.
    ```powershell
-   gh release create nemo-runtime-97a15af-1 tmp\nemo-release\nemo-runtime-97a15af-1-win-x64.zip --prerelease --latest=false --title "NeMo-Speech.cpp runtime for Rukoo Voice" --notes-file tmp\nemo-release\notes.md
+   gh release upload nemo-runtime-97a15af-1 tmp\nemo-macos-release\nemo-runtime-97a15af-1-macos-arm64.zip
    ```
-4. Publish the macOS zip into the same release:
-   ```powershell
-   gh release upload nemo-runtime-97a15af-1 tmp\nemo-macos-release\nemo-runtime-97a15af-1-macos-arm64.zip --clobber
-   ```
-5. Copy `tmp\nemo-macos-release\manifest.json` over `voice/nemo-runtime/manifest.json` and commit it on the same branch. That file is the committed one with `macos-aarch64` filled in and `windows-x86_64` as committed; if the Windows artifact came from the same commit, `tmp\nemo-release\manifest.json` holds the same two entries. From then on, CI fetches the runtime and runs the runtime tests instead of skipping them, `package-macos.mjs` downloads the macOS archive, and a run that couldn't fetch an asset fails rather than passing without them.
+4. Copy `tmp\nemo-macos-release\manifest.json` over `voice/nemo-runtime/manifest.json` and commit it on the same branch. That file is the committed one with `macos-aarch64` filled in and the published `windows-x86_64` entry as committed. From then on, CI fetches the runtime and runs the runtime tests instead of skipping them, `package-macos.mjs` downloads the macOS archive, and a run that couldn't fetch an asset fails rather than passing without them.
 
-The macOS steps are the Windows ones with `pack-macos.mjs`'s output: the workflow already signs, zips and writes the manifest, so the maintainer only downloads the artifact, reads the notes, publishes it and copies the manifest over. Do not build a runtime with `build-macos.sh` and publish that: its bytes differ from the pinned ones, and `package-macos.mjs` checks the archive against the pins.
+The workflow already signs, zips and writes the manifest, so the maintainer only downloads the artifact, reads the reports, uploads the zip and copies the manifest over. Do not build a runtime with `build-macos.sh` and publish that: its bytes differ from the pinned ones, and `package-macos.mjs` checks the archive against the pins.
 
-A new runtime, for a new NeMo-Speech.cpp commit or a new toolset, gets a new name: change `name` and the pins in `manifest.json`, set both targets' `archive` back to `null` and `files` to `[]`, update `NEMO_COMMIT` and `RUNTIME_NAME` in the workflow, and publish under the new name. A published release is never replaced: `package.ps1` and `package-macos.mjs` on older commits download it and check it against the hashes those commits pinned.
+A new runtime, for a new NeMo-Speech.cpp commit or a new toolset, gets a new name: change `name` and the pins in `manifest.json`, set both targets' `archive` back to `null` and `files` to `[]`, update `NEMO_COMMIT` and `RUNTIME_NAME` in the workflow, and build both artifacts on the branch. Then publish both zips under the new tag:
+
+```powershell
+gh release create <new name> tmp\nemo-release\<new name>-win-x64.zip --prerelease --latest=false --title "NeMo-Speech.cpp runtime for Rukoo Voice" --notes-file tmp\nemo-release\notes.md
+gh release upload <new name> tmp\nemo-macos-release\<new name>-macos-arm64.zip
+```
+
+No script writes one manifest with both new entries filled in: `pack.ps1`'s output fills `windows-x86_64` and leaves `macos-aarch64` as the committed manifest has it, and `pack-macos.mjs`'s output fills `macos-aarch64` and leaves `windows-x86_64` as committed. When neither is filled yet, take `pack-macos.mjs`'s `manifest.json` and copy the `windows-x86_64` object from `pack.ps1`'s into it, then replace `voice/nemo-runtime/manifest.json` with that and commit it. A published release is never replaced: `package.ps1` and `package-macos.mjs` on older commits download it and check it against the hashes those commits pinned.
