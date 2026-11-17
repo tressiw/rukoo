@@ -177,9 +177,10 @@ impl Fake {
     }
 }
 
+/// A port nothing listens on, as in `support::closed_port`: a port freed after binding port 0
+/// could go to a fake server another test starts at the same moment (#313).
 fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
+    1
 }
 
 fn pcm(len: usize, seed: i16) -> Vec<i16> {

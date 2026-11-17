@@ -389,6 +389,10 @@
     "message": "Looks things up and writes the draft. Sending stays with you.",
     "description": "Chat panel empty state line under the heading while an email is open."
   },
+  "agent.empty.bodyCalendar": {
+    "message": "Find an open time or ask about an upcoming event.",
+    "description": "Chat panel empty state in Calendar (renderEmpty in agent/panel.js)."
+  },
   "agent.empty.bodyLeftOut": {
     "message": "Add the email to work on it, or start with what needs you today.",
     "description": "Chat panel empty state line after you left the open email out of the new chat; Add this email is the chip above the input (renderEmpty in agent/panel.js)."
@@ -408,6 +412,10 @@
   "agent.empty.title": {
     "message": "What should {name} do with this email?",
     "description": "Chat panel empty state heading while an email is open; name is the agent."
+  },
+  "agent.empty.titleCalendar": {
+    "message": "Ask {name} about your calendar",
+    "description": "Chat panel empty state heading in Calendar. {name} is the agent's display name."
   },
   "agent.empty.titleNoEmail": {
     "message": "Ask {name} about your mail",
@@ -2802,6 +2810,26 @@
   "composer.format.underline": {
     "message": "Underline (Ctrl+U)",
     "description": "composer > format. src/renderer/composer.js"
+  },
+  "composer.image.bestFit": {
+    "message": "Best fit",
+    "description": "composer > image. Button in the bar under a selected image in the text; sets the image to a width that fits a mail app's reading pane. src/renderer/editor-images.js"
+  },
+  "composer.image.options": {
+    "message": "Image",
+    "description": "composer > image. Accessible name of the bar under a selected image in the text, a toolbar with Small, Best fit, Original size and Remove. src/renderer/editor-images.js"
+  },
+  "composer.image.original": {
+    "message": "Original size",
+    "description": "composer > image. Button in the bar under a selected image in the text; shows the image at its own size again. src/renderer/editor-images.js"
+  },
+  "composer.image.remove": {
+    "message": "Remove",
+    "description": "composer > image. Button in the bar under a selected image in the text; takes the image out of the text. src/renderer/editor-images.js"
+  },
+  "composer.image.small": {
+    "message": "Small",
+    "description": "composer > image. Button in the bar under a selected image in the text; makes the image small. src/renderer/editor-images.js"
   },
   "composer.link.address": {
     "message": "Address",
@@ -8713,8 +8741,8 @@
     "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
   },
   "settings.keyboard.fixed": {
-    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group.",
-    "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group. Once you've selected an email with the key for it, the keys for the next and previous email move the blue outline without opening anything, and the selection stays until you press Esc. Enter opens the email in the outline.",
+    "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. The blue outline is the keyboard's focus ring on a row of the message list; the key for selecting is the Select or deselect email shortcut. src/renderer/settings.js."
   },
   "settings.keyboard.actions.compose": {
     "message": "New message",
@@ -8775,6 +8803,18 @@
   "settings.keyboard.actions.previous": {
     "message": "Previous email",
     "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.toggleSelect": {
+    "message": "Select or deselect email",
+    "description": "Settings > Keyboard shortcuts: name of the action that adds the email at the keyboard's focus ring to the selection, or takes it out again, in the list of shortcuts. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.focusNext": {
+    "message": "Next email without opening it",
+    "description": "Settings > Keyboard shortcuts: name of the action that moves the keyboard's focus ring to the next email in the list without opening it or changing the selection, in the list of shortcuts. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.focusPrevious": {
+    "message": "Previous email without opening it",
+    "description": "Settings > Keyboard shortcuts: name of the action that moves the keyboard's focus ring to the previous email in the list without opening it or changing the selection, in the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.search": {
     "message": "Search",

@@ -226,6 +226,29 @@ test('a saved email on screen is the open email: a chat an outside agent starts 
   }
 });
 
+test('the calendar and the meeting view hide the email left open in Mail: a chat an outside agent starts there and its draft leave it out', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    t.hub.view({ mode: 'mail', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), call.id);
+    t.hub.view({ mode: 'meeting', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), null);
+    t.hub.view({ mode: 'calendar', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), null);
+    const clark = { agent: 'clark', conversationId: null, remote: true };
+    const first = data(await t.hub.callTool(clark, 'propose_action', { title: 'Add a task' }));
+    assert.equal(t.hub.get(first.conversation_id).message, null);
+    // Without an email on screen, a draft is a new email, not a reply to the one behind the calendar.
+    data(await t.hub.callTool(local(), 'write_draft', { body: 'Thursday works.' }));
+    const write = t.ui.find((u) => u.action === 'writeDraft');
+    assert.equal(write.args.mode, 'new');
+    assert.equal(write.args.messageId, null);
+  } finally {
+    await t.done();
+  }
+});
+
 test('get_context lists checked emails in the Saved view too', async () => {
   const t = await setup();
   try {

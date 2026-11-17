@@ -657,7 +657,8 @@ test('turn: events stream as NDJSON with increasing seq, and the adapter gets a 
   assert.equal(imageSeen[0].exists, true);
   assert.equal(imageSeen[0].bytes, Buffer.from(PNG, 'base64').length);
   assert.ok(imageSeen[0].path.startsWith(env.hub.tempBase()), "inside Claude's --add-dir");
-  await sleep(100);
+  // removeTemp() deletes the folder with an async fs.rm on libuv's thread pool, which a busy machine can hold up.
+  await until(() => !fs.existsSync(imageSeen[0].path)).catch(() => {});
   assert.equal(fs.existsSync(imageSeen[0].path), false, 'removed when the turn ends');
 
   // The same chat again: the token stays the same, so Claude's process stays.
