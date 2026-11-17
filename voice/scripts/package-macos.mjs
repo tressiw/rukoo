@@ -1,6 +1,7 @@
 // A release Rukoo Voice.app, a DMG, a zip and their checksums for macOS on Apple Silicon. The counterpart of
 // voice/scripts/package.ps1.
 //
+//   node voice/scripts/package-macos.mjs [--developer-id]              the manifest's pinned runtime
 //   node voice/scripts/package-macos.mjs --nemo-dir <folder> [--developer-id]
 //   node voice/scripts/package-macos.mjs --no-speakers [--developer-id]
 //
@@ -29,10 +30,20 @@
 // its command line, so voice/scripts/lib/run.mjs replaces APPLE_PASSWORD and APPLE_ID with *** in every error and in
 // notarytool's output.
 //
-// The NeMo runtime's macOS build isn't published yet: `voice/nemo-runtime/build-macos.sh` builds it, but the
-// manifest's macos-aarch64 target still has no archive and no file list. Until it is published the script takes a
-// local runtime with `--nemo-dir`, and without it stops the way package.ps1 stops with "Publish the NeMo runtime
-// first". `--no-speakers` makes a test package without the runtime and says so loudly.
+// A dylib that voice/nemo-runtime/pack-macos.mjs signed already carries the ad-hoc hardened-runtime signature this
+// script would give it, so the packaging leaves it alone and its bytes stay the ones the manifest pins; signing it
+// again would write the same bytes, since an ad-hoc signature has no timestamp and takes its identifier from the file
+// name (voice/scripts/lib/macos-sign.mjs). A --developer-id package re-signs the dylibs with the Developer ID, which
+// changes their hashes, so such a package's speaker labels won't verify against a manifest that pins the ad-hoc files.
+//
+// The NeMo runtime: when voice/nemo-runtime/manifest.json's macos-aarch64 entry names an archive, the script downloads
+// it once into <cargo target dir>/nemo-runtime/<name>, checks the archive's size and SHA-256 and every file's hash
+// against the manifest, and ships that folder. `--nemo-dir` names a local runtime instead, such as the one
+// voice/nemo-runtime/build-macos.sh builds, for testing a build the manifest doesn't pin; without an archive and
+// without --nemo-dir the script stops and says the runtime isn't published. `--no-speakers`
+// makes a test package without the runtime and says so loudly. `--runtime-manifest` names another manifest, for a test
+// package of a runtime that isn't published yet (package.ps1's -RuntimeManifest); the programs compile it in, so voice-
+// core accepts the runtime folder it ships, and `--runtime-only` stops after the runtime is downloaded and checked.
 //
 // Before it builds anything it checks that voice/THIRD_PARTY_NOTICES.md lists the crates the lockfile gives for both
 // shipping targets (voice/scripts/notices.mjs, which package.ps1 runs too). Tauri bundles that file, and the script adds
@@ -60,6 +71,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkNotices, licenseTexts, MACOS } from './notices.mjs';
 import { notarize, redact, run } from './lib/run.mjs';
+import { NEMO_DYLIBS, codesign, entitlementsOf, isAdHocHardened, signatureInfo } from './lib/macos-sign.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
@@ -79,35 +91,43 @@ const HELPER_IDS = {
   'rukoo-voice-screen': 'screen',
 };
 const NEMO_FOLDER = 'nemo_speech';
-// The six dylibs voice/nemo-runtime/build-macos.sh builds.
-const NEMO_DYLIBS = [
-  'libnemo_speech_asr_c.dylib',
-  'libnemo_speech_asr.dylib',
-  'libggml.dylib',
-  'libggml-base.dylib',
-  'libggml-cpu.dylib',
-  'libggml-blas.dylib',
-];
+// The manifest voice/nemo-runtime/pack-macos.mjs fills in. The six dylibs are in lib/macos-sign.mjs, next to the
+// signature the runtime and this script must share.
+const NEMO_MANIFEST = path.join(VOICE, 'nemo-runtime', 'manifest.json');
+const NEMO_TARGET = 'macos-aarch64';
 const ENTITLEMENTS_AUDIO = path.join(APP, 'macos', 'entitlements-audio.plist');
 const ENTITLEMENTS_SPEAKERS = path.join(APP, 'macos', 'entitlements-speakers.plist');
 const AUDIO_INPUT = 'com.apple.security.device.audio-input';
 const DISABLE_LIBRARY_VALIDATION = 'com.apple.security.cs.disable-library-validation';
-const USAGE = `Usage: node voice/scripts/package-macos.mjs --nemo-dir <folder> [--developer-id]
+const USAGE = `Usage: node voice/scripts/package-macos.mjs [--developer-id]
+       node voice/scripts/package-macos.mjs --nemo-dir <folder> [--developer-id]
        node voice/scripts/package-macos.mjs --no-speakers [--developer-id]
+       node voice/scripts/package-macos.mjs --runtime-only [--runtime-manifest <manifest>]
 
 Builds ${BUNDLE}, a DMG, a zip and SHA256SUMS.txt in voice/target/package, ad-hoc signed with
 hardened runtime and not notarized.
 
 Options:
   --nemo-dir <folder>  a local NeMo runtime (the six dylibs, runtime.json and licenses/) to ship in
-                       Contents/Resources/${NEMO_FOLDER}; required until the macOS runtime is published
+                       Contents/Resources/${NEMO_FOLDER} instead of the archive the manifest pins
+  --runtime-manifest <manifest>  take the runtime pins from <manifest> instead of
+                       voice/nemo-runtime/manifest.json, for a test package of a runtime that isn't
+                       published yet; the programs compile it in, as package.ps1's -RuntimeManifest
+  --runtime-only       download and check the runtime, then stop without building anything
   --no-speakers        package without speaker labels, for testing only; says so loudly
   --developer-id       sign with APPLE_SIGNING_IDENTITY and notarize with APPLE_ID, APPLE_PASSWORD
                        and APPLE_TEAM_ID instead of ad-hoc
   -h, --help           this text`;
 
 function parseArgs(argv) {
-  const out = { nemoDir: null, noSpeakers: false, developerId: false, help: false };
+  const out = {
+    nemoDir: null,
+    runtimeManifest: null,
+    runtimeOnly: false,
+    noSpeakers: false,
+    developerId: false,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -124,6 +144,15 @@ function parseArgs(argv) {
         out.nemoDir = path.resolve(taken);
         break;
       }
+      case '--runtime-manifest': {
+        const taken = value ?? argv[++i];
+        if (!taken) throw new Error('--runtime-manifest needs a file');
+        out.runtimeManifest = path.resolve(taken);
+        break;
+      }
+      case '--runtime-only':
+        out.runtimeOnly = true;
+        break;
       case '--no-speakers':
         out.noSpeakers = true;
         break;
@@ -135,6 +164,8 @@ function parseArgs(argv) {
     }
   }
   if (out.nemoDir && out.noSpeakers) throw new Error('--nemo-dir and --no-speakers contradict each other');
+  if (out.runtimeOnly && out.noSpeakers) throw new Error('--runtime-only and --no-speakers contradict each other');
+  if (out.runtimeOnly && out.nemoDir) throw new Error('--runtime-only checks the manifest\'s archive; drop --nemo-dir');
   return out;
 }
 
@@ -197,33 +228,183 @@ function buildEnv() {
 
 // Where voice-core's speaker lookup finds the runtime. `PLATFORM_SUPPORTED` covers macOS on Apple Silicon, and on
 // macOS the lookup checks the bundle's Contents/Resources/nemo_speech before the folder next to the exe. `verify_voice`
-// reads manifest format 1 or 2 and compares the folder against this target's file list; the committed macos-aarch64
-// entry still pins no files, so a packaged runtime is present and signed but a release copy won't use it until that
-// entry is published.
-function resolveRuntime() {
+// reads manifest format 1 or 2 and compares the folder against this target's file list, so the folder this script
+// ships has to hold exactly the files the manifest pins, at their pinned hashes.
+function runtimeManifestPath() {
+  return ARGS.runtimeManifest ?? NEMO_MANIFEST;
+}
+
+// The committed manifest, or --runtime-manifest, with this platform's entry.
+function readRuntimeManifest(file) {
+  let pins;
+  try {
+    pins = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new Error(`${file} isn't a runtime manifest: ${error.message}`);
+  }
+  if (pins.format !== 2) {
+    throw new Error(`${file} is format ${pins.format}, not the per-target format 2`);
+  }
+  const entry = pins.targets && pins.targets[NEMO_TARGET];
+  if (!entry) throw new Error(`${file} pins no ${NEMO_TARGET} runtime`);
+  return { path: file, pins, entry };
+}
+
+function resolveRuntime(manifest) {
   if (ARGS.noSpeakers) {
     console.warn('');
     console.warn('  WARNING: --no-speakers packages Voice without the NeMo runtime and without speaker labels.');
     console.warn('  Every meeting will keep the whole call as one speaker. This package is for testing only.');
     return null;
   }
-  if (!ARGS.nemoDir) {
+  if (ARGS.nemoDir) {
+    const dir = ARGS.nemoDir;
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      throw new Error(`${dir} isn't a folder`);
+    }
+    const local = verifyRuntime(dir);
+    if (local.target && local.target !== NEMO_TARGET) {
+      throw new Error(`${dir} holds the ${local.target} runtime; this package ships the ${NEMO_TARGET} one`);
+    }
+    if (local.name !== manifest.pins.name || local.commit !== manifest.pins.commit) {
+      throw new Error(
+        `${dir} holds ${local.name} at ${local.commit}, not ${manifest.pins.name} at ${manifest.pins.commit}, which `
+        + `${manifest.path} pins`,
+      );
+    }
+    return { dir, ...local, archive: null, manifestPath: manifest.path };
+  }
+  const archive = manifest.entry.archive;
+  if (!archive) {
     throw new Error(
-      'The macOS NeMo runtime isn\'t published yet: the manifest\'s macos-aarch64 target has no archive. '
-      + 'Build one with voice/nemo-runtime/build-macos.sh, or pass --nemo-dir with a folder holding the six '
-      + 'dylibs and runtime.json, such as the nemo_speech folder of a local build. For a test package without speaker '
-      + 'labels, pass --no-speakers.',
+      `${manifest.path} names no ${NEMO_TARGET} archive, so the macOS NeMo runtime isn't published yet. Build one `
+      + 'with voice/nemo-runtime/build-macos.sh, or pass --nemo-dir with a folder holding the six dylibs and '
+      + 'runtime.json. For a test package without speaker labels, pass --no-speakers.',
     );
   }
-  const dir = ARGS.nemoDir;
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
-    throw new Error(`${dir} isn't a folder`);
+  const pinned = manifest.entry.files;
+  if (!Array.isArray(pinned) || pinned.length === 0) {
+    throw new Error(`${manifest.path} names a ${NEMO_TARGET} archive but pins no files for it`);
   }
-  return { dir, ...verifyRuntime(dir) };
+  return downloadRuntime(manifest, archive, pinned);
 }
 
-// Checks a local runtime against its own runtime.json, the way package.ps1 checks the downloaded folder against the
-// committed manifest: every recorded file at its size and hash, the six dylibs, and nothing else but the licences.
+// Every file under `dir`, relative with `/` between parts, sorted.
+function listFiles(dir) {
+  const found = [];
+  const walk = (next, prefix) => {
+    for (const entry of fs.readdirSync(next, { withFileTypes: true })) {
+      const full = path.join(next, entry.name);
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(full, name);
+      else if (entry.isFile()) found.push(name);
+      else throw new Error(`${full} is not a regular file or a folder`);
+    }
+  };
+  walk(dir, '');
+  return found.sort();
+}
+
+// Checks a runtime folder against the manifest's file list the way package.ps1 checks the Windows one: runtime.json,
+// every pinned file at its size and hash, and nothing else.
+function pinnedProblem(manifest, dir) {
+  const runtimePath = path.join(dir, 'runtime.json');
+  if (!fs.existsSync(runtimePath)) return 'runtime.json is missing';
+  let runtime;
+  try {
+    runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+  } catch (error) {
+    return `runtime.json is not JSON: ${error.message}`;
+  }
+  if (runtime.name !== manifest.pins.name || runtime.commit !== manifest.pins.commit) {
+    return `runtime.json describes ${runtime.name} at ${runtime.commit}`;
+  }
+  const expected = new Set(['runtime.json']);
+  for (const file of manifest.entry.files) {
+    expected.add(file.path);
+    const full = path.join(dir, file.path);
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return `${file.path} is missing`;
+    if (fs.statSync(full).size !== file.size || sha256File(full) !== `${file.sha256}`.toLowerCase()) {
+      return `${file.path} differs from ${manifest.path}`;
+    }
+  }
+  const extra = listFiles(dir).filter((name) => !expected.has(name));
+  if (extra.length) return `it also holds ${extra.join(', ')}`;
+  return null;
+}
+
+// Downloads the pinned archive once into <cargo target dir>/nemo-runtime/<name>, checks the archive and the folder it
+// holds against the manifest, and returns the folder. A file:/// URL works too, as package.ps1's -RuntimeManifest does,
+// so a test package can pin a zip that isn't published yet.
+async function downloadRuntime(manifest, archive, pinned) {
+  const url = new URL(archive.url);
+  const cache = path.join(targetDir(), 'nemo-runtime', manifest.pins.name);
+  fs.mkdirSync(cache, { recursive: true });
+  const zip = path.join(cache, path.basename(decodeURIComponent(url.pathname)));
+  const size = Number(archive.size);
+  const sha256 = `${archive.sha256}`.toLowerCase();
+  const cached = fs.existsSync(zip) && fs.statSync(zip).size === size && sha256File(zip) === sha256;
+  if (cached) {
+    console.log(`  ${path.basename(zip)} is in ${cache}`);
+  } else {
+    await fetchArchive(url, zip, size, sha256);
+  }
+  const folder = path.join(cache, NEMO_FOLDER);
+  const staging = `${folder}.staging`;
+  fs.rmSync(staging, { recursive: true, force: true });
+  try {
+    fs.mkdirSync(staging, { recursive: true });
+    run('ditto', ['-x', '-k', zip, staging]);
+    const problem = pinnedProblem(manifest, staging);
+    if (problem) {
+      throw new Error(`the runtime archive ${url.href} doesn't match ${manifest.path}: ${problem}`);
+    }
+    fs.rmSync(folder, { recursive: true, force: true });
+    fs.renameSync(staging, folder);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+  console.log(`  ${manifest.pins.name}: ${pinned.length} files and runtime.json checked against ${manifest.path}`);
+  return {
+    dir: folder,
+    name: manifest.pins.name,
+    commit: manifest.pins.commit,
+    target: NEMO_TARGET,
+    files: pinned.length,
+    archive,
+    manifestPath: manifest.path,
+  };
+}
+
+async function fetchArchive(url, zip, size, sha256) {
+  const part = `${zip}.part`;
+  fs.rmSync(part, { force: true });
+  if (url.protocol === 'file:') {
+    fs.copyFileSync(fileURLToPath(url), part);
+  } else if (url.protocol === 'https:' || url.protocol === 'http:') {
+    console.log(`  downloading ${url.href}`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url.href} answered HTTP ${response.status} ${response.statusText}`);
+    fs.writeFileSync(part, Buffer.from(await response.arrayBuffer()));
+  } else {
+    throw new Error(`${url.href} is not an http(s) or file URL`);
+  }
+  const gotSize = fs.statSync(part).size;
+  const gotSha256 = sha256File(part);
+  if (gotSize !== size || gotSha256 !== sha256) {
+    fs.rmSync(part, { force: true });
+    throw new Error(
+      `the runtime archive ${url.href} has ${gotSize} bytes and SHA-256 ${gotSha256} instead of ${size} and ${sha256}`,
+    );
+  }
+  fs.rmSync(zip, { force: true });
+  fs.renameSync(part, zip);
+}
+
+// Checks a local runtime against its own runtime.json: every recorded file at its size and hash, the six dylibs, and
+// nothing else but the licences. A local build hasn't been through pack-macos.mjs, so its runtime.json is the record of
+// the files it has; a published archive's runtime.json was rewritten for its signed files, which is what makes the
+// same check work for both.
 function verifyRuntime(dir) {
   const runtimePath = path.join(dir, 'runtime.json');
   if (!fs.existsSync(runtimePath)) throw new Error(`${dir} has no runtime.json`);
@@ -253,7 +434,12 @@ function verifyRuntime(dir) {
     if (fs.statSync(full).size !== file.size) throw new Error(`${file.path} is not ${file.size} bytes`);
     if (sha256File(full) !== `${file.sha256}`.toLowerCase()) throw new Error(`${file.path} differs from runtime.json`);
   }
-  return { name: runtime.name ?? 'nemo runtime', commit: runtime.commit, files: runtime.files.length };
+  return {
+    name: runtime.name ?? 'nemo runtime',
+    commit: runtime.commit,
+    target: runtime.target ?? null,
+    files: runtime.files.length,
+  };
 }
 
 // ---------- build ----------
@@ -316,13 +502,21 @@ function bundleApp(patch) {
 
 // The runtime is a folder of dylibs next to runtime.json and the licences, as on Windows. It lives in Resources and
 // not in Frameworks because codesign reads runtime.json and the licences under Frameworks as unsigned nested code.
-function addRuntime(appDir, runtime) {
+function addRuntime(appDir, runtime, manifest) {
   const resources = path.join(appDir, 'Contents', 'Resources', NEMO_FOLDER);
   fs.mkdirSync(path.dirname(resources), { recursive: true });
   run('ditto', [runtime.dir, resources]);
-  // The copied files are what ships; check them against runtime.json again rather than trusting the copy.
-  verifyRuntime(resources);
-  console.log(`  ${NEMO_FOLDER}: ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files checked against runtime.json`);
+  // The copied files are what ships; check them again rather than trusting the copy. A downloaded archive is checked
+  // against the manifest's pins, which is what voice-core checks the app's folder against; a local build against its
+  // own runtime.json, as before.
+  if (runtime.archive) {
+    const problem = pinnedProblem(manifest, resources);
+    if (problem) throw new Error(`the app's ${NEMO_FOLDER} doesn't match ${manifest.path}: ${problem}`);
+    console.log(`  ${NEMO_FOLDER}: ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files checked against ${path.basename(manifest.path)}`);
+  } else {
+    verifyRuntime(resources);
+    console.log(`  ${NEMO_FOLDER}: ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files checked against runtime.json`);
+  }
 }
 
 // The license texts of everything the macOS app holds, in Resources next to the runtime, where the app's seal covers
@@ -354,22 +548,19 @@ function identity() {
   return process.env.APPLE_SIGNING_IDENTITY;
 }
 
-function codesign(target, { entitlements, identifier, signer }) {
-  const args = ['--force', '--sign', signer, '--options', 'runtime'];
-  // An ad-hoc signature can't be timestamped; a Developer ID one must be, for notarization.
-  args.push(signer === '-' ? '--timestamp=none' : '--timestamp');
-  if (identifier) args.push('--identifier', identifier);
-  if (entitlements) args.push('--entitlements', entitlements);
-  args.push(target);
-  run('codesign', args);
-}
-
 function signAll(appDir, runtime, signer) {
   if (runtime) {
     // The speaker worker loads these through dlopen with library validation off, so they are ad-hoc signed and
-    // hardened too. They go first: signing must run inside out.
+    // hardened too. They go first: signing must run inside out. A dylib pack-macos.mjs already signed carries exactly
+    // this signature, so it is left alone: its bytes stay the ones the manifest pins. Signing it again would write the
+    // same bytes, but only as long as codesign keeps its ad-hoc identifiers deterministic.
     for (const name of NEMO_DYLIBS) {
-      codesign(path.join(appDir, 'Contents', 'Resources', NEMO_FOLDER, name), { signer });
+      const file = path.join(appDir, 'Contents', 'Resources', NEMO_FOLDER, name);
+      if (signer === '-' && isAdHocHardened(file)) {
+        console.log(`  ${name} already carries the packed ad-hoc hardened-runtime signature; left as it is`);
+        continue;
+      }
+      codesign(file, { signer });
       console.log(`  signed ${name}`);
     }
   }
@@ -390,35 +581,6 @@ function signAll(appDir, runtime, signer) {
 function plistValue(file, key) {
   const out = run('plutil', ['-extract', key, 'raw', '-o', '-', file]);
   return out.stdout.replace(/\n$/, '');
-}
-
-function signatureInfo(target) {
-  const out = run('codesign', ['-d', '-vv', target], { allowFailure: true });
-  const text = `${out.stdout ?? ''}${out.stderr ?? ''}`;
-  if (out.status !== 0) throw new Error(`codesign could not read ${target}:\n${text.trim()}`);
-  return text;
-}
-
-// The entitlements a signed target carries, as a sorted list of keys. An empty signature has none, and codesign
-// prints them as an XML plist.
-function entitlementsOf(target) {
-  const out = run('codesign', ['-d', '--entitlements', ':-', target], { allowFailure: true });
-  const text = `${out.stdout ?? ''}`.trim();
-  if (!text) {
-    if (out.status !== 0) throw new Error(`codesign could not read the entitlements of ${target}`);
-    return [];
-  }
-  const converted = run('plutil', ['-convert', 'json', '-o', '-', '-'], { input: text });
-  let parsed;
-  try {
-    parsed = JSON.parse(converted.stdout);
-  } catch (error) {
-    throw new Error(`codesign printed entitlements for ${target} that aren't a plist: ${error.message}`);
-  }
-  for (const [key, value] of Object.entries(parsed)) {
-    if (value !== true) throw new Error(`${target} has ${key} set to ${JSON.stringify(value)} instead of true`);
-  }
-  return Object.keys(parsed).sort();
 }
 
 function assertSignature(target, label, { signer, entitlements, identifier }) {
@@ -702,6 +864,22 @@ async function main() {
     return;
   }
   guard();
+  const manifest = readRuntimeManifest(runtimeManifestPath());
+  if (ARGS.runtimeManifest) {
+    // As package.ps1's -RuntimeManifest: voice-core's build.rs compiles this manifest in, so the packaged Voice checks
+    // its nemo_speech folder against the same pins the runtime came from.
+    process.env.RUKOO_VOICE_NEMO_MANIFEST = manifest.path;
+    console.warn('');
+    console.warn(`  WARNING: packaging the runtime of ${manifest.path} instead of ${NEMO_MANIFEST}. This package is for testing only.`);
+  }
+  if (ARGS.runtimeOnly) {
+    step(`Checking the ${NEMO_TARGET} runtime of ${manifest.path}`);
+    const runtime = await resolveRuntime(manifest);
+    console.log('');
+    console.log(`  ${runtime.name} (${runtime.commit.slice(0, 7)}), ${runtime.files} files in ${runtime.dir}`);
+    console.log(`  archive SHA-256 ${runtime.archive.sha256}`);
+    return;
+  }
   const signer = identity();
   const version = workspaceVersion();
   const target = targetDir();
@@ -713,9 +891,9 @@ async function main() {
   const crates = checkNotices();
   ok('notices', `THIRD_PARTY_NOTICES.md lists the ${crates.length} crates of the Windows and macOS builds`);
 
-  const runtime = resolveRuntime();
+  const runtime = await resolveRuntime(manifest);
   if (runtime && (runtime.dir === out || runtime.dir.startsWith(`${out}${path.sep}`))) {
-    throw new Error(`--nemo-dir ${runtime.dir} is inside ${out}, which this script empties; keep the runtime elsewhere`);
+    throw new Error(`the runtime folder ${runtime.dir} is inside ${out}, which this script empties; keep the runtime elsewhere`);
   }
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
@@ -734,7 +912,7 @@ async function main() {
 
   if (runtime) {
     step('Adding the NeMo runtime');
-    addRuntime(appDir, runtime);
+    addRuntime(appDir, runtime, manifest);
   }
 
   addLicenseTexts(appDir, runtime);
